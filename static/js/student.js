@@ -103,6 +103,10 @@ let officialProposal = null;
 let expanded = false;
 const INITIAL_SHOW = 4;
 
+/** Évite les votes en double (mobile : taps rapides, requêtes parallèles). */
+const pendingSuggestionVoteIds = new Set();
+let pendingOfficialProposalVote = false;
+
 // --------------- DOM ---------------
 
 const $ = (sel) => document.querySelector(sel);
@@ -120,6 +124,35 @@ const categoryFilters = $("#category-filters");
 const fadeOverlay = $("#suggestions-fade");
 const expandBtn = $("#expand-btn");
 const expandText = $("#expand-text");
+const suggestionsDesktopWrap = $("#suggestions-desktop-wrap");
+const filtersSection = $(".filters-section");
+const phoneSwipeUi = $("#phone-swipe-ui");
+const swipeSearchInput = $("#swipe-search");
+const btnPhoneModeSwipe = $("#btn-phone-mode-swipe");
+const btnPhoneModeList = $("#btn-phone-mode-list");
+const btnPhoneModeLiked = $("#btn-phone-mode-liked");
+const swipeCvlSlot = $("#swipe-cvl-slot");
+const swipeDeckInner = $("#swipe-deck-inner");
+const swipeCounter = $("#swipe-counter");
+const swipePrev = $("#swipe-prev");
+const swipeNext = $("#swipe-next");
+
+/** Mode téléphone : 'swipe' = une fiche à la fois, 'list' = comme sur PC */
+let phoneUiMode = "swipe";
+let phoneListLikedOnly = false;
+let swipeIndex = 0;
+let swipeSearchQuery = "";
+let swipeTouchStartX = 0;
+let swipeTouchStartY = 0;
+let swipeDragging = false;
+let swipeLastTap = 0;
+
+const isTouchDevice = () => {
+    const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    const hasFinePointer = window.matchMedia("(pointer: fine)").matches;
+    const isWideScreen = window.innerWidth >= 768;
+    return hasTouch && !hasFinePointer && !isWideScreen;
+};
 
 // --------------- Init ---------------
 
@@ -127,6 +160,16 @@ let submissionsOpen = true;
 
 async function init() {
     await sessionBootstrap();
+    if (isTouchDevice()) {
+        try {
+            phoneUiMode = localStorage.getItem("phone_ui_mode") === "list" ? "list" : "swipe";
+            phoneListLikedOnly = localStorage.getItem("phone_ui_liked") === "1";
+        } catch (e) {
+            /* ignore */
+        }
+        syncPhoneUiChrome();
+        setupPhoneSwipe();
+    }
     loadCategories();
     loadSuggestions();
     checkSubmissionsStatus();
@@ -336,6 +379,9 @@ async function loadSuggestions() {
             if (debateOrProposalStructureMismatch(proposal)) {
                 lastIdsSignature = newSig;
                 await renderSuggestionsDiscrete();
+            } else if (isTouchDevice() && phoneUiMode === "list" && phoneListLikedOnly) {
+                lastIdsSignature = newSig;
+                await renderSuggestionsDiscrete();
             } else {
                 updateSuggestionsInPlace();
                 reorderSuggestionCards();
@@ -387,6 +433,9 @@ async function loadSuggestions() {
             if (ta) ta.value = val;
         });
         if (hadFocus) input.focus();
+        if (isTouchDevice() && phoneUiMode === "swipe") {
+            renderSwipeView();
+        }
     } catch (err) {
         console.error(err);
     }
@@ -456,10 +505,6 @@ function appendNewSuggestionsOnly() {
         });
         card.classList.remove("suggestion-card-new");
     });
-
-    if (isTouchDevice()) {
-        setupDoubleTapVote(suggestionsContainer);
-    }
 
     if (allSuggestions.length > INITIAL_SHOW && !expanded) {
         fadeOverlay.classList.remove("hidden");
@@ -543,6 +588,8 @@ function updateSuggestionsInPlace() {
         if (voteBtn) {
             voteBtn.textContent = (s.has_voted ? "✓ Soutenu" : "♥ Soutenir") + " · " + s.vote_count;
             voteBtn.classList.toggle("voted", s.has_voted);
+            voteBtn.disabled = !!s.has_voted;
+            voteBtn.setAttribute("aria-disabled", s.has_voted ? "true" : "false");
         }
         if (voteCount) voteCount.textContent = `${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}${s.has_voted ? " · Soutenu" : ""}`;
         const argsToggle = card.querySelector(".cvl-arguments-toggle[data-id]");
@@ -596,24 +643,41 @@ function renderSuggestionsSilent() {
     renderSuggestions(false);
 }
 
+function getListSourceForRender() {
+    if (isTouchDevice() && phoneUiMode === "list" && phoneListLikedOnly) {
+        return allSuggestions.filter((s) => s.has_voted);
+    }
+    return allSuggestions;
+}
+
 function renderSuggestions(withAnimation = true) {
+    if (isTouchDevice() && phoneUiMode === "swipe") {
+        syncPhoneUiChrome();
+        renderSwipeView();
+        return;
+    }
+    syncPhoneUiChrome();
+
     suggestionsContainer.classList.toggle("suggestions-no-anim", !withAnimation);
+    const listSource = getListSourceForRender();
     let html = "";
     if (officialProposal) {
         html += createOfficialProposalCard(officialProposal);
     }
-    if (!allSuggestions.length && !officialProposal) {
+    if (!listSource.length && !officialProposal) {
         suggestionsContainer.innerHTML = "";
         emptyState.classList.remove("hidden");
         fadeOverlay.classList.add("hidden");
-        suggestionsContainer.classList.remove("suggestions-no-anim");
+        if (withAnimation) {
+            suggestionsContainer.classList.remove("suggestions-no-anim");
+        }
         return;
     }
     emptyState.classList.add("hidden");
 
-    const showCount = expanded ? allSuggestions.length : INITIAL_SHOW;
-    const visible = allSuggestions.slice(0, showCount);
-    html += visible.map((s, i) => createSuggestionCard(s, i, showCount, withAnimation)).join("");
+    const showCount = expanded ? listSource.length : Math.min(INITIAL_SHOW, listSource.length);
+    const visible = listSource.slice(0, showCount);
+    html += visible.map((s, i) => createSuggestionCard(s, i, showCount, withAnimation, listSource.length)).join("");
 
     suggestionsContainer.innerHTML = html;
 
@@ -665,17 +729,16 @@ function renderSuggestions(withAnimation = true) {
         });
     });
 
-    if (isTouchDevice()) {
-        setupDoubleTapVote(suggestionsContainer);
+    if (withAnimation) {
+        suggestionsContainer.classList.remove("suggestions-no-anim");
     }
 
-    suggestionsContainer.classList.remove("suggestions-no-anim");
-
     // Fade overlay
-    if (allSuggestions.length > INITIAL_SHOW && !expanded) {
+    const listSourceLen = getListSourceForRender().length;
+    if (listSourceLen > INITIAL_SHOW && !expanded) {
         fadeOverlay.classList.remove("hidden");
-        expandText.textContent = `Voir les ${allSuggestions.length - INITIAL_SHOW} autres suggestions`;
-    } else if (expanded && allSuggestions.length > INITIAL_SHOW) {
+        expandText.textContent = `Voir les ${listSourceLen - INITIAL_SHOW} autres suggestions`;
+    } else if (expanded && listSourceLen > INITIAL_SHOW) {
         fadeOverlay.classList.remove("hidden");
         expandText.textContent = "Réduire";
         $(".expand-arrow").textContent = "↑";
@@ -683,13 +746,6 @@ function renderSuggestions(withAnimation = true) {
         fadeOverlay.classList.add("hidden");
     }
 }
-
-const isTouchDevice = () => {
-    const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-    const hasFinePointer = window.matchMedia("(pointer: fine)").matches;
-    const isWideScreen = window.innerWidth >= 768;
-    return hasTouch && !hasFinePointer && !isWideScreen;
-};
 
 function createOfficialProposalCard(p) {
     const needsDebate = !!p.needs_debate;
@@ -827,7 +883,8 @@ async function submitProposalVoteWithArgument(btn) {
 
 function onSuggestionVoteClick(btn) {
     const vote = btn.dataset.vote;
-    const id = parseInt(btn.dataset.id);
+    const id = parseInt(btn.dataset.id, 10);
+    if (pendingSuggestionVoteIds.has(id)) return;
     const card = btn.closest(".suggestion-card-debate");
     const panel = card?.querySelector(".cvl-argument-panel");
     const suggestion = allSuggestions.find((s) => s.id === id);
@@ -929,6 +986,8 @@ async function submitOfficialAddArgument(btn) {
 }
 
 async function voteProposal(vote, argument = "") {
+    if (pendingOfficialProposalVote) return;
+    pendingOfficialProposalVote = true;
     try {
         const { data, status } = await API.post("/api/official-proposal/vote", { vote, argument: argument || undefined });
         if (status === 429) {
@@ -948,9 +1007,12 @@ async function voteProposal(vote, argument = "") {
             renderSuggestionsSilent();
         }
     } catch (err) { console.error(err); }
+    finally {
+        pendingOfficialProposalVote = false;
+    }
 }
 
-function createSuggestionCard(s, index, totalVisible, withAnimation = true) {
+function createSuggestionCard(s, index, totalVisible, withAnimation = true, totalListCount = null) {
     const icon = CATEGORY_ICONS[s.category] || "📌";
     const needsDebate = !!s.needs_debate;
     const votedClass = s.has_voted ? " voted" : "";
@@ -958,12 +1020,12 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true) {
     const forActive = s.my_vote === "for" ? " active" : "";
     const againstActive = s.my_vote === "against" ? " active" : "";
 
-    const isFading = withAnimation && !expanded && index === INITIAL_SHOW - 1 && totalVisible === INITIAL_SHOW && allSuggestions.length > INITIAL_SHOW;
+    const listLen = totalListCount != null ? totalListCount : allSuggestions.length;
+    const isFading = withAnimation && !expanded && index === INITIAL_SHOW - 1 && totalVisible === INITIAL_SHOW && listLen > INITIAL_SHOW;
     const fadeClass = isFading ? " suggestion-card-fade" : "";
     const delay = withAnimation ? index * 60 : 0;
 
     const subtitle = s.subtitle ? `<p class="suggestion-subtitle">${escapeHtml(s.subtitle)}</p>` : "";
-    const touchHint = isTouchDevice() && !needsDebate ? '<span class="suggestion-doubletap-hint">Double-tap pour soutenir</span>' : "";
 
     let termTimer = "";
     if (s.status === "Terminée" && s.terminée_seconds_remaining != null && s.terminée_seconds_remaining > 0) {
@@ -983,10 +1045,9 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true) {
                 <button class="cvl-vote-against${againstActive}" data-id="${s.id}" data-vote="against">Contre ${s.vote_against || 0}</button>
             </div>
         `;
-    } else if (isTouchDevice()) {
-        voteBtn = `<span class="suggestion-vote-count">${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}${s.has_voted ? " · Soutenu" : ""}</span>`;
     } else {
-        voteBtn = `<button class="suggestion-vote-btn${votedClass}" data-id="${s.id}">${voteLabel} · ${s.vote_count}</button>`;
+        const disabledAttr = s.has_voted ? " disabled" : "";
+        voteBtn = `<button type="button" class="suggestion-vote-btn${votedClass}" data-id="${s.id}"${disabledAttr} aria-disabled="${s.has_voted ? "true" : "false"}">${voteLabel} · ${s.vote_count}</button>`;
     }
 
     let argsHtml = "";
@@ -1026,7 +1087,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true) {
     ` : "";
 
     return `
-        <div class="suggestion-card${fadeClass}${needsDebate ? " suggestion-card-debate" : ""}${isTouchDevice() && !needsDebate ? " suggestion-card-touch" : ""}" style="animation-delay:${delay}ms" data-id="${s.id}">
+        <div class="suggestion-card${fadeClass}${needsDebate ? " suggestion-card-debate" : ""}" style="animation-delay:${delay}ms" data-id="${s.id}">
             <div class="suggestion-card-header">
                 <div class="suggestion-title-block">
                     <span class="suggestion-title">${icon} ${escapeHtml(s.title)}</span>
@@ -1043,7 +1104,6 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true) {
                 ${termTimer}
                 ${s.location_name ? `<span class="badge badge-votes badge-location">📍 ${escapeHtml(s.location_name)}</span>` : ""}
             </div>
-            ${touchHint}
             <div class="suggestion-heart-burst" aria-hidden="true"></div>
         </div>
     `;
@@ -1187,34 +1247,10 @@ function setSuggestionsDisabled(disabled) {
     submitBtn.disabled = disabled;
     suggestionsContainer.style.pointerEvents = disabled ? "none" : "";
     suggestionsContainer.style.opacity = disabled ? "0.6" : "1";
-}
-
-// --------------- Double-tap vote (mobile) ---------------
-
-let lastTapTime = 0;
-let lastTapId = null;
-const DOUBLE_TAP_DELAY = 350;
-
-function setupDoubleTapVote(container) {
-    container.querySelectorAll(".suggestion-card").forEach((card) => {
-        card.addEventListener("touchend", (e) => {
-            const id = parseInt(card.dataset.id);
-            const suggestion = allSuggestions.find((s) => s.id === id);
-            if (!suggestion) return;
-
-            const now = Date.now();
-            if (lastTapId === id && now - lastTapTime < DOUBLE_TAP_DELAY) {
-                e.preventDefault();
-                lastTapTime = 0;
-                lastTapId = null;
-                if (!suggestion.has_voted) triggerHeartBurst(card);
-                voteSuggestion(id);
-            } else {
-                lastTapTime = now;
-                lastTapId = id;
-            }
-        }, { passive: true });
-    });
+    if (phoneSwipeUi) {
+        phoneSwipeUi.style.pointerEvents = disabled ? "none" : "";
+        phoneSwipeUi.style.opacity = disabled ? "0.6" : "1";
+    }
 }
 
 function triggerHeartBurst(card) {
@@ -1226,13 +1262,38 @@ function triggerHeartBurst(card) {
 
 // --------------- Vote ---------------
 
-async function voteSuggestion(id, voteType, argument) {
+async function voteSuggestion(id, voteType, argument, opts = {}) {
+    const removeVote = opts.removeVote === true;
+    const s = allSuggestions.find((x) => x.id === id);
+    if (!s) return;
+    if (!s.needs_debate) {
+        if (removeVote) {
+            if (!s.has_voted) return;
+        } else if (s.has_voted) return;
+    }
+    if (pendingSuggestionVoteIds.has(id)) return;
+
+    pendingSuggestionVoteIds.add(id);
+    const debateVoteBtns = () =>
+        suggestionsContainer.querySelectorAll(`.cvl-vote-for[data-id="${id}"], .cvl-vote-against[data-id="${id}"]`);
+    suggestionsContainer.querySelectorAll(`.suggestion-vote-btn[data-id="${id}"]`).forEach((b) => {
+        b.disabled = true;
+        b.setAttribute("aria-busy", "true");
+    });
+    if (s.needs_debate) {
+        debateVoteBtns().forEach((b) => {
+            b.disabled = true;
+            b.setAttribute("aria-busy", "true");
+        });
+    }
+
     try {
         const body = {};
-        const s = allSuggestions.find((x) => x.id === id);
-        if (s?.needs_debate) {
+        if (s.needs_debate) {
             body.vote_type = voteType || "for";
             if (argument) body.argument = argument;
+        } else if (removeVote) {
+            body.remove_vote = true;
         }
         const { data, status } = await API.post(`/api/suggestions/${id}/vote`, body);
         if (status === 429) {
@@ -1240,21 +1301,308 @@ async function voteSuggestion(id, voteType, argument) {
             return;
         }
         if (status === 200) {
-            if (s) {
-                s.has_voted = data.has_voted;
-                s.my_vote = data.my_vote;
-                s.vote_count = data.vote_count;
-                s.vote_for = data.vote_for;
-                s.vote_against = data.vote_against;
-                s.arguments_for = data.arguments_for || [];
-                s.arguments_against = data.arguments_against || [];
-            }
+            const simpleSupport = !s.needs_debate;
+            s.has_voted = data.has_voted;
+            s.my_vote = data.my_vote;
+            s.vote_count = data.vote_count;
+            s.vote_for = data.vote_for;
+            s.vote_against = data.vote_against;
+            s.arguments_for = data.arguments_for || [];
+            s.arguments_against = data.arguments_against || [];
             syncVoteCacheFromServer(allSuggestions, officialProposal);
             renderSuggestionsSilent();
+            if (simpleSupport && data.has_voted && isTouchDevice()) {
+                requestAnimationFrame(() => {
+                    const card =
+                        suggestionsContainer.querySelector(`.suggestion-card[data-id="${id}"]`) ||
+                        (swipeDeckInner && swipeDeckInner.querySelector(`.swipe-card[data-id="${id}"]`));
+                    if (card) triggerHeartBurst(card);
+                });
+            }
         }
     } catch (err) {
         console.error(err);
+    } finally {
+        pendingSuggestionVoteIds.delete(id);
+        const s2 = allSuggestions.find((x) => x.id === id);
+        suggestionsContainer.querySelectorAll(`.suggestion-vote-btn[data-id="${id}"]`).forEach((b) => {
+            b.disabled = !!s2?.has_voted;
+            b.removeAttribute("aria-busy");
+        });
+        debateVoteBtns().forEach((b) => {
+            b.disabled = false;
+            b.removeAttribute("aria-busy");
+        });
     }
+}
+
+// --------------- Téléphone — swipe (une fiche) ---------------
+
+function syncPhoneUiChrome() {
+    if (!isTouchDevice()) return;
+    document.body.classList.add("student-phone-ui");
+    if (phoneUiMode === "list") {
+        document.body.classList.add("st-phone-list");
+        if (filtersSection) filtersSection.classList.remove("hidden");
+    } else {
+        document.body.classList.remove("st-phone-list");
+        if (filtersSection) filtersSection.classList.add("hidden");
+    }
+    if (btnPhoneModeSwipe && btnPhoneModeList && btnPhoneModeLiked) {
+        btnPhoneModeSwipe.classList.toggle("active", phoneUiMode === "swipe");
+        btnPhoneModeList.classList.toggle("active", phoneUiMode === "list" && !phoneListLikedOnly);
+        btnPhoneModeLiked.classList.toggle("active", phoneUiMode === "list" && phoneListLikedOnly);
+    }
+}
+
+function getSwipeCandidates() {
+    const q = (swipeSearchQuery || "").trim().toLowerCase();
+    return allSuggestions.filter((s) => {
+        if (s.needs_debate) return false;
+        if (!q) return true;
+        const hay = `${s.title || ""} ${s.subtitle || ""} ${s.category || ""}`.toLowerCase();
+        return hay.includes(q);
+    });
+}
+
+function clampSwipeIndex() {
+    const list = getSwipeCandidates();
+    if (list.length === 0) {
+        swipeIndex = 0;
+        return;
+    }
+    if (swipeIndex >= list.length) swipeIndex = list.length - 1;
+    if (swipeIndex < 0) swipeIndex = 0;
+}
+
+function createSwipeCardHtml(s) {
+    const icon = CATEGORY_ICONS[s.category] || "📌";
+    const liked = !!s.has_voted;
+    return `
+        <div class="swipe-card suggestion-card" data-id="${s.id}" style="animation:none">
+            <div class="swipe-card-inner">
+                <div class="suggestion-title-block">
+                    <span class="suggestion-title">${icon} ${escapeHtml(s.title)}</span>
+                    ${s.subtitle ? `<p class="suggestion-subtitle">${escapeHtml(s.subtitle)}</p>` : ""}
+                </div>
+                <div class="swipe-card-meta">
+                    <span class="badge badge-category">${escapeHtml(s.category)}</span>
+                    <span class="badge badge-status" data-status="${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
+                    <span class="swipe-card-votes">♥ ${s.vote_count}</span>
+                </div>
+                <p class="swipe-card-hint">${liked ? "Double tap pour retirer votre soutien" : "Double tap pour soutenir"}</p>
+                <div class="suggestion-heart-burst" aria-hidden="true"></div>
+            </div>
+        </div>
+    `;
+}
+
+function wireSwipeCvlFromHTML(container) {
+    if (!container) return;
+    container.querySelectorAll(".cvl-vote-for, .cvl-vote-against").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            if (btn.closest(".suggestion-card-cvl")) onProposalVoteClick(btn);
+        });
+    });
+    container.querySelectorAll(".cvl-argument-submit").forEach((btn) => {
+        btn.addEventListener("click", () => submitProposalVoteWithArgument(btn));
+    });
+    container.querySelectorAll(".cvl-add-arg-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const panel = btn.closest(".cvl-add-arg-panel");
+            const form = panel?.querySelector(".cvl-add-arg-form");
+            if (form) {
+                form.classList.toggle("hidden");
+                if (!form.classList.contains("hidden")) form.querySelector("textarea")?.focus();
+            }
+        });
+    });
+    container.querySelectorAll(".cvl-official-add-arg-submit").forEach((btn) => {
+        btn.addEventListener("click", () => submitOfficialAddArgument(btn));
+    });
+    container.querySelectorAll(".cvl-arguments-toggle").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const proposalId = btn.dataset.proposalId;
+            const block = proposalId ? container.querySelector(`.cvl-arguments[data-proposal-id="${proposalId}"]`) : null;
+            if (!block) return;
+            const isExpanded = block.classList.toggle("cvl-arguments-expanded");
+            block.classList.toggle("cvl-arguments-collapsed", !isExpanded);
+            btn.classList.toggle("expanded", isExpanded);
+            const chev = btn.querySelector(".cvl-arguments-chevron");
+            if (chev) chev.textContent = isExpanded ? "▼" : "▶";
+            btn.setAttribute("aria-expanded", isExpanded);
+        });
+    });
+}
+
+function renderSwipeView() {
+    if (!isTouchDevice()) return;
+    syncPhoneUiChrome();
+    if (!swipeCvlSlot || !swipeDeckInner) return;
+
+    if (officialProposal) {
+        swipeCvlSlot.innerHTML = createOfficialProposalCard(officialProposal);
+        swipeCvlSlot.classList.remove("hidden");
+        wireSwipeCvlFromHTML(swipeCvlSlot);
+    } else {
+        swipeCvlSlot.innerHTML = "";
+        swipeCvlSlot.classList.add("hidden");
+    }
+
+    clampSwipeIndex();
+    const list = getSwipeCandidates();
+    if (swipeCounter) {
+        swipeCounter.textContent = list.length ? `${swipeIndex + 1} / ${list.length}` : "0 / 0";
+    }
+    if (!list.length) {
+        swipeDeckInner.innerHTML = `<div class="swipe-deck-empty"><p>Aucune suggestion${(swipeSearchQuery || "").trim() ? " pour cette recherche" : ""}.</p><p class="swipe-deck-empty-sub">Les sujets en mode débat sont dans la liste.</p></div>`;
+        return;
+    }
+    const s = list[swipeIndex];
+    swipeDeckInner.innerHTML = createSwipeCardHtml(s);
+}
+
+function swipeGoNext() {
+    const list = getSwipeCandidates();
+    if (list.length === 0) return;
+    swipeIndex = (swipeIndex + 1) % list.length;
+    renderSwipeView();
+}
+
+function swipeGoPrev() {
+    const list = getSwipeCandidates();
+    if (list.length === 0) return;
+    swipeIndex = (swipeIndex - 1 + list.length) % list.length;
+    renderSwipeView();
+}
+
+function attachSwipeDeckGestures() {
+    if (!swipeDeckInner || swipeDeckInner.dataset.swipeBound === "1") return;
+    swipeDeckInner.dataset.swipeBound = "1";
+
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    let dx = 0;
+    let gestureMoved = false;
+
+    swipeDeckInner.addEventListener(
+        "touchstart",
+        (e) => {
+            if (e.touches.length !== 1) return;
+            const t = e.touches[0];
+            startX = t.clientX;
+            startY = t.clientY;
+            tracking = true;
+            gestureMoved = false;
+            dx = 0;
+        },
+        { passive: true },
+    );
+
+    swipeDeckInner.addEventListener(
+        "touchmove",
+        (e) => {
+            if (!tracking || e.touches.length !== 1) return;
+            const t = e.touches[0];
+            dx = t.clientX - startX;
+            const ady = Math.abs(t.clientY - startY);
+            if (Math.abs(dx) > 16 && ady < 88) gestureMoved = true;
+        },
+        { passive: true },
+    );
+
+    swipeDeckInner.addEventListener(
+        "touchend",
+        (e) => {
+            if (!tracking) return;
+            tracking = false;
+            const t = e.changedTouches[0];
+            dx = t.clientX - startX;
+            const ady = Math.abs(t.clientY - startY);
+            if (gestureMoved && Math.abs(dx) > 56 && ady < 100) {
+                if (dx < 0) swipeGoNext();
+                else swipeGoPrev();
+                swipeLastTap = 0;
+                return;
+            }
+            if (gestureMoved) {
+                swipeLastTap = 0;
+                return;
+            }
+            const card = e.target.closest(".swipe-card");
+            if (!card || e.target.closest("button")) return;
+            const now = Date.now();
+            if (now - swipeLastTap < 320) {
+                swipeLastTap = 0;
+                const id = parseInt(card.dataset.id, 10);
+                const s = allSuggestions.find((x) => x.id === id);
+                if (!s || s.needs_debate) return;
+                if (s.has_voted) voteSuggestion(id, undefined, undefined, { removeVote: true });
+                else voteSuggestion(id, undefined, undefined, {});
+            } else {
+                swipeLastTap = now;
+            }
+        },
+        { passive: true },
+    );
+}
+
+function setupPhoneSwipe() {
+    if (!isTouchDevice()) return;
+    if (swipeSearchInput) {
+        swipeSearchInput.addEventListener("input", () => {
+            swipeSearchQuery = swipeSearchInput.value || "";
+            swipeIndex = 0;
+            renderSwipeView();
+        });
+    }
+    if (btnPhoneModeSwipe) {
+        btnPhoneModeSwipe.addEventListener("click", () => {
+            phoneUiMode = "swipe";
+            phoneListLikedOnly = false;
+            try {
+                localStorage.setItem("phone_ui_mode", "swipe");
+                localStorage.removeItem("phone_ui_liked");
+            } catch (err) {
+                /* ignore */
+            }
+            syncPhoneUiChrome();
+            renderSwipeView();
+        });
+    }
+    if (btnPhoneModeList) {
+        btnPhoneModeList.addEventListener("click", () => {
+            phoneUiMode = "list";
+            phoneListLikedOnly = false;
+            try {
+                localStorage.setItem("phone_ui_mode", "list");
+                localStorage.removeItem("phone_ui_liked");
+            } catch (err) {
+                /* ignore */
+            }
+            syncPhoneUiChrome();
+            renderSuggestions(true);
+        });
+    }
+    if (btnPhoneModeLiked) {
+        btnPhoneModeLiked.addEventListener("click", () => {
+            phoneUiMode = "list";
+            phoneListLikedOnly = true;
+            try {
+                localStorage.setItem("phone_ui_mode", "list");
+                localStorage.setItem("phone_ui_liked", "1");
+            } catch (err) {
+                /* ignore */
+            }
+            expanded = true;
+            syncPhoneUiChrome();
+            renderSuggestions(true);
+        });
+    }
+    if (swipePrev) swipePrev.addEventListener("click", () => swipeGoPrev());
+    if (swipeNext) swipeNext.addEventListener("click", () => swipeGoNext());
+    attachSwipeDeckGestures();
 }
 
 // --------------- UI Helpers ---------------

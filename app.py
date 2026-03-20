@@ -10,6 +10,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
+from sqlalchemy.exc import IntegrityError
+
 from flask import (
     Flask, render_template, request, jsonify, session, redirect, url_for,
     send_from_directory, send_file, Response, has_request_context,
@@ -801,6 +803,7 @@ def vote_suggestion(sid):
     data = request.get_json() or {}
     vote_type = data.get("vote_type", "for")
     argument_text = (data.get("argument") or "").strip()
+    remove_vote = bool(data.get("remove_vote"))
     needs_debate = getattr(suggestion, "needs_debate", False)
 
     if needs_debate and vote_type not in ("for", "against"):
@@ -810,10 +813,23 @@ def vote_suggestion(sid):
 
     if existing_vote:
         if not needs_debate:
-            db.session.delete(existing_vote)
-            db.session.commit()
+            if remove_vote:
+                db.session.delete(existing_vote)
+                db.session.commit()
+                _update_suggestion_vote_counts(sid)
+                suggestion = Suggestion.query.get(sid)
+                return jsonify({
+                    "vote_count": suggestion.vote_count,
+                    "has_voted": False,
+                    "my_vote": None,
+                })
+            # Déjà soutenu : idempotent (pas de double comptage)
             _update_suggestion_vote_counts(sid)
-            return jsonify({"vote_count": suggestion.vote_count, "has_voted": False, "my_vote": None})
+            return jsonify({
+                "vote_count": suggestion.vote_count,
+                "has_voted": True,
+                "my_vote": existing_vote.vote_type,
+            })
         if existing_vote.vote_type == vote_type and not argument_text:
             return jsonify({
                 "vote_count": suggestion.vote_count,
@@ -875,7 +891,25 @@ def vote_suggestion(sid):
             db.session.flush()
             pending_arg_ids.append(arg.id)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        _update_suggestion_vote_counts(sid)
+        suggestion = Suggestion.query.get(sid)
+        ev = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
+        resp = {
+            "vote_count": suggestion.vote_count,
+            "vote_for": getattr(suggestion, "vote_for", 0),
+            "vote_against": getattr(suggestion, "vote_against", 0),
+            "has_voted": True,
+            "my_vote": ev.vote_type if ev else vote_type,
+        }
+        if needs_debate:
+            resp["arguments_for"] = [a.to_dict() for a in suggestion.arguments if a.side == "for" and a.status == "approved"]
+            resp["arguments_against"] = [a.to_dict() for a in suggestion.arguments if a.side == "against" and a.status == "approved"]
+        return jsonify(resp)
+
     _update_suggestion_vote_counts(sid)
     for aid in pending_arg_ids:
         _process_suggestion_argument_background(aid)
