@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page.name }} — Affichage</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
+</head>
+<body class="tv-body">
+    <div id="tv-priority-overlay" class="display-priority-overlay hidden"></div>
+    <div id="tv-announcements" class="display-announcements-bottom tv-announcements"></div>
+    <div id="tv-bus-panel" class="display-bus-panel hidden">
+        <div class="display-bus-header">
+            <span class="display-bus-logo">🚌</span>
+            <h2>Horaires des bus</h2>
+        </div>
+        <div id="tv-bus-stops" class="display-bus-stops"></div>
+    </div>
+    <div id="tv-container" class="tv-container">
+        <div id="tv-slide-a" class="tv-slide tv-slide-active"></div>
+        <div id="tv-slide-b" class="tv-slide"></div>
+    </div>
+    <div id="tv-empty" class="tv-empty">
+        <span class="waiting-icon">📺</span>
+        <h1>{{ page.name }}</h1>
+        <p>Aucune présentation configurée</p>
+    </div>
+    <script>
+        const TV_SLUG = "{{ page.slug }}";
+    </script>
+    <script src="{{ url_for('static', filename=asset('js/tv.js')) }}"></script>
+</body>
+</html>

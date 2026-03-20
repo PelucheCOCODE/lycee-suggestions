@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Boîte à Idées — Lycée</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <div class="header-content">
+                <div class="header-brand">
+                    <span class="header-icon">💡</span>
+                    <div>
+                        <h1>Boîte à Idées</h1>
+                        <p class="header-subtitle">Proposez vos idées pour améliorer le lycée</p>
+                    </div>
+                </div>
+                <a href="/admin" class="header-admin-link">Espace CVL</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container main-content">
+        <!-- Submit section -->
+        <section class="submit-section">
+            <div class="submit-card" id="submit-card">
+                <!-- Step 1: Input -->
+                <div id="step-input">
+                    <h2>💬 Proposer une idée</h2>
+                    <div class="submit-form">
+                        <textarea id="suggestion-input" placeholder="Décrivez votre idée..." rows="3" maxlength="500"></textarea>
+                        <div class="submit-actions">
+                            <span id="char-count" class="char-count">0 / 500</span>
+                            <button id="understand-btn" class="btn btn-ghost" disabled title="Voir comment l'IA comprend votre idée">
+                                <span class="btn-text">Comprendre</span>
+                                <span class="btn-loader hidden"><span class="spinner-small"></span> Analyse...</span>
+                            </button>
+                            <button id="submit-btn" class="btn btn-primary" disabled>
+                                <span class="btn-text">Envoyer</span>
+                                <span class="btn-loader hidden">
+                                    <span class="spinner-small"></span> Envoi...
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Feedback -->
+                <div id="feedback" class="feedback hidden"></div>
+
+                <!-- Modal précision (doublon avec détails) -->
+                <div id="precision-modal" class="precision-modal hidden">
+                    <div class="precision-modal-content">
+                        <p class="precision-message"></p>
+                        <div class="precision-modal-actions">
+                            <button type="button" class="btn btn-primary" id="precision-yes">Oui, ajouter mes précisions</button>
+                            <button type="button" class="btn btn-ghost" id="precision-no">Non, c'est une nouvelle suggestion</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Filters -->
+        <section class="filters-section">
+            <div class="filters-bar">
+                <div class="filter-categories" id="category-filters">
+                    <button class="filter-chip active" data-category="Toutes">Toutes</button>
+                </div>
+                <div class="filter-sort">
+                    <select id="sort-select">
+                        <option value="votes">Plus votées</option>
+                        <option value="recent">Plus récentes</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <!-- Information Officielle CVL -->
+        <div id="cvl-official-info-container" class="cvl-official-info-container"></div>
+
+        <!-- Suggestions list -->
+        <section class="suggestions-section">
+            <div id="suggestions-list" class="suggestions-grid">
+                <!-- Skeleton loader -->
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+                <div class="skeleton-card"></div>
+            </div>
+
+            <!-- Fade overlay + expand -->
+            <div id="suggestions-fade" class="suggestions-fade hidden">
+                <button id="expand-btn" class="btn btn-expand">
+                    <span id="expand-text">Voir toutes les suggestions</span>
+                    <span class="expand-arrow">↓</span>
+                </button>
+            </div>
+
+            <div id="empty-state" class="empty-state hidden">
+                <span class="empty-icon">📝</span>
+                <p>Aucune suggestion pour le moment.</p>
+                <p class="empty-sub">Soyez le premier à proposer une idée !</p>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>Boîte à Idées — Plateforme participative du lycée</p>
+        </div>
+    </footer>
+
+    <script src="{{ url_for('static', filename=asset('js/student.js')) }}"></script>
+</body>
+</html>

@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Administration — Boîte à Idées</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4/dist/chart.umd.min.js"></script>
+</head>
+<body class="admin-body">
+    <div id="admin-priority-banner" class="admin-priority-banner hidden">
+        <span class="admin-priority-text">Annonce prioritaire active — Tous les displays affichent cette annonce</span>
+        <button id="admin-priority-clear" class="btn btn-sm btn-primary">Desactiver l'annonce prioritaire</button>
+    </div>
+    <aside class="admin-sidebar">
+        <div class="sidebar-header">
+            <h2>Boîte à Idées</h2>
+            <span class="sidebar-badge">CVL</span>
+        </div>
+        <nav class="sidebar-nav">
+            <button class="nav-item active" data-section="dashboard">Tableau de bord</button>
+
+            <div class="nav-group-label">Gestion</div>
+            <button class="nav-item" data-section="logs">Logs</button>
+            <button class="nav-item" data-section="suggestions">Suggestions</button>
+            <button class="nav-item" data-section="cvl-proposal">Proposition Officielle CVL</button>
+            <button class="nav-item" data-section="cvl-official-info">Information Officielle CVL</button>
+            <button class="nav-item" data-section="locations">Lieux</button>
+            <button class="nav-item" data-section="announcements">Annonces</button>
+
+            <div class="nav-group-label">Intelligence artificielle</div>
+            <button class="nav-item" data-section="calibration">Calibration IA</button>
+            <button class="nav-item" data-section="trace">Traçabilité</button>
+            <button class="nav-item" data-section="calibration-verify">Calibration IA vérification</button>
+            <button class="nav-item" data-section="llm-resources">Ressources IA</button>
+
+            <div class="nav-group-label">Affichage</div>
+            <button class="nav-item" data-section="display-manager">Affichage dynamique</button>
+            <button class="nav-item" data-section="bus">Horaires bus</button>
+
+            <div class="nav-group-label">Système</div>
+            <button class="nav-item" data-section="backup">Backup & Historique</button>
+        </nav>
+        <div class="sidebar-footer">
+            <a href="/" class="sidebar-link">Voir le site</a>
+            <a href="/display" class="sidebar-link">Display TV</a>
+            <a href="/admin/logout" class="sidebar-link logout-link">Deconnexion</a>
+        </div>
+    </aside>
+
+    <main class="admin-main">
+        <!-- Dashboard -->
+        <section id="section-dashboard" class="admin-section active">
+            <h1>Tableau de bord</h1>
+            <div class="stats-grid">
+                <div class="stat-card"><div class="stat-info"><span id="stat-total" class="stat-value">—</span><span class="stat-label">Suggestions</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="stat-votes" class="stat-value">—</span><span class="stat-label">Votes totaux</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="stat-accepted" class="stat-value">—</span><span class="stat-label">Acceptées</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="stat-pending" class="stat-value">—</span><span class="stat-label">En attente</span></div></div>
+            </div>
+
+            <div class="admin-controls-card">
+                <h3>Controles</h3>
+                <div class="control-row">
+                    <div class="control-label">
+                        <span class="control-title">Soumissions des élèves</span>
+                        <span class="control-hint" id="submissions-status-hint">Ouvertes</span>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="toggle-submissions" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="control-row">
+                    <div class="control-label">
+                        <span class="control-title">Horaires bus</span>
+                        <span class="control-hint" id="feature-bus-hint">Activé</span>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="toggle-feature-bus" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="control-row">
+                    <div class="control-label">
+                        <span class="control-title">Affichage dynamique (/tv/)</span>
+                        <span class="control-hint" id="feature-display-dynamic-hint">Activé</span>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="toggle-feature-display-dynamic" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="control-row">
+                    <div class="control-label">
+                        <span class="control-title">Mode d'affichage TV</span>
+                        <span class="control-hint" id="display-mode-hint">Normal</span>
+                    </div>
+                    <select id="display-mode-select" class="control-select">
+                        <option value="normal">Normal (suggestions)</option>
+                        <option value="waiting">Attente (texte personnalisé)</option>
+                    </select>
+                </div>
+                <div id="waiting-text-config" class="waiting-text-config hidden">
+                    <div class="form-group">
+                        <label>Titre affiché</label>
+                        <input type="text" id="waiting-title-input" placeholder="Ex: Boîte à Idées — Bientôt disponible">
+                    </div>
+                    <div class="form-group">
+                        <label>Texte affiché</label>
+                        <textarea id="waiting-text-input" rows="3" placeholder="Ex: Les suggestions seront bientôt ouvertes..."></textarea>
+                    </div>
+                    <button id="save-waiting-text" class="btn btn-primary">Sauvegarder</button>
+                    <span id="waiting-save-status" class="save-status"></span>
+                </div>
+            </div>
+
+            <div class="charts-grid">
+                <div class="chart-card"><h3>Suggestions par catégorie</h3><canvas id="chart-categories"></canvas></div>
+                <div class="chart-card"><h3>Suggestions par statut</h3><canvas id="chart-statuses"></canvas></div>
+            </div>
+            <div class="dashboard-section">
+                <h3>Top 10 — Suggestions les plus votées</h3>
+                <div id="top-voted-list" class="mini-suggestion-list"></div>
+            </div>
+        </section>
+
+        <!-- Logs -->
+        <section id="section-logs" class="admin-section">
+            <div class="section-header">
+                <h1>Logs &amp; historique</h1>
+                <span class="context-hint">Événements en direct, débats CVL, exports — et copie de toutes les suggestions (y compris supprimées).</span>
+            </div>
+            <div class="logs-tabs" role="tablist">
+                <button type="button" class="logs-tab active" data-logs-tab="stream" role="tab" aria-selected="true">Logs en direct</button>
+                <button type="button" class="logs-tab" data-logs-tab="archive" role="tab" aria-selected="false">Historique suggestions</button>
+            </div>
+            <div id="logs-panel-stream" class="logs-panel logs-panel-active">
+                <div class="logs-export-bar">
+                    <label class="logs-export-label">Télécharger les logs</label>
+                    <select id="logs-export-preset" class="control-select logs-export-select">
+                        <option value="today">Aujourd'hui (UTC)</option>
+                        <option value="24h">Dernières 24 h</option>
+                        <option value="7d">7 derniers jours</option>
+                        <option value="custom">Plage personnalisée</option>
+                    </select>
+                    <input type="date" id="logs-export-day" class="logs-export-input" title="Journée (pour préréglage ou plage)">
+                    <input type="datetime-local" id="logs-export-from" class="logs-export-input hidden" aria-label="Du">
+                    <input type="datetime-local" id="logs-export-to" class="logs-export-input hidden" aria-label="Au">
+                    <button type="button" class="btn btn-secondary btn-sm" id="logs-export-csv">CSV</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="logs-export-json">JSON</button>
+                </div>
+                <div class="logs-container">
+                    <div id="logs-list" class="logs-list"></div>
+                </div>
+            </div>
+            <div id="logs-panel-archive" class="logs-panel hidden">
+                <div class="archive-toolbar">
+                    <input type="search" id="archive-search" class="logs-export-input archive-search" placeholder="Rechercher (titre, texte, n°)…">
+                    <select id="archive-filter-status" class="control-select">
+                        <option value="">Tous les statuts</option>
+                    </select>
+                    <label class="archive-cb"><input type="checkbox" id="archive-deleted-only"> Supprimées uniquement</label>
+                    <button type="button" class="btn btn-primary btn-sm" id="archive-refresh">Actualiser</button>
+                </div>
+                <div class="archive-export-bar">
+                    <span class="logs-export-label">Export</span>
+                    <input type="number" id="archive-export-sid" class="logs-export-input narrow" placeholder="N° suggestion" min="1">
+                    <input type="date" id="archive-export-day" class="logs-export-input">
+                    <input type="datetime-local" id="archive-export-from" class="logs-export-input">
+                    <input type="datetime-local" id="archive-export-to" class="logs-export-input">
+                    <button type="button" class="btn btn-secondary btn-sm" id="archive-export-csv">CSV</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="archive-export-json">JSON</button>
+                </div>
+                <div id="archive-list" class="archive-list"></div>
+            </div>
+        </section>
+
+        <!-- Suggestions -->
+        <section id="section-suggestions" class="admin-section">
+            <div class="section-header">
+                <h1>Gestion des suggestions</h1>
+                <div class="section-header-actions">
+                    <button id="process-pending-btn" class="btn btn-primary">Traiter les suggestions en attente</button>
+                </div>
+                <div class="section-filters">
+                    <select id="admin-filter-category"><option value="">Toutes les catégories</option></select>
+                    <select id="admin-filter-status"><option value="">Tous les statuts</option></select>
+                    <input type="search" id="admin-search" placeholder="Rechercher...">
+                </div>
+            </div>
+            <div id="admin-suggestions-list" class="admin-suggestions-list"></div>
+        </section>
+
+        <!-- Proposition Officielle CVL -->
+        <section id="section-cvl-proposal" class="admin-section">
+            <div class="section-header">
+                <h1>Proposition Officielle du CVL</h1>
+                <div class="cvl-proposal-select-row">
+                    <label>Proposition :</label>
+                    <select id="cvl-proposal-select" class="control-select">
+                        <option value="">— Chargement —</option>
+                    </select>
+                    <button id="cvl-new-proposal-btn" class="btn btn-secondary btn-sm">+ Nouvelle</button>
+                </div>
+            </div>
+            <div class="cvl-proposal-card">
+                <div class="cvl-editor-toolbar">
+                    <button type="button" class="cvl-tool-btn" data-cmd="bold" title="Gras">B</button>
+                    <button type="button" class="cvl-tool-btn" data-cmd="italic" title="Italique">I</button>
+                    <button type="button" class="cvl-tool-btn" data-cmd="underline" title="Souligné">U</button>
+                    <span class="cvl-tool-sep"></span>
+                    <input type="color" class="cvl-tool-color" id="cvl-tool-color" value="#000000" title="Couleur">
+                    <label class="cvl-tool-opacity-label">Opacité <input type="range" class="cvl-tool-opacity" id="cvl-tool-opacity" min="0.4" max="1" step="0.1" value="1"></label>
+                    <span class="cvl-tool-sep"></span>
+                    <select class="cvl-tool-size" id="cvl-tool-size" title="Taille">
+                        <option value="1">Petit</option>
+                        <option value="2" selected>Normal</option>
+                        <option value="3">Grand</option>
+                        <option value="4">Très grand</option>
+                    </select>
+                </div>
+                <div id="cvl-editor" class="cvl-editor" contenteditable="true"></div>
+                <div class="cvl-actions">
+                    <button id="cvl-save-btn" class="btn btn-primary">Enregistrer</button>
+                    <button id="cvl-publish-btn" class="btn btn-primary">Publier</button>
+                    <button id="cvl-history-btn" class="btn btn-ghost" title="Historique">Historique</button>
+                    <a id="cvl-pdf-link" href="#" class="btn btn-ghost" download target="_blank" title="Télécharger PDF">PDF</a>
+                    <label class="cvl-debate-toggle"><input type="checkbox" id="cvl-needs-debate"> Débat (pour/contre)</label>
+                    <select id="cvl-status-select">
+                        <option value="En cours">En cours</option>
+                        <option value="En délibération">En délibération</option>
+                        <option value="Adoptée">Adoptée</option>
+                        <option value="Rejetée">Rejetée</option>
+                        <option value="Reportée">Reportée</option>
+                    </select>
+                    <button id="cvl-close-btn" class="btn btn-ghost">Clôturer (retirer)</button>
+                    <span id="cvl-save-status" class="save-status"></span>
+                </div>
+                <div id="cvl-preview" class="cvl-preview-area"></div>
+                <div id="cvl-ai-eval" class="cvl-ai-eval hidden"></div>
+                <div id="cvl-arguments-section" class="cvl-arguments-section hidden">
+                    <h4>Arguments</h4>
+                    <div class="cvl-args-for">
+                        <strong>Pour</strong>
+                        <ul id="cvl-args-for-list"></ul>
+                        <div class="cvl-add-arg-row">
+                            <input type="text" id="cvl-add-arg-for" placeholder="Ajouter un argument pour...">
+                            <button type="button" id="cvl-add-arg-for-btn" class="btn btn-sm btn-primary">+</button>
+                        </div>
+                    </div>
+                    <div class="cvl-args-against">
+                        <strong>Contre</strong>
+                        <ul id="cvl-args-against-list"></ul>
+                        <div class="cvl-add-arg-row">
+                            <input type="text" id="cvl-add-arg-against" placeholder="Ajouter un argument contre...">
+                            <button type="button" id="cvl-add-arg-against-btn" class="btn btn-sm btn-primary">+</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Information Officielle CVL -->
+        <section id="section-cvl-official-info" class="admin-section">
+            <div class="section-header">
+                <h1>Information Officielle du CVL</h1>
+                <span class="context-hint">Annonces affichées en haut de la page Boîte à Idées, au-dessus des suggestions. Pas de vote ni d'argument. Plusieurs modes d'affichage disponibles.</span>
+            </div>
+            <div class="cvl-info-create-card">
+                <h3>Nouvelle information</h3>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1">
+                        <label>Titre</label>
+                        <input type="text" id="cvl-info-title" placeholder="Ex: Réunion CVL mardi 15h">
+                    </div>
+                    <div class="form-group">
+                        <label>Style</label>
+                        <select id="cvl-info-style">
+                            <option value="info">Information</option>
+                            <option value="success">Succès</option>
+                            <option value="warning">Important</option>
+                            <option value="urgent">Urgent</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Mode affichage</label>
+                        <select id="cvl-info-mode">
+                            <option value="banner">Bandeau</option>
+                            <option value="compact">Compact</option>
+                            <option value="full">Complet</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Contenu (optionnel)</label>
+                    <textarea id="cvl-info-content" rows="2" placeholder="Détails supplémentaires..."></textarea>
+                </div>
+                <button id="cvl-info-create-btn" class="btn btn-primary">Publier</button>
+            </div>
+            <h3 style="margin-top:24px;margin-bottom:12px;">Informations actives</h3>
+            <div id="cvl-info-list" class="cvl-info-list"></div>
+        </section>
+
+        <!-- Locations -->
+        <section id="section-locations" class="admin-section">
+            <div class="section-header">
+                <h1>Gestion des lieux</h1>
+                <div class="location-add-form">
+                    <input type="text" id="location-name-input" placeholder="Nom du lieu...">
+                    <button id="add-location-btn" class="btn btn-primary">Ajouter</button>
+                </div>
+            </div>
+            <div id="locations-list" class="locations-list"></div>
+        </section>
+
+        <!-- Calibration IA -->
+        <section id="section-calibration" class="admin-section">
+            <div class="section-header">
+                <h1>Calibration IA</h1>
+            </div>
+
+            <div class="calib-tabs">
+                <button class="calib-tab active" data-tab="calib-data">Donnees</button>
+                <button class="calib-tab" data-tab="calib-debat">Calibration debat</button>
+                <button class="calib-tab" data-tab="calib-details">Calibration details</button>
+                <button class="calib-tab" data-tab="calib-rapport">Calibration rapport</button>
+                <button class="calib-tab" data-tab="calib-context">Contexte ecole</button>
+                <button class="calib-tab" data-tab="calib-prompt">Prompt ChatGPT</button>
+            </div>
+
+            <!-- TAB: Data -->
+            <div id="tab-calib-data" class="calib-tab-content active">
+                <div class="stats-grid" id="calib-stats-grid">
+                    <div class="stat-card"><div class="stat-info"><span id="calib-total" class="stat-value">—</span><span class="stat-label">Total</span></div></div>
+                    <div class="stat-card"><div class="stat-info"><span id="calib-pending" class="stat-value">—</span><span class="stat-label">En attente</span></div></div>
+                    <div class="stat-card"><div class="stat-info"><span id="calib-processed" class="stat-value">—</span><span class="stat-label">Traites</span></div></div>
+                    <div class="stat-card"><div class="stat-info"><span id="calib-validated" class="stat-value">—</span><span class="stat-label">Valides</span></div></div>
+                </div>
+
+                <div class="calib-actions-bar">
+                    <div class="calib-import-zone">
+                        <label for="calib-file-input" class="btn btn-secondary calib-file-label">Importer (TXT/CSV/JSON)</label>
+                        <input type="file" id="calib-file-input" accept=".txt,.csv,.json" hidden>
+                        <span id="calib-file-name" class="calib-file-name"></span>
+                    </div>
+                    <div class="calib-batch-actions">
+                        <button id="calib-process-all" class="btn btn-primary">Analyser avec IA</button>
+                        <button id="calib-validate-all" class="btn btn-secondary">Valider tous</button>
+                        <button id="calib-ai-suggest" class="btn btn-ghost" title="L'IA locale genere des exemples">IA propose</button>
+                        <button id="calib-generate-json" class="btn btn-ghost" title="Génère du JSON et l'importe automatiquement">Générer JSON (IA)</button>
+                        <button id="calib-export" class="btn btn-ghost">Exporter</button>
+                    </div>
+                </div>
+
+                <!-- Batch + Status filter -->
+                <div class="calib-filter-row">
+                    <div class="calib-filter-bar">
+                        <button class="filter-chip active" data-calib-status="">Tous</button>
+                        <button class="filter-chip" data-calib-status="pending">En attente</button>
+                        <button class="filter-chip" data-calib-status="processed">Traités</button>
+                        <button class="filter-chip" data-calib-status="validated">Validés</button>
+                        <button class="filter-chip" data-calib-status="rejected">Rejetés</button>
+                    </div>
+                    <select id="calib-batch-filter">
+                        <option value="">Tous les imports</option>
+                    </select>
+                </div>
+
+                <div id="calib-list" class="calib-list"></div>
+            </div>
+
+            <!-- TAB: Calibration débat -->
+            <div id="tab-calib-debat" class="calib-tab-content">
+                <div class="context-card">
+                    <h3>Calibration débat</h3>
+                    <p class="context-hint">Ces exemples indiquent à l'IA si une proposition mérite un débat (arguments pour/contre) ou seulement des soutiens. L'IA s'en servira pour prendre des décisions cohérentes.</p>
+                    <div class="calib-debat-add">
+                        <input type="text" id="calib-debat-proposition" placeholder="Ex: Installer des panneaux solaires sur les toits">
+                        <label class="calib-debat-check"><input type="checkbox" id="calib-debat-needs"> Mérite un débat</label>
+                        <button id="calib-debat-add-btn" class="btn btn-primary">Ajouter</button>
+                    </div>
+                    <div class="calib-debat-import-zone">
+                        <label for="calib-debat-file-input" class="btn btn-secondary">Importer JSON (ChatGPT, etc.)</label>
+                        <input type="file" id="calib-debat-file-input" accept=".json" hidden>
+                        <span id="calib-debat-file-name" class="calib-file-name"></span>
+                    </div>
+                    <div id="calib-debat-list" class="calib-debat-list"></div>
+                </div>
+                <div class="prompt-card" style="margin-top:24px">
+                    <h3>Prompt pour ChatGPT / IA externe</h3>
+                    <p class="prompt-hint">Copiez ce prompt et envoyez-le à ChatGPT (ou autre IA). L'IA répondra un fichier JSON que vous pouvez importer ci-dessus. Les propositions doivent être réalistes, même crues — comme ce que des lycéens diraient vraiment.</p>
+                    <div class="prompt-config">
+                        <label>Nombre d'exemples à générer :</label>
+                        <input type="number" id="calib-debat-prompt-count" value="40" min="10" max="200">
+                        <button id="calib-debat-prompt-generate" class="btn btn-primary">Générer le prompt</button>
+                    </div>
+                    <div id="calib-debat-prompt-output" class="prompt-output-zone hidden">
+                        <textarea id="calib-debat-prompt-text" rows="20" readonly></textarea>
+                        <button id="calib-debat-prompt-copy" class="btn btn-secondary">Copier le prompt</button>
+                        <span id="calib-debat-prompt-copy-status" class="save-status"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB: Calibration détails -->
+            <div id="tab-calib-details" class="calib-tab-content">
+                <div class="context-card">
+                    <h3>Calibration détails</h3>
+                    <p class="context-hint">Ces exemples indiquent à l'IA si une suggestion manque de détails (lieu, impact) ou si elle est déjà précise / apporte un rapport. Un rapport = précisions qui complètent un sujet existant (ex: « fenêtres bat C » puis « surtout salle C203 »). Les détails s'accumulent dans la description, le titre reste général.</p>
+                    <div class="calib-details-add">
+                        <input type="text" id="calib-details-suggestion" placeholder="Ex: c'est cassé">
+                        <input type="text" id="calib-details-hint" placeholder="Question (ex: Quel bâtiment ?) ou vide = non">
+                        <button id="calib-details-add-btn" class="btn btn-primary">Ajouter</button>
+                    </div>
+                    <div class="calib-details-import-zone">
+                        <label for="calib-details-file-input" class="btn btn-secondary">Importer JSON (ChatGPT, etc.)</label>
+                        <input type="file" id="calib-details-file-input" accept=".json" hidden>
+                        <span id="calib-details-file-name" class="calib-file-name"></span>
+                    </div>
+                    <div id="calib-details-list" class="calib-details-list"></div>
+                </div>
+                <div class="prompt-card" style="margin-top:24px">
+                    <h3>Prompt pour ChatGPT / IA externe</h3>
+                    <p class="prompt-hint">Copiez ce prompt et envoyez-le à ChatGPT (ou autre IA). L'IA répondra un fichier JSON que vous pouvez importer ci-dessus. Le prompt sert à savoir si une suggestion a besoin de détails en plus (lieu, impact, etc.).</p>
+                    <div class="prompt-config">
+                        <label>Nombre d'exemples à générer :</label>
+                        <input type="number" id="calib-details-prompt-count" value="30" min="10" max="100">
+                        <button id="calib-details-prompt-generate" class="btn btn-primary">Générer le prompt</button>
+                    </div>
+                    <div id="calib-details-prompt-output" class="prompt-output-zone hidden">
+                        <textarea id="calib-details-prompt-text" rows="20" readonly></textarea>
+                        <button id="calib-details-prompt-copy" class="btn btn-secondary">Copier le prompt</button>
+                        <span id="calib-details-prompt-copy-status" class="save-status"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB: Calibration rapport -->
+            <div id="tab-calib-rapport" class="calib-tab-content">
+                <div class="context-card">
+                    <h3>Calibration rapport & précision</h3>
+                    <p class="context-hint">Ces exemples entraînent l'IA à détecter si une nouvelle suggestion a un RAPPORT avec une existante (même sujet) et si c'est une PRÉCISION (ajoute des détails : lieu, salle, etc.) ou pas. Rapport=non → nouvelle suggestion. Rapport=oui + précision=oui → demander à l'élève. Rapport=oui + précision=non → simple vote.</p>
+                    <div class="calib-rapport-add">
+                        <input type="text" id="calib-rapport-existing" placeholder="Suggestion existante (ex: Fenêtres cassées bat C)">
+                        <input type="text" id="calib-rapport-new" placeholder="Nouvelle soumise (ex: Surtout salle C203 au 2e)">
+                        <label class="calib-rapport-check"><input type="checkbox" id="calib-rapport-has"> Rapport</label>
+                        <label class="calib-rapport-check"><input type="checkbox" id="calib-rapport-precision"> Précision</label>
+                        <button id="calib-rapport-add-btn" class="btn btn-primary">Ajouter</button>
+                    </div>
+                    <div class="calib-rapport-import-zone">
+                        <label for="calib-rapport-file-input" class="btn btn-secondary">Importer JSON</label>
+                        <input type="file" id="calib-rapport-file-input" accept=".json" hidden>
+                        <span id="calib-rapport-file-name" class="calib-file-name"></span>
+                    </div>
+                    <div id="calib-rapport-list" class="calib-rapport-list"></div>
+                </div>
+                <div class="prompt-card" style="margin-top:24px">
+                    <h3>Prompt pour ChatGPT / IA externe</h3>
+                    <p class="prompt-hint">Génère des exemples (existing_text, new_text, has_rapport, is_precision) pour entraîner l'IA.</p>
+                    <div class="prompt-config">
+                        <label>Nombre d'exemples :</label>
+                        <input type="number" id="calib-rapport-prompt-count" value="25" min="10" max="80">
+                        <button id="calib-rapport-prompt-generate" class="btn btn-primary">Générer le prompt</button>
+                    </div>
+                    <div id="calib-rapport-prompt-output" class="prompt-output-zone hidden">
+                        <textarea id="calib-rapport-prompt-text" rows="18" readonly></textarea>
+                        <button id="calib-rapport-prompt-copy" class="btn btn-secondary">Copier</button>
+                        <span id="calib-rapport-prompt-copy-status" class="save-status"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB: Context -->
+            <div id="tab-calib-context" class="calib-tab-content">
+                <div class="context-card">
+                    <h3>Contexte de l'établissement</h3>
+                    <p class="context-hint">Ces informations sont injectées dans les prompts de l'IA pour qu'elle comprenne le contexte du lycée. Plus c'est détaillé, plus l'IA sera précise.</p>
+                    <textarea id="context-textarea" rows="12" placeholder="Exemple :
+Lycée Aristide Briand, Saint-Nazaire (44)
+
+Bâtiments : Bat B, Bat C, Bat J, Bat G, Bat H
+Espaces : Coeur (cour centrale), Intendance, Entrée du lycée
+Restauration : Self, Cantine
+CDI au bâtiment B
+Vie scolaire au bâtiment C
+Gymnase à côté du parking
+
+Le lycée a environ 1500 élèves.
+Les horaires sont 8h-18h.
+Il y a un internat."></textarea>
+                    <button id="context-save-btn" class="btn btn-primary">Enregistrer le contexte</button>
+                    <span id="context-save-status" class="save-status"></span>
+                </div>
+                <div class="prompt-card" style="margin-top:24px">
+                    <h3>Prompts IA — Copiables</h3>
+                    <p class="prompt-hint">Prompts utilisés par l'IA pour le traitement des suggestions. Copiez-les pour les modifier ou les utiliser ailleurs.</p>
+                    <div id="context-prompts-list" class="context-prompts-list"></div>
+                </div>
+            </div>
+
+            <!-- TAB: Prompt -->
+            <div id="tab-calib-prompt" class="calib-tab-content">
+                <div class="prompt-card">
+                    <h3>Prompt pour ChatGPT / IA externe</h3>
+                    <p class="prompt-hint">Copiez ce prompt et envoyez-le a ChatGPT (ou autre IA) pour generer un fichier d'entrainement. Le resultat JSON peut ensuite etre importe directement.</p>
+                    <div class="prompt-config">
+                        <label>Nombre d'exemples à générer :</label>
+                        <input type="number" id="prompt-count" value="50" min="10" max="500">
+                        <button id="prompt-generate-btn" class="btn btn-primary">Générer le prompt</button>
+                    </div>
+                    <div id="prompt-output-zone" class="prompt-output-zone hidden">
+                        <textarea id="prompt-output" rows="20" readonly></textarea>
+                        <button id="prompt-copy-btn" class="btn btn-secondary">Copier le prompt</button>
+                        <span id="prompt-copy-status" class="save-status"></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Announcements -->
+        <section id="section-announcements" class="admin-section">
+            <div class="section-header">
+                <h1>Annonces display</h1>
+            </div>
+            <div class="chat-ia-card">
+                <h3>Chat IA — Créer des annonces par la parole</h3>
+                <p class="context-hint">Demandez à l'IA de créer une annonce (ex: "Annonce pour dire que la cantine ferme à 13h demain").</p>
+                <div id="chat-ia-messages" class="chat-ia-messages"></div>
+                <div class="chat-ia-input-row">
+                    <input type="text" id="chat-ia-input" placeholder="Ex: Crée une annonce pour prévenir que...">
+                    <button id="chat-ia-send" class="btn btn-primary">Envoyer</button>
+                </div>
+            </div>
+            <div class="ann-create-card">
+                <h3>Nouvelle annonce</h3>
+                <div class="form-group"><input type="text" id="ann-title" placeholder="Titre de l'annonce..."></div>
+                <div class="form-group"><textarea id="ann-content" rows="3" placeholder="Contenu (optionnel)..."></textarea></div>
+                <div class="form-row">
+                    <div class="form-group"><label>Style</label>
+                        <select id="ann-style">
+                            <option value="info">Information</option>
+                            <option value="success">Succes</option>
+                            <option value="warning">Important</option>
+                            <option value="urgent">Urgent</option>
+                        </select>
+                    </div>
+                    <div class="form-group"><label>Durée (minutes)</label><input type="number" id="ann-duration" value="60" min="1" max="10080"></div>
+                </div>
+                <button id="ann-create-btn" class="btn btn-primary">Publier l'annonce</button>
+                <div class="ann-preview" id="ann-preview"></div>
+            </div>
+            <h3 style="margin-top:24px;margin-bottom:12px;">Annonces actives</h3>
+            <p class="context-hint" style="margin-bottom:12px;">Pour une annonce prioritaire : cliquez sur « Annonce prioritaire ». Tous les displays afficheront uniquement cette annonce. Vous pouvez ajouter des informations complémentaires (extra_info) affichées en dessous.</p>
+            <div id="ann-list" class="ann-list"></div>
+        </section>
+        <!-- Traçabilité IA -->
+        <section id="section-trace" class="admin-section">
+            <div class="section-header">
+                <h1>Traçabilité IA</h1>
+                <span class="context-hint">Simulez le traitement d'une suggestion et visualisez le flux en temps réel. Validez ou corrigez pour alimenter l'IA de vérification.</span>
+            </div>
+            <div class="trace-simulate-card">
+                <div class="form-group">
+                    <label>Suggestion à simuler</label>
+                    <textarea id="trace-input" rows="3" placeholder="Ex: plus de frites a la cantine svp"></textarea>
+                </div>
+                <button id="trace-simulate-btn" class="btn btn-primary">Lancer la simulation</button>
+            </div>
+            <div id="trace-flow-container" class="trace-flow-container hidden">
+                <div class="trace-flow-schema">
+                    <div class="trace-step" id="trace-step-original">
+                        <div class="trace-step-label">Original</div>
+                        <div class="trace-step-content" id="trace-original-content"></div>
+                    </div>
+                    <div class="trace-arrow trace-arrow-thinking" id="trace-arrow-1">⏳ Réflexion...</div>
+                    <div class="trace-step" id="trace-step-main">
+                        <div class="trace-step-label">IA principale</div>
+                        <div class="trace-step-content" id="trace-main-content"></div>
+                    </div>
+                    <div class="trace-arrow trace-arrow-thinking" id="trace-arrow-2">⏳ Réflexion...</div>
+                    <div class="trace-step" id="trace-step-verify">
+                        <div class="trace-step-label">IA vérification</div>
+                        <div class="trace-step-content" id="trace-verify-content"></div>
+                    </div>
+                    <div class="trace-arrow">→</div>
+                    <div class="trace-step trace-step-final" id="trace-step-final">
+                        <div class="trace-step-label">Résultat final</div>
+                        <div class="trace-step-content" id="trace-final-content"></div>
+                    </div>
+                </div>
+                <div id="trace-feedback-zone" class="trace-feedback-zone hidden">
+                    <h4>Le résultat est-il correct ?</h4>
+                    <div class="trace-feedback-buttons">
+                        <button id="trace-btn-oui" class="btn btn-primary">Oui</button>
+                        <button id="trace-btn-corriger" class="btn btn-secondary">Corriger</button>
+                    </div>
+                    <div id="trace-correction-form" class="trace-correction-form hidden">
+                        <div class="form-group"><label>Titre</label><input type="text" id="trace-correction-title" placeholder="Titre corrigé"></div>
+                        <div class="form-group"><label>Catégorie</label>
+                            <select id="trace-correction-category">
+                                <option value="Cantine">Cantine</option>
+                                <option value="Infrastructure">Infrastructure</option>
+                                <option value="Vie scolaire">Vie scolaire</option>
+                                <option value="Pédagogie">Pédagogie</option>
+                                <option value="Numérique">Numérique</option>
+                                <option value="Bien-être">Bien-être</option>
+                                <option value="Autre">Autre</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>Mots-clés (séparés par des virgules)</label><input type="text" id="trace-correction-keywords" placeholder="mot1, mot2, mot3"></div>
+                        <div class="form-group"><label>Lieu</label><input type="text" id="trace-correction-location" placeholder="Aucun ou nom du lieu"></div>
+                        <button id="trace-validate-correction-btn" class="btn btn-primary">Valider votre correction</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Calibration IA vérification -->
+        <section id="section-calibration-verify" class="admin-section">
+            <div class="section-header">
+                <h1>Calibration IA de vérification</h1>
+                <span class="context-hint">Exemples de corrections validées. L'IA de vérification s'en sert pour prendre les bonnes décisions. Générez un prompt pour ChatGPT ou importez un JSON.</span>
+            </div>
+            <div class="calib-verify-stats">
+                <div class="stat-card"><div class="stat-info"><span id="calib-verify-count" class="stat-value">0</span><span class="stat-label">Exemples</span></div></div>
+            </div>
+            <div class="calib-verify-prompt-card">
+                <h3>Prompt pour ChatGPT / IA externe</h3>
+                <p class="prompt-hint">Copiez ce prompt et envoyez-le à ChatGPT. L'IA répondra un fichier JSON que vous pouvez importer ci-dessous.</p>
+                <button id="calib-verify-generate-prompt" class="btn btn-primary">Générer le prompt</button>
+                <div id="calib-verify-prompt-output" class="prompt-output-zone hidden">
+                    <textarea id="calib-verify-prompt-text" rows="16" readonly></textarea>
+                    <button id="calib-verify-prompt-copy" class="btn btn-secondary">Copier le prompt</button>
+                    <span id="calib-verify-prompt-copy-status" class="save-status"></span>
+                </div>
+            </div>
+            <div class="calib-verify-import-zone">
+                <label for="calib-verify-file-input" class="btn btn-secondary">Importer JSON (ChatGPT, etc.)</label>
+                <input type="file" id="calib-verify-file-input" accept=".json" hidden>
+                <span id="calib-verify-file-name" class="calib-file-name"></span>
+            </div>
+            <div id="calib-verify-list" class="calib-verify-list"></div>
+        </section>
+
+        <!-- LLM Resources -->
+        <section id="section-llm-resources" class="admin-section">
+            <div class="section-header llm-section-header">
+                <h1>Ressources IA</h1>
+            </div>
+
+            <div id="llm-config-block" class="llm-config-block">
+            <div class="llm-status-card">
+                <div class="llm-status-header">
+                    <div class="llm-status-dot" id="llm-status-dot"></div>
+                    <div class="llm-status-text">
+                        <span id="llm-status-label">Vérification...</span>
+                        <span class="llm-model-name" id="llm-model-name"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stats-grid llm-stats-grid">
+                <div class="stat-card"><div class="stat-info"><span id="llm-credits-used" class="stat-value">—</span><span class="stat-label">Credits utilises</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="llm-credits-remaining" class="stat-value">—</span><span class="stat-label">Credits restants</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="llm-avg-time" class="stat-value">—</span><span class="stat-label">Temps moyen / appel</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="llm-est-suggestions" class="stat-value">—</span><span class="stat-label">Suggestions estimees restantes</span></div></div>
+            </div>
+
+            <div class="llm-usage-bar-container">
+                <div class="llm-usage-label">
+                    <span>Utilisation</span>
+                    <span id="llm-usage-percent">0%</span>
+                </div>
+                <div class="llm-usage-bar">
+                    <div class="llm-usage-fill" id="llm-usage-fill" style="width:0%"></div>
+                </div>
+                <div class="llm-usage-meta">
+                    <span id="llm-reset-info">Réinitialisation : —</span>
+                </div>
+            </div>
+
+            <div class="llm-config-card">
+                <h3>Configuration des credits</h3>
+                <p class="llm-config-hint">Chaque appel au modèle d'IA consomme 1 crédit. Une suggestion en utilise environ 2-3 (pertinence + reformulation + classification). Ajustez selon les capacités de votre serveur.</p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Crédits maximum par période</label>
+                        <input type="number" id="llm-max-credits" value="100" min="1" max="10000">
+                    </div>
+                    <div class="form-group">
+                        <label>Période de réinitialisation (heures)</label>
+                        <input type="number" id="llm-period-hours" value="24" min="1" max="720">
+                    </div>
+                </div>
+                <div class="llm-config-actions">
+                    <button id="llm-save-config" class="btn btn-primary">Sauvegarder</button>
+                    <button id="llm-reset-credits" class="btn btn-ghost">Reinitialiser le compteur</button>
+                    <span id="llm-save-status" class="save-status"></span>
+                </div>
+            </div>
+
+            <div class="llm-estimation-card">
+                <h3>Estimations</h3>
+                <div class="llm-estimation-grid">
+                    <div class="llm-est-item">
+                        <span class="llm-est-label">Temps moyen par appel LLM</span>
+                        <span class="llm-est-value" id="llm-est-call-time">—</span>
+                    </div>
+                    <div class="llm-est-item">
+                        <span class="llm-est-label">Temps estimé par suggestion</span>
+                        <span class="llm-est-value" id="llm-est-sugg-time">—</span>
+                    </div>
+                    <div class="llm-est-item">
+                        <span class="llm-est-label">Suggestions traitables avec les crédits restants</span>
+                        <span class="llm-est-value" id="llm-est-sugg-count">—</span>
+                    </div>
+                    <div class="llm-est-item">
+                        <span class="llm-est-label">Appels IA enregistrés (session)</span>
+                        <span class="llm-est-value" id="llm-total-calls">—</span>
+                    </div>
+                </div>
+            </div>
+            </div>
+        </section>
+
+        <!-- Bus -->
+        <section id="section-bus" class="admin-section">
+            <div class="section-header">
+                <h1>Horaires bus</h1>
+            </div>
+            <p class="context-hint">Configuration de l'affichage des horaires STRAN sur les écrans. Les bus s'affichent aux créneaux définis ou en mode forcé.</p>
+
+            <div class="bus-admin-grid">
+                <div class="bus-admin-block bus-admin-config">
+                    <h3>Configuration</h3>
+                    <div class="form-group">
+                        <label>Clé API Mecatran (STRAN)</label>
+                        <input type="text" id="bus-api-key" placeholder="Clé API ou URL complète avec apiKey=...">
+                        <span class="context-hint" style="display:block;margin-top:4px;">Collez la clé seule ou l'URL complète (ex: ...?apiKey=xxx), la clé sera extraite.</span>
+                    </div>
+                    <div class="form-group">
+                        <label class="bus-toggle-label">
+                            <input type="checkbox" id="bus-use-static">
+                            Horaires statiques uniquement (GTFS)
+                        </label>
+                        <span class="context-hint" style="display:block;margin-top:4px;">Utilise le flux GTFS statique au lieu du temps réel. Les bus sont souvent à l'heure.</span>
+                    </div>
+                    <div class="form-group">
+                        <label class="bus-toggle-label">
+                            <input type="checkbox" id="bus-force-display">
+                            Forcer l'affichage des bus
+                        </label>
+                    </div>
+                    <div class="form-group" id="bus-force-until-group">
+                        <label>Jusqu'à (date/heure)</label>
+                        <input type="datetime-local" id="bus-force-display-until" placeholder="YYYY-MM-DDTHH:mm">
+                    </div>
+                    <div class="form-group">
+                        <label class="bus-toggle-label">
+                            <input type="checkbox" id="bus-alternance-enabled">
+                            Alternance bus / suggestions
+                        </label>
+                    </div>
+                    <div class="form-group" id="bus-alternance-interval-group">
+                        <label>Intervalle (secondes)</label>
+                        <input type="number" id="bus-alternance-interval-sec" value="60" min="10" max="600">
+                    </div>
+                </div>
+
+                <div class="bus-admin-block bus-admin-exclude">
+                    <h3>Pages à exclure</h3>
+                    <p class="context-hint">Sélectionnez les écrans /tv/... à exclure de l'affichage bus (la page Boîte à Idées n'est pas concernée).</p>
+                    <div id="bus-exclude-pages" class="bus-exclude-list"></div>
+                </div>
+
+                <div class="bus-admin-block bus-admin-test">
+                    <h3>Mode test</h3>
+                    <label class="bus-toggle-label">
+                        <input type="checkbox" id="bus-test-mode">
+                        Horaires fictifs (prochains bus uniquement, +3h)
+                    </label>
+                    <label class="bus-toggle-label" style="margin-top:8px;">
+                        <input type="checkbox" id="bus-test-perturbations">
+                        Simuler des perturbations
+                    </label>
+                </div>
+
+                <div class="bus-admin-block bus-admin-schedule">
+                    <h3>Créneaux d'affichage</h3>
+                    <p class="context-hint">Format HH:MM. Pendant ces créneaux, les bus s'affichent sur les écrans.</p>
+                    <div id="bus-schedule-editor" class="bus-schedule-editor"></div>
+                    <button id="bus-add-slot" class="btn btn-secondary btn-sm">+ Créneau</button>
+                </div>
+            </div>
+
+            <div class="bus-actions">
+                <button id="bus-save" class="btn btn-primary">Sauvegarder</button>
+                <span id="bus-save-status" class="save-status"></span>
+            </div>
+        </section>
+
+        <!-- Backup & Historique -->
+        <section id="section-backup" class="admin-section">
+            <div class="section-header">
+                <h1>Backup & Historique</h1>
+                <span class="context-hint">Sauvegardes automatiques ou manuelles. Chaque backup contient suggestions, annonces, statistiques. Disponible 3 jours. Prévisualisation complète avant téléchargement ou restauration.</span>
+            </div>
+
+            <div class="backup-admin-grid">
+                <div class="backup-admin-block backup-config">
+                    <h3>Configuration</h3>
+                    <div class="form-group">
+                        <label>Auto-backup (intervalle en heures)</label>
+                        <input type="number" id="backup-interval-hours" value="0" min="0" max="168" placeholder="0 = désactivé">
+                        <span class="context-hint">Ex: 24 = une backup par jour. 0 désactive l'auto-backup.</span>
+                    </div>
+                    <button id="backup-save-settings" class="btn btn-primary">Sauvegarder</button>
+                    <span id="backup-settings-status" class="save-status"></span>
+                </div>
+
+                <div class="backup-admin-block backup-actions">
+                    <h3>Actions</h3>
+                    <button id="backup-create-btn" class="btn btn-primary">Créer une backup maintenant</button>
+                    <span id="backup-create-status" class="save-status"></span>
+                </div>
+            </div>
+
+            <h3 style="margin-top:24px;margin-bottom:12px;">Historique des backups</h3>
+            <p class="context-hint">Les backups sont conservées 3 jours. Cliquez sur une backup pour prévisualiser le contenu complet.</p>
+            <div id="backup-list" class="backup-list"></div>
+
+            <div id="backup-preview-modal" class="backup-preview-modal hidden">
+                <div class="backup-preview-backdrop"></div>
+                <div class="backup-preview-content">
+                    <div class="backup-preview-header">
+                        <h2 id="backup-preview-title">Prévisualisation</h2>
+                        <div class="backup-preview-actions">
+                            <a id="backup-download-link" href="#" class="btn btn-primary" download target="_blank">Télécharger</a>
+                            <button id="backup-restore-btn" class="btn btn-secondary">Restaurer</button>
+                            <button id="backup-preview-close" class="btn btn-ghost">Fermer</button>
+                        </div>
+                    </div>
+                    <div id="backup-preview-body" class="backup-preview-body"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Display Manager -->
+        <section id="section-display-manager" class="admin-section">
+            <div class="section-header">
+                <h1>Affichage dynamique</h1>
+            </div>
+
+            <div class="dm-tabs">
+                <button class="dm-tab active" data-dmtab="dm-presentations">Présentations</button>
+                <button class="dm-tab" data-dmtab="dm-pages">Pages d'affichage</button>
+                <button class="dm-tab" data-dmtab="dm-media">Médiathèque</button>
+                <button class="dm-tab" data-dmtab="dm-scrap">Scrap AutoNews</button>
+                <button class="dm-tab" data-dmtab="dm-overview">Vue d'ensemble</button>
+            </div>
+
+            <!-- TAB: Presentations -->
+            <div id="tab-dm-presentations" class="dm-tab-content active">
+                <div class="dm-toolbar">
+                    <button id="dm-create-preso" class="btn btn-primary">+ Nouvelle présentation</button>
+                </div>
+                <div id="dm-preso-list" class="dm-preso-list"></div>
+
+                <!-- Slide Editor (shown when editing a presentation) -->
+                <div id="dm-slide-editor" class="dm-slide-editor hidden">
+                    <div class="dm-editor-header">
+                        <button id="dm-editor-back" class="btn btn-ghost">← Retour</button>
+                        <h2 id="dm-editor-title">Édition</h2>
+                        <span id="dm-editor-link" class="dm-editor-link"></span>
+                    </div>
+                    <div class="dm-editor-body">
+                        <div class="dm-slides-sidebar">
+                            <h3>Slides</h3>
+                            <div id="dm-slides-list" class="dm-slides-list"></div>
+                            <div class="dm-add-slide-bar">
+                                <select id="dm-new-slide-type">
+                                    <option value="image">Image</option>
+                                    <option value="multi_image">Multi-images</option>
+                                    <option value="video">Vidéo</option>
+                                    <option value="text">Annonce texte</option>
+                                    <option value="suggestions">Suggestions</option>
+                                    <option value="autonews">AutoNews</option>
+                                    <option value="bus">Horaires bus</option>
+                                </select>
+                                <button id="dm-add-slide" class="btn btn-primary btn-sm">+ Ajouter</button>
+                            </div>
+                        </div>
+                        <div class="dm-slide-config">
+                            <div id="dm-slide-detail" class="dm-slide-detail">
+                                <p class="empty-msg">Sélectionnez une slide pour la modifier</p>
+                            </div>
+                        </div>
+                        <div class="dm-preview-panel">
+                            <h3>Aperçu</h3>
+                            <div id="dm-preview-frame" class="dm-preview-frame">
+                                <p class="empty-msg">Éditez une slide pour voir l'aperçu</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB: Pages -->
+            <div id="tab-dm-pages" class="dm-tab-content">
+                <div class="dm-toolbar">
+                    <button id="dm-create-page" class="btn btn-primary">+ Nouvelle page</button>
+                    <button id="dm-create-autonews" class="btn btn-secondary">+ Page AutoNews</button>
+                </div>
+                <div id="dm-page-list" class="dm-page-list"></div>
+            </div>
+
+            <!-- TAB: Media -->
+            <div id="tab-dm-media" class="dm-tab-content">
+                <div class="dm-toolbar">
+                    <label for="dm-media-upload" class="btn btn-primary">Uploader des fichiers</label>
+                    <input type="file" id="dm-media-upload" accept="image/*,video/mp4,video/webm,video/ogg" multiple hidden>
+                </div>
+                <div id="dm-media-grid" class="dm-media-grid"></div>
+            </div>
+
+            <!-- TAB: Scrap AutoNews -->
+            <div id="tab-dm-scrap" class="dm-tab-content">
+                <div class="dm-scrap-controls">
+                    <div class="dm-scrap-batch-row">
+                        <label>Scrap actuel :</label>
+                        <select id="dm-scrap-current-batch" class="control-select">
+                            <option value="">— Tous les scraps —</option>
+                        </select>
+                        <button id="dm-scrap-set-current" class="btn btn-sm btn-primary">Appliquer</button>
+                    </div>
+                    <div class="dm-scrap-actions">
+                        <button id="dm-scrap-run" class="btn btn-secondary">Lancer un nouveau scrap</button>
+                    </div>
+                </div>
+                <p class="dm-scrap-hint">Articles scrapés depuis e-lyco pour l'affichage AutoNews. Modifiez titre, sous-titre, texte et image. Sélectionnez le scrap à afficher, supprimez les anciens ou lancez un nouveau.</p>
+                <div id="dm-scrap-list" class="dm-scrap-list"></div>
+            </div>
+
+            <!-- TAB: Overview -->
+            <div id="tab-dm-overview" class="dm-tab-content">
+                <div id="dm-overview-graph" class="dm-overview-graph"></div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modal Historique (suggestions + propositions officielles) -->
+    <div id="history-modal" class="history-modal hidden">
+        <div class="history-modal-backdrop"></div>
+        <div class="history-modal-content">
+            <div class="history-modal-header">
+                <h2 id="history-modal-title">Historique</h2>
+                <div class="history-modal-actions">
+                    <a id="history-download-pdf" href="#" class="btn btn-primary" download target="_blank">Télécharger PDF</a>
+                    <button type="button" id="history-modal-close" class="btn btn-ghost">Fermer</button>
+                </div>
+            </div>
+            <div id="history-modal-body" class="history-modal-body"></div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename=asset('js/admin.js')) }}"></script>
+</body>
+</html>

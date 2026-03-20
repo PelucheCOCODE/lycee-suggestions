@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Suggestions en direct — Boîte à Idées</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
+</head>
+<body class="display-body">
+    <header class="display-header">
+        <div class="display-header-left">
+            <span class="display-logo">💡</span>
+            <h1>Boîte à Idées</h1>
+        </div>
+        <div class="display-header-right">
+            <span class="display-live-badge">
+                <span class="live-dot"></span> EN DIRECT
+            </span>
+            <span id="display-count" class="display-count"></span>
+        </div>
+    </header>
+
+    <div class="display-banners-stack">
+        <div id="display-critical-banner" class="display-critical-banner hidden"></div>
+        <div id="display-completed-banner" class="display-completed-banner hidden"></div>
+    </div>
+    <main id="display-grid" class="display-grid"></main>
+
+    <div id="display-bus-panel" class="display-bus-panel hidden">
+        <div class="display-bus-header">
+            <span class="display-bus-logo">🚌</span>
+            <h2>Horaires des bus</h2>
+        </div>
+        <div id="display-bus-stops" class="display-bus-stops"></div>
+    </div>
+
+    <div id="display-priority-announcement" class="display-priority-overlay hidden"></div>
+
+    <div id="display-waiting" class="display-waiting hidden">
+        <div class="waiting-content">
+            <span class="waiting-icon">💡</span>
+            <h1 id="waiting-title">Boîte à Idées</h1>
+            <p id="waiting-text"></p>
+        </div>
+    </div>
+
+    <!-- Announcement banner fixed at bottom -->
+    <div id="display-announcements" class="display-announcements-bottom"></div>
+
+    <script src="{{ url_for('static', filename=asset('js/display.js')) }}"></script>
+</body>
+</html>

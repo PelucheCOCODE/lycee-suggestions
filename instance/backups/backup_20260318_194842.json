@@ -1,0 +1,738 @@
+{
+  "version": 1,
+  "created_at": "2026-03-18T19:48:42.423186+00:00",
+  "stats": {
+    "suggestions_count": 5,
+    "announcements_count": 2,
+    "votes_total": 18,
+    "by_status": {
+      "En étude": 5
+    },
+    "by_category": {
+      "Bien-être": 1,
+      "Pédagogie": 2,
+      "Infrastructure": 2
+    },
+    "proposals_count": 4,
+    "locations_count": 4
+  },
+  "suggestions": [
+    {
+      "id": 1,
+      "original_text": "Rendre 2h de yoga obligatoire sous décision de la médecin scolaire",
+      "title": "Organiser des séances de yoga de 2 heures dans le bâtiment \"Coeur\"",
+      "subtitle": "",
+      "keywords": [
+        "yoga",
+        "relaxation",
+        "santé",
+        "espace de repos",
+        "cadre scolaire",
+        "activité"
+      ],
+      "category": "Bien-être",
+      "location_id": 1,
+      "location_name": "Coeur",
+      "status": "En étude",
+      "vote_count": 2,
+      "needs_debate": true,
+      "vote_for": 0,
+      "vote_against": 2,
+      "ai_proportion": 0.7,
+      "ai_feasibility": 0.6,
+      "ai_cost": 0.5,
+      "ai_needs_debate": false,
+      "created_at": "2026-03-14T22:48:03.881785",
+      "arguments_for": [
+        {
+          "id": 1,
+          "side": "for",
+          "summary": "DES SÉANCES DE YOGA DANS LE \"COEUR\" OFFRIRONT UN ESPACE DE DÉTENTE APRÈS LES COURS.",
+          "status": "approved"
+        },
+        {
+          "id": 2,
+          "side": "for",
+          "summary": "LE BÂTIMENT \"COEUR\" BÉNÉFICIERAIT D'UNE ACTIVITÉ ACCRUE GRÂCE À DES SÉANCES DE YOGA.",
+          "status": "approved"
+        }
+      ],
+      "arguments_against": [
+        {
+          "id": 3,
+          "side": "against",
+          "summary": "LE BÂTIMENT \"COEUR\" EST DÉJÀ SURCHARGÉ, AJOUTANT DES SÉANCES DE YOGA N'EST PAS POSSIBLE.",
+          "status": "approved"
+        },
+        {
+          "id": 5,
+          "side": "against",
+          "summary": "Nous avons déjà assez de cours, ce qui rend l'ajout de séances de yoga improbable.",
+          "status": "approved"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "original_text": "Faire des cours de cuisines",
+      "title": "Proposer des cours de cuisines",
+      "subtitle": "",
+      "keywords": [
+        "cuisine",
+        "apprentissage",
+        "techniques",
+        "recettes",
+        "ateliers",
+        "expérimentation"
+      ],
+      "category": "Pédagogie",
+      "location_id": null,
+      "location_name": null,
+      "status": "En étude",
+      "vote_count": 3,
+      "needs_debate": false,
+      "vote_for": 5,
+      "vote_against": 0,
+      "ai_proportion": 0.6,
+      "ai_feasibility": 0.8,
+      "ai_cost": 0.5,
+      "ai_needs_debate": false,
+      "created_at": "2026-03-14T23:48:52.819977"
+    },
+    {
+      "id": 5,
+      "original_text": "Un salle d'art plastique supplémentaire.",
+      "title": "Créer une salle d'art plastique supplémentaire",
+      "subtitle": "",
+      "keywords": [
+        "art plastique",
+        "création",
+        "élèves",
+        "matériel",
+        "espace",
+        "atelier"
+      ],
+      "category": "Pédagogie",
+      "location_id": null,
+      "location_name": null,
+      "status": "En étude",
+      "vote_count": 1,
+      "needs_debate": false,
+      "vote_for": 0,
+      "vote_against": 0,
+      "ai_proportion": 0.6,
+      "ai_feasibility": 0.3,
+      "ai_cost": 0.5,
+      "ai_needs_debate": false,
+      "created_at": "2026-03-15T14:24:26.623939"
+    },
+    {
+      "id": 6,
+      "original_text": "Réparer les fenêtres cassée des salles du deuxième étage du Batiment B",
+      "title": "Réparer les fenêtres cassées des salles du deuxième étage du Batiment B",
+      "subtitle": "",
+      "keywords": [
+        "fenêtres",
+        "réparation",
+        "bâtiment",
+        "deuxième étage",
+        "batiment b"
+      ],
+      "category": "Infrastructure",
+      "location_id": 2,
+      "location_name": "Batiment B",
+      "status": "En étude",
+      "vote_count": 2,
+      "needs_debate": false,
+      "vote_for": 0,
+      "vote_against": 0,
+      "ai_proportion": 0.2,
+      "ai_feasibility": 0.8,
+      "ai_cost": 0.3,
+      "ai_needs_debate": false,
+      "created_at": "2026-03-15T15:22:29.460108"
+    },
+    {
+      "id": 7,
+      "original_text": "ya des fenetres cassé au bat C",
+      "title": "Réparer les fenêtres cassées au bâtiment C",
+      "subtitle": "Plusieurs fenêtres du bâtiment C sont brisées, causant des infiltrations d'eau",
+      "keywords": [
+        "fenêtres",
+        "bâtiment",
+        "cassé",
+        "réparation"
+      ],
+      "category": "Infrastructure",
+      "location_id": 3,
+      "location_name": "Batiment C",
+      "status": "En étude",
+      "vote_count": 10,
+      "needs_debate": false,
+      "vote_for": 0,
+      "vote_against": 0,
+      "ai_proportion": 0.2,
+      "ai_feasibility": 0.8,
+      "ai_cost": 0.1,
+      "ai_needs_debate": false,
+      "created_at": "2026-03-15T15:23:29.311772"
+    }
+  ],
+  "votes": [
+    {
+      "suggestion_id": 1,
+      "session_id": "4281e6af-b55f-4e3b-b2bf-87a1092ac930",
+      "vote_type": "against"
+    },
+    {
+      "suggestion_id": 4,
+      "session_id": "433acc6c-9c2f-413e-9732-cbde3d7a7230",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 4,
+      "session_id": "4281e6af-b55f-4e3b-b2bf-87a1092ac930",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 1,
+      "session_id": "559c0da8-fdb3-4320-bdec-25636f6f5865",
+      "vote_type": "against"
+    },
+    {
+      "suggestion_id": 4,
+      "session_id": "559c0da8-fdb3-4320-bdec-25636f6f5865",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 5,
+      "session_id": "559c0da8-fdb3-4320-bdec-25636f6f5865",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 6,
+      "session_id": "559c0da8-fdb3-4320-bdec-25636f6f5865",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 6,
+      "session_id": "433acc6c-9c2f-413e-9732-cbde3d7a7230",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "433acc6c-9c2f-413e-9732-cbde3d7a7230",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-fc2881cf",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-0fee4936",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-057f31ce",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-ca78aacc",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-cea5ec06",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-cba7e186",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-b9874473",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-5e86ed87",
+      "vote_type": "for"
+    },
+    {
+      "suggestion_id": 7,
+      "session_id": "admin-dev-d7c1890c",
+      "vote_type": "for"
+    }
+  ],
+  "suggestion_arguments": [
+    {
+      "suggestion_id": 1,
+      "side": "for",
+      "original_text": "Cela permet de se détendre après les cours",
+      "summary": "DES SÉANCES DE YOGA DANS LE \"COEUR\" OFFRIRONT UN ESPACE DE DÉTENTE APRÈS LES COURS.",
+      "status": "approved"
+    },
+    {
+      "suggestion_id": 1,
+      "side": "for",
+      "original_text": "Le coeur manque d'activité",
+      "summary": "LE BÂTIMENT \"COEUR\" BÉNÉFICIERAIT D'UNE ACTIVITÉ ACCRUE GRÂCE À DES SÉANCES DE YOGA.",
+      "status": "approved"
+    },
+    {
+      "suggestion_id": 1,
+      "side": "against",
+      "original_text": "Le coeur manque deja de place",
+      "summary": "LE BÂTIMENT \"COEUR\" EST DÉJÀ SURCHARGÉ, AJOUTANT DES SÉANCES DE YOGA N'EST PAS POSSIBLE.",
+      "status": "approved"
+    },
+    {
+      "suggestion_id": 1,
+      "side": "for",
+      "original_text": "Le yoga permet de se détendre.",
+      "summary": "Le yoga permet de se détendre.",
+      "status": "rejected"
+    },
+    {
+      "suggestion_id": 1,
+      "side": "against",
+      "original_text": "Nous avons déjà assez de cours",
+      "summary": "Nous avons déjà assez de cours, ce qui rend l'ajout de séances de yoga improbable.",
+      "status": "approved"
+    }
+  ],
+  "locations": [
+    {
+      "id": 1,
+      "name": "Coeur",
+      "suggestion_count": 1,
+      "placements": [
+        {
+          "id": 1,
+          "name": "CDI"
+        },
+        {
+          "id": 5,
+          "name": "Cantine"
+        },
+        {
+          "id": 4,
+          "name": "Casiers"
+        },
+        {
+          "id": 3,
+          "name": "Maison Du Lycée (MDL)"
+        },
+        {
+          "id": 2,
+          "name": "Self"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Batiment B",
+      "suggestion_count": 1,
+      "placements": []
+    },
+    {
+      "id": 3,
+      "name": "Batiment C",
+      "suggestion_count": 1,
+      "placements": []
+    },
+    {
+      "id": 4,
+      "name": "Batiment J",
+      "suggestion_count": 0,
+      "placements": []
+    }
+  ],
+  "announcements": [
+    {
+      "id": 1,
+      "title": "Batiment C Fermé",
+      "content": "L'accès au batiment C est interdit, jusqu'a 15H30.",
+      "style": "urgent",
+      "active": false,
+      "is_priority": false,
+      "extra_info": "Trois dinausores sont sur la route",
+      "duration_minutes": 60,
+      "created_at": "2026-03-14T19:47:53.171877",
+      "expires_at": "2026-03-15T16:32:11.799242"
+    },
+    {
+      "id": 2,
+      "title": "Le lycée remporte le concours \"Le Meilleur CVL de France\"",
+      "content": "Bravo a vous !",
+      "style": "success",
+      "active": false,
+      "is_priority": false,
+      "extra_info": "",
+      "duration_minutes": 60,
+      "created_at": "2026-03-15T15:31:28.347892",
+      "expires_at": "2026-03-15T16:32:01.453382"
+    }
+  ],
+  "official_proposals": [
+    {
+      "id": 1,
+      "content": "Pour ou contre :<b> Un concours photo sur la biodiversité ? Avec des lots a la clé ?&nbsp;</b>",
+      "status": "Adoptée",
+      "active": false,
+      "vote_for": 2,
+      "vote_against": 1,
+      "proportion": 0.3,
+      "feasibility": 0.8,
+      "cost": 0.2,
+      "needs_debate": true,
+      "created_at": "2026-03-14T19:17:02.407631",
+      "updated_at": "2026-03-15T16:07:23.278279",
+      "published_at": "2026-03-15T16:07:10.269548"
+    },
+    {
+      "id": 2,
+      "content": "N'oubliez pas le bal de promo !&nbsp;",
+      "status": "En cours",
+      "active": false,
+      "vote_for": 1,
+      "vote_against": 0,
+      "proportion": 0.8,
+      "feasibility": 0.9,
+      "cost": 0.1,
+      "needs_debate": true,
+      "created_at": "2026-03-15T15:24:48.882989",
+      "updated_at": "2026-03-15T15:33:42.700689",
+      "published_at": "2026-03-15T15:29:09.437413"
+    },
+    {
+      "id": 3,
+      "content": "",
+      "status": "En cours",
+      "active": false,
+      "vote_for": 0,
+      "vote_against": 0,
+      "proportion": 0.0,
+      "feasibility": 0.5,
+      "cost": 0.5,
+      "needs_debate": false,
+      "created_at": "2026-03-15T15:33:32.929806",
+      "updated_at": "2026-03-15T15:33:32.929811",
+      "published_at": null
+    },
+    {
+      "id": 4,
+      "content": "",
+      "status": "En cours",
+      "active": false,
+      "vote_for": 0,
+      "vote_against": 0,
+      "proportion": 0.0,
+      "feasibility": 0.5,
+      "cost": 0.5,
+      "needs_debate": false,
+      "created_at": "2026-03-15T15:33:42.702744",
+      "updated_at": "2026-03-15T15:33:42.702746",
+      "published_at": null
+    }
+  ],
+  "proposal_votes": [
+    {
+      "proposal_id": 1,
+      "session_id": "32cdcb4d-bde2-4014-9bac-2759855e0cca",
+      "vote_type": "for"
+    },
+    {
+      "proposal_id": 1,
+      "session_id": "4281e6af-b55f-4e3b-b2bf-87a1092ac930",
+      "vote_type": "for"
+    },
+    {
+      "proposal_id": 1,
+      "session_id": "559c0da8-fdb3-4320-bdec-25636f6f5865",
+      "vote_type": "against"
+    },
+    {
+      "proposal_id": 2,
+      "session_id": "559c0da8-fdb3-4320-bdec-25636f6f5865",
+      "vote_type": "for"
+    }
+  ],
+  "proposal_arguments": [
+    {
+      "proposal_id": 1,
+      "side": "for",
+      "original_text": "Ca va faire plus de place",
+      "summary": "UNE NOUVELLE SALLE DE CANTINE OFFRIRAIT PLUS D'ESPACE POUR LES ÉLÈVES.",
+      "status": "approved"
+    },
+    {
+      "proposal_id": 1,
+      "side": "for",
+      "original_text": "Le yoga permet de se détendre.",
+      "summary": "Le yoga permet de se détendre.",
+      "status": "rejected"
+    }
+  ],
+  "cvl_official_info": [],
+  "site_settings": {
+    "display_mode": "normal",
+    "submissions_open": "true",
+    "display_waiting_text": "Il n'y a pas cours actuellement. ",
+    "display_waiting_title": "En maintenance",
+    "llm_max_credits": "1000",
+    "llm_credits_period_hours": "12",
+    "bus_api_key": "https://app.mecatran.com/utw/ws/gtfsfeed/static/stran-merge?apiKey=2e6071036d276153761f0c090b4a45420",
+    "bus_force_display": "false",
+    "bus_force_display_until": "",
+    "bus_schedule": "[{\"start\": \"07:40\", \"end\": \"08:10\"}, {\"start\": \"08:50\", \"end\": \"09:10\"}, {\"start\": \"09:50\", \"end\": \"10:15\"}, {\"start\": \"11:00\", \"end\": \"11:10\"}, {\"start\": \"11:50\", \"end\": \"12:15\"}, {\"start\": \"13:15\", \"end\": \"13:30\"}, {\"start\": \"14:20\", \"end\": \"14:35\"}, {\"start\": \"15:25\", \"end\": \"15:35\"}, {\"start\": \"16:25\", \"end\": \"16:35\"}, {\"start\": \"17:25\", \"end\": \"17:40\"}]",
+    "bus_alternance_enabled": "true",
+    "bus_alternance_interval_sec": "10",
+    "priority_announcement_id": "",
+    "bus_test_mode": "false",
+    "bus_test_perturbations": "false",
+    "display_exclude_bus": "false",
+    "autonews_current_batch": "2026-03-18_1947",
+    "feature_bus_enabled": "true",
+    "feature_display_dynamic_enabled": "true"
+  },
+  "presentations": [
+    {
+      "id": 1,
+      "name": "test",
+      "slug": "test",
+      "active": true,
+      "slide_count": 2,
+      "page_count": 2,
+      "pages": [
+        {
+          "id": 1,
+          "name": "test",
+          "slug": "test"
+        },
+        {
+          "id": 2,
+          "name": "hall",
+          "slug": "hall"
+        }
+      ],
+      "created_at": "2026-03-14T14:40:42.999768",
+      "updated_at": "2026-03-15T14:26:38.672584",
+      "slides": [
+        {
+          "id": 1,
+          "presentation_id": 1,
+          "slide_type": "image",
+          "position": 0,
+          "duration": 1,
+          "transition": "fade",
+          "content": {
+            "url": "/static/uploads/abce16379336.jpg",
+            "fit": "cover",
+            "overlay_text": "",
+            "overlay_position": "bottom"
+          }
+        },
+        {
+          "id": 2,
+          "presentation_id": 1,
+          "slide_type": "autonews",
+          "position": 0,
+          "duration": 10,
+          "transition": "fade",
+          "content": {}
+        }
+      ]
+    }
+  ],
+  "display_pages": [
+    {
+      "id": 1,
+      "name": "test",
+      "slug": "test",
+      "presentation_id": 1,
+      "presentation_name": "test",
+      "page_type": "presentation",
+      "active": true,
+      "bus_excluded": false,
+      "created_at": "2026-03-14T14:41:23.571315"
+    },
+    {
+      "id": 2,
+      "name": "hall",
+      "slug": "hall",
+      "presentation_id": 1,
+      "presentation_name": "test",
+      "page_type": "presentation",
+      "active": true,
+      "bus_excluded": false,
+      "created_at": "2026-03-14T14:45:00.713708"
+    },
+    {
+      "id": 3,
+      "name": "AutoNews",
+      "slug": "autonews",
+      "presentation_id": null,
+      "presentation_name": null,
+      "page_type": "autonews",
+      "active": true,
+      "bus_excluded": false,
+      "created_at": "2026-03-14T20:03:04.713143"
+    }
+  ],
+  "media_files": [
+    {
+      "id": 1,
+      "filename": "b92775a49f20.jpg",
+      "original_name": "images.jpg",
+      "mime_type": "image/jpeg",
+      "size": 6827,
+      "url": "/static/uploads/b92775a49f20.jpg",
+      "created_at": "2026-03-14T14:40:33.451772"
+    },
+    {
+      "id": 2,
+      "filename": "676bf3e3800e.jpg",
+      "original_name": "images (1).jpg",
+      "mime_type": "image/jpeg",
+      "size": 4731,
+      "url": "/static/uploads/676bf3e3800e.jpg",
+      "created_at": "2026-03-14T14:41:39.892031"
+    },
+    {
+      "id": 3,
+      "filename": "187794dada95.mp4",
+      "original_name": "editfuzfac.mp4",
+      "mime_type": "video/mp4",
+      "size": 14908939,
+      "url": "/static/uploads/187794dada95.mp4",
+      "created_at": "2026-03-14T15:05:37.446042"
+    },
+    {
+      "id": 4,
+      "filename": "abce16379336.jpg",
+      "original_name": "images (1).jpg",
+      "mime_type": "image/jpeg",
+      "size": 4731,
+      "url": "/static/uploads/abce16379336.jpg",
+      "created_at": "2026-03-14T23:32:18.189929"
+    },
+    {
+      "id": 5,
+      "filename": "447ed2b43707.png",
+      "original_name": "9045cc7b-77e4-47bc-bb3e-48efca36612b.png",
+      "mime_type": "image/png",
+      "size": 1038383,
+      "url": "/static/uploads/447ed2b43707.png",
+      "created_at": "2026-03-14T23:32:25.349814"
+    }
+  ],
+  "scraped_news": [
+    {
+      "id": 1,
+      "title": "Fin mars, la Fête du court-métrage célébrera le Temps",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/fin-mars-la-fete-du-court-metrage-celebrera-le-temps/",
+      "image_url": "https://aristide-briand.paysdelaloire.e-lyco.fr/wp-content/uploads/sites/4/2026/03/court-metrage26-1080x675.png",
+      "excerpt": "paradmin0440069l|Mar 13, 2026|Actualites,CDI",
+      "summary": "Du 25 au 31 mars, le lycée Aristide Briand à Saint-Nazaire organise la Fête du court-métrage. Cet événement propose des projections de films courts variés, accompagnées de débats entre élèves et enseignants. L'objectif est de favoriser l'échange sur des sujets d'actualité et de société.",
+      "scraped_at": "2026-03-18T19:47:13.330749",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 2,
+      "title": "BTS GTLA Visite en entreprise TRANSPORTS MAILLARD – BESNE",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/bts-gtla-visite-en-entreprise-transports-maillard-besne/",
+      "image_url": "",
+      "excerpt": "paradmin0440069l|Mar 2, 2026|Actualites,GTLA",
+      "summary": "Lycée Aristide Briand Lycée Enseignt General Et Technologique – St Nazaire Accueil Menu Actualités Le secondaire Le supérieur Vie de l’établissement Présentation du lycée Le mot du Proviseur Les textes et règlements du lycée Projet Établissement Erasmus Laboratoire de Mathématiques Développement dur...",
+      "scraped_at": "2026-03-18T19:47:13.333790",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 3,
+      "title": "BTS GTLA Visite direction logistique Cité Sanitaire de Saint Nazaire",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/bts-gtla-visite-direction-logistique-cite-sanitaire-de-saint-nazaire/",
+      "image_url": "",
+      "excerpt": "paradmin0440069l|Mar 2, 2026|Actualites,GTLA",
+      "summary": "Lycée Aristide Briand Lycée Enseignt General Et Technologique – St Nazaire Accueil Menu Actualités Le secondaire Le supérieur Vie de l’établissement Présentation du lycée Le mot du Proviseur Les textes et règlements du lycée Projet Établissement Erasmus Laboratoire de Mathématiques Développement dur...",
+      "scraped_at": "2026-03-18T19:47:13.334260",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 4,
+      "title": "JOURNEE INTEGRATION BTS GTLA 1 2025-2027",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/journee-integration-bts-gtla-1-2025-2027/",
+      "image_url": "https://aristide-briand.paysdelaloire.e-lyco.fr/wp-content/uploads/sites/4/2026/03/BTS-GTLA-Machines-de-lile.png",
+      "excerpt": "paradmin0440069l|Mar 2, 2026|Actualites,GTLA",
+      "summary": "La première promotion du BTS GTLA 2025-2027 a organisé une journée d'intégration à Nantes le 8 octobre 2025. Cette journée a inclus des activités telles qu'un concours photo, des déambulations en ville et un escape game sur l'île de Nantes. L'événement a permis de renforcer les liens au sein de la promotion.",
+      "scraped_at": "2026-03-18T19:47:13.334610",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 5,
+      "title": "RENTREE BTS GTLA 2025-2026",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/rentree-bts-gtla-2025-2026/",
+      "image_url": "",
+      "excerpt": "paradmin0440069l|Mar 2, 2026|Actualites,GTLA",
+      "summary": "Le lycée Aristide Briand de Saint-Nazaire a accueilli sa première promotion de 15 élèves pour le BTS Gestion des Transports et Logistique Associée (GTLA) le 1er septembre 2026. Cette formation de deux ans est mise en place en alternance avec une étudiante. L'établissement propose ce nouveau BTS dans le cadre de son développement professionnel.",
+      "scraped_at": "2026-03-18T19:47:13.334958",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 6,
+      "title": "🎶💻 Art et Sciences se rencontrent au lycée Aristide Briand",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/art-et-sciences-se-rencontrent-au-lycee-aristide-briand/",
+      "image_url": "https://aristide-briand.paysdelaloire.e-lyco.fr/wp-content/uploads/sites/4/2026/02/art-et-sciences-2.png",
+      "excerpt": "paradmin0440069l|Fév 13, 2026|Actualites,sti2d",
+      "summary": "Le lycée Aristide Briand a accueilli deux doctorants, Raphaël Forment et Tanguy Dubois, dans le cadre d'un projet art-sciences. Ces doctorants du laboratoire Athénor et LS2N ont animé des séances de live coding et de design génératif pour des élèves de Première NSI. L'objectif était d'explorer la convergence entre la musique, l'informatique et les sciences.",
+      "scraped_at": "2026-03-18T19:47:13.335320",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 7,
+      "title": "Le volley du LAB",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/le-volley-du-lab/",
+      "image_url": "https://aristide-briand.paysdelaloire.e-lyco.fr/wp-content/uploads/sites/4/2026/02/Equipe-VB-garcons-LAB-1080x675.jpeg",
+      "excerpt": "paradmin0440069l|Fév 12, 2026|Actualites,UNSS",
+      "summary": "L'équipe de volley garçon du lycée Aristide Briand à Saint-Nazaire s'est qualifiée pour les Championnats de France. Ils ont remporté les finales inter-académiques contre le lycée Durzy d'Orléans-Tour, avec l'accompagnement de deux jeunes officielles. Cette réussite est saluée par l'établissement.",
+      "scraped_at": "2026-03-18T19:47:13.335648",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 8,
+      "title": "Le hand du LAB",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/le-hand-du-lab/",
+      "image_url": "https://aristide-briand.paysdelaloire.e-lyco.fr/wp-content/uploads/sites/4/2026/02/Handball-26-02-1080x675.jpeg",
+      "excerpt": "paradmin0440069l|Fév 12, 2026|Actualites,UNSS",
+      "summary": "L'équipe de handball féminine du lycée Aristide Briand (LAB) a remporté le titre de championnes d'académie. Elles ont ensuite dominé les inter-régions avec une victoire 53-22, ce qui leur assure une qualification pour le championnat de France. Le championnat se déroulera du 24 au 27 mars 2026 à Cergy-Pontoise.",
+      "scraped_at": "2026-03-18T19:47:13.335969",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 9,
+      "title": "Portes ouvertes: un très bon bilan",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/portes-ouvertes/portes-ouvertes-un-tres-bon-bilan/",
+      "image_url": "https://aristide-briand.paysdelaloire.e-lyco.fr/wp-content/uploads/sites/4/2026/02/PO-26-0-924x675.jpg",
+      "excerpt": "paradmin0440069l|Fév 10, 2026|Actualites,Portes Ouvertes",
+      "summary": "Les portes ouvertes du lycée Aristide Briand, organisées le 7 février 2026, ont permis à des élèves de collège et de lycée de découvrir les formations proposées. L'événement a été un succès, grâce à la participation de nombreuses personnes. Le lycée a exprimé sa gratitude envers tous les intervenants.",
+      "scraped_at": "2026-03-18T19:47:13.336311",
+      "batch_id": "2026-03-18_1947"
+    },
+    {
+      "id": 10,
+      "title": "Semaine de l’Envol 2026 – Une journée riche en rencontres et en opportunités",
+      "url": "https://aristide-briand.paysdelaloire.e-lyco.fr/actualites/semaine-de-lenvol-2026-une-journee-riche-en-rencontres-et-en-opportunites/",
+      "image_url": "",
+      "excerpt": "paradmin0440069l|Fév 6, 2026|Actualites",
+      "summary": "Lycée Aristide Briand Lycée Enseignt General Et Technologique – St Nazaire Accueil Menu Actualités Le secondaire Le supérieur Vie de l’établissement Présentation du lycée Le mot du Proviseur Les textes et règlements du lycée Projet Établissement Erasmus Laboratoire de Mathématiques Développement dur...",
+      "scraped_at": "2026-03-18T19:47:13.336658",
+      "batch_id": "2026-03-18_1947"
+    }
+  ]
+}
