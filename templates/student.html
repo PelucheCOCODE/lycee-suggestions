@@ -66,16 +66,22 @@
         </section>
 
         <!-- Filters -->
-        <section class="filters-section">
-            <div class="filters-bar">
-                <div class="filter-categories" id="category-filters">
-                    <button class="filter-chip active" data-category="Toutes">Toutes</button>
-                </div>
-                <div class="filter-sort">
-                    <select id="sort-select">
-                        <option value="votes">Plus votées</option>
-                        <option value="recent">Plus récentes</option>
-                    </select>
+        <section class="filters-section" id="filters-section">
+            <button type="button" class="filters-mobile-toggle" id="filters-mobile-toggle" aria-expanded="false" aria-controls="filters-panel-wrap">
+                <span class="filters-mobile-toggle-icon" aria-hidden="true">⚙</span>
+                Filtres &amp; tri
+            </button>
+            <div class="filters-panel-wrap" id="filters-panel-wrap">
+                <div class="filters-bar">
+                    <div class="filter-categories" id="category-filters">
+                        <button class="filter-chip active" data-category="Toutes">Toutes</button>
+                    </div>
+                    <div class="filter-sort">
+                        <select id="sort-select">
+                            <option value="votes">Plus votées</option>
+                            <option value="recent">Plus récentes</option>
+                        </select>
+                    </div>
                 </div>
             </div>
         </section>
@@ -83,31 +89,47 @@
         <!-- Information Officielle CVL -->
         <div id="cvl-official-info-container" class="cvl-official-info-container"></div>
 
-        <!-- Mode téléphone : swipe + recherche (affiché seulement sur petit écran tactile) -->
-        <section id="phone-swipe-ui" class="phone-swipe-ui" aria-label="Découvrir les suggestions">
+        <!-- Barre fixe téléphone : toujours visible pour changer de mode -->
+        <nav id="phone-nav-dock" class="phone-nav-dock" aria-label="Navigation suggestions">
+            <button type="button" id="btn-phone-mode-swipe" class="phone-dock-btn active">
+                <span class="phone-dock-icon" aria-hidden="true">✦</span>
+                <span class="phone-dock-label">Découvrir</span>
+            </button>
+            <button type="button" id="btn-phone-mode-list" class="phone-dock-btn">
+                <span class="phone-dock-icon" aria-hidden="true">☰</span>
+                <span class="phone-dock-label">Liste</span>
+            </button>
+            <button type="button" id="btn-phone-mode-liked" class="phone-dock-btn">
+                <span class="phone-dock-icon" aria-hidden="true">♥</span>
+                <span class="phone-dock-label">Soutenus</span>
+            </button>
+        </nav>
+
+        <!-- Mode téléphone : swipe + recherche (masqué en mode liste) -->
+        <section id="phone-swipe-content" class="phone-swipe-content" aria-label="Découvrir les suggestions">
             <div class="phone-swipe-toolbar">
                 <label class="phone-swipe-search-label">
                     <span class="visually-hidden">Rechercher</span>
                     <input type="search" id="swipe-search" class="phone-swipe-search" placeholder="Rechercher une suggestion…" autocomplete="off" enterkeyhint="search" />
                 </label>
-                <div class="phone-swipe-toolbar-btns">
-                    <button type="button" id="btn-phone-mode-swipe" class="phone-mode-btn active">Découvrir</button>
-                    <button type="button" id="btn-phone-mode-list" class="phone-mode-btn">Liste</button>
-                    <button type="button" id="btn-phone-mode-liked" class="phone-mode-btn">Mes soutiens</button>
-                </div>
             </div>
             <div id="swipe-cvl-slot" class="swipe-cvl-slot"></div>
             <div id="swipe-deck-wrap" class="swipe-deck-wrap">
-                <div id="swipe-deck" class="swipe-deck">
+                <div class="swipe-floating-labels" aria-hidden="true">
+                    <span class="swipe-label swipe-nope">SUIVANT</span>
+                    <span class="swipe-label swipe-yep">PRÉCÉDENT</span>
+                </div>
+                <div class="swipe-stack" id="swipe-stack">
+                    <div class="swipe-stack-bg" aria-hidden="true"></div>
                     <div id="swipe-deck-inner" class="swipe-deck-inner"></div>
                 </div>
-                <div class="swipe-deck-nav">
-                    <button type="button" class="swipe-nav-btn" id="swipe-prev" aria-label="Suggestion précédente">‹</button>
-                    <span id="swipe-counter" class="swipe-counter">0 / 0</span>
-                    <button type="button" class="swipe-nav-btn" id="swipe-next" aria-label="Suggestion suivante">›</button>
+                <div id="swipe-counter-wrap" class="swipe-counter-wrap">
+                    <span id="swipe-counter" class="swipe-counter-big">0</span>
+                    <span class="swipe-counter-sep">/</span>
+                    <span id="swipe-counter-total" class="swipe-counter-total">0</span>
                 </div>
             </div>
-            <p class="swipe-hint">Double tap pour soutenir ou retirer votre soutien · Glissez gauche / droite</p>
+            <p class="swipe-hint">Double tap · Glissez comme une carte</p>
         </section>
 
         <!-- Suggestions list -->

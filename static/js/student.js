@@ -125,8 +125,11 @@ const fadeOverlay = $("#suggestions-fade");
 const expandBtn = $("#expand-btn");
 const expandText = $("#expand-text");
 const suggestionsDesktopWrap = $("#suggestions-desktop-wrap");
-const filtersSection = $(".filters-section");
-const phoneSwipeUi = $("#phone-swipe-ui");
+const filtersSection = $("#filters-section");
+const filtersMobileToggle = $("#filters-mobile-toggle");
+const filtersPanelWrap = $("#filters-panel-wrap");
+const phoneSwipeContent = $("#phone-swipe-content");
+const phoneNavDock = $("#phone-nav-dock");
 const swipeSearchInput = $("#swipe-search");
 const btnPhoneModeSwipe = $("#btn-phone-mode-swipe");
 const btnPhoneModeList = $("#btn-phone-mode-list");
@@ -134,8 +137,7 @@ const btnPhoneModeLiked = $("#btn-phone-mode-liked");
 const swipeCvlSlot = $("#swipe-cvl-slot");
 const swipeDeckInner = $("#swipe-deck-inner");
 const swipeCounter = $("#swipe-counter");
-const swipePrev = $("#swipe-prev");
-const swipeNext = $("#swipe-next");
+const swipeCounterTotal = $("#swipe-counter-total");
 
 /** Mode téléphone : 'swipe' = une fiche à la fois, 'list' = comme sur PC */
 let phoneUiMode = "swipe";
@@ -1247,9 +1249,13 @@ function setSuggestionsDisabled(disabled) {
     submitBtn.disabled = disabled;
     suggestionsContainer.style.pointerEvents = disabled ? "none" : "";
     suggestionsContainer.style.opacity = disabled ? "0.6" : "1";
-    if (phoneSwipeUi) {
-        phoneSwipeUi.style.pointerEvents = disabled ? "none" : "";
-        phoneSwipeUi.style.opacity = disabled ? "0.6" : "1";
+    if (phoneSwipeContent) {
+        phoneSwipeContent.style.pointerEvents = disabled ? "none" : "";
+        phoneSwipeContent.style.opacity = disabled ? "0.6" : "1";
+    }
+    if (phoneNavDock) {
+        phoneNavDock.style.pointerEvents = disabled ? "none" : "";
+        phoneNavDock.style.opacity = disabled ? "0.6" : "1";
     }
 }
 
@@ -1343,10 +1349,12 @@ function syncPhoneUiChrome() {
     document.body.classList.add("student-phone-ui");
     if (phoneUiMode === "list") {
         document.body.classList.add("st-phone-list");
-        if (filtersSection) filtersSection.classList.remove("hidden");
+        if (filtersSection) filtersSection.classList.remove("filters-hidden-phone");
+        if (phoneSwipeContent) phoneSwipeContent.classList.add("phone-swipe-content--hidden");
     } else {
         document.body.classList.remove("st-phone-list");
-        if (filtersSection) filtersSection.classList.add("hidden");
+        if (filtersSection) filtersSection.classList.add("filters-hidden-phone");
+        if (phoneSwipeContent) phoneSwipeContent.classList.remove("phone-swipe-content--hidden");
     }
     if (btnPhoneModeSwipe && btnPhoneModeList && btnPhoneModeLiked) {
         btnPhoneModeSwipe.classList.toggle("active", phoneUiMode === "swipe");
@@ -1379,18 +1387,21 @@ function createSwipeCardHtml(s) {
     const icon = CATEGORY_ICONS[s.category] || "📌";
     const liked = !!s.has_voted;
     return `
-        <div class="swipe-card suggestion-card" data-id="${s.id}" style="animation:none">
+        <div class="swipe-card swipe-card--dating" data-id="${s.id}">
             <div class="swipe-card-inner">
                 <div class="suggestion-title-block">
-                    <span class="suggestion-title">${icon} ${escapeHtml(s.title)}</span>
+                    <span class="swipe-card-emoji" aria-hidden="true">${icon}</span>
+                    <span class="suggestion-title swipe-card-title">${escapeHtml(s.title)}</span>
                     ${s.subtitle ? `<p class="suggestion-subtitle">${escapeHtml(s.subtitle)}</p>` : ""}
                 </div>
                 <div class="swipe-card-meta">
                     <span class="badge badge-category">${escapeHtml(s.category)}</span>
                     <span class="badge badge-status" data-status="${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
-                    <span class="swipe-card-votes">♥ ${s.vote_count}</span>
                 </div>
-                <p class="swipe-card-hint">${liked ? "Double tap pour retirer votre soutien" : "Double tap pour soutenir"}</p>
+                <div class="swipe-card-footer">
+                    <span class="swipe-card-votes-big">♥ ${s.vote_count}</span>
+                    <span class="swipe-card-hint">${liked ? "Double tap · retirer le soutien" : "Double tap · soutenir"}</span>
+                </div>
                 <div class="suggestion-heart-burst" aria-hidden="true"></div>
             </div>
         </div>
@@ -1451,15 +1462,17 @@ function renderSwipeView() {
 
     clampSwipeIndex();
     const list = getSwipeCandidates();
-    if (swipeCounter) {
-        swipeCounter.textContent = list.length ? `${swipeIndex + 1} / ${list.length}` : "0 / 0";
-    }
+    if (swipeCounter) swipeCounter.textContent = list.length ? String(swipeIndex + 1) : "0";
+    if (swipeCounterTotal) swipeCounterTotal.textContent = list.length ? String(list.length) : "0";
+    document.querySelectorAll(".swipe-nope, .swipe-yep").forEach((el) => {
+        el.style.opacity = "0";
+    });
     if (!list.length) {
         swipeDeckInner.innerHTML = `<div class="swipe-deck-empty"><p>Aucune suggestion${(swipeSearchQuery || "").trim() ? " pour cette recherche" : ""}.</p><p class="swipe-deck-empty-sub">Les sujets en mode débat sont dans la liste.</p></div>`;
         return;
     }
     const s = list[swipeIndex];
-    swipeDeckInner.innerHTML = createSwipeCardHtml(s);
+    swipeDeckInner.innerHTML = `<div class="swipe-card-layer" id="swipe-active-layer">${createSwipeCardHtml(s)}</div>`;
 }
 
 function swipeGoNext() {
@@ -1486,16 +1499,38 @@ function attachSwipeDeckGestures() {
     let dx = 0;
     let gestureMoved = false;
 
+    function getLayer() {
+        return swipeDeckInner.querySelector(".swipe-card-layer");
+    }
+
+    function labelEls() {
+        const wrap = document.getElementById("swipe-deck-wrap");
+        return {
+            nope: wrap?.querySelector(".swipe-nope"),
+            yep: wrap?.querySelector(".swipe-yep"),
+        };
+    }
+
+    function resetLabels() {
+        const { nope, yep } = labelEls();
+        if (nope) nope.style.opacity = "0";
+        if (yep) yep.style.opacity = "0";
+    }
+
     swipeDeckInner.addEventListener(
         "touchstart",
         (e) => {
             if (e.touches.length !== 1) return;
+            const layer = getLayer();
+            if (!layer) return;
             const t = e.touches[0];
             startX = t.clientX;
             startY = t.clientY;
             tracking = true;
             gestureMoved = false;
             dx = 0;
+            layer.style.transition = "none";
+            resetLabels();
         },
         { passive: true },
     );
@@ -1504,10 +1539,25 @@ function attachSwipeDeckGestures() {
         "touchmove",
         (e) => {
             if (!tracking || e.touches.length !== 1) return;
+            const layer = getLayer();
+            if (!layer) return;
             const t = e.touches[0];
             dx = t.clientX - startX;
             const ady = Math.abs(t.clientY - startY);
-            if (Math.abs(dx) > 16 && ady < 88) gestureMoved = true;
+            if (Math.abs(dx) > 12 && ady < 110) gestureMoved = true;
+            const rot = dx * 0.035;
+            layer.style.transform = `translateX(${dx}px) translateZ(0) rotate(${rot}deg)`;
+            const { nope, yep } = labelEls();
+            const p = Math.min(1, Math.abs(dx) / 100);
+            if (nope && yep) {
+                if (dx < 0) {
+                    nope.style.opacity = String(p);
+                    yep.style.opacity = "0";
+                } else if (dx > 0) {
+                    yep.style.opacity = String(p);
+                    nope.style.opacity = "0";
+                }
+            }
         },
         { passive: true },
     );
@@ -1517,15 +1567,33 @@ function attachSwipeDeckGestures() {
         (e) => {
             if (!tracking) return;
             tracking = false;
+            const layer = getLayer();
             const t = e.changedTouches[0];
             dx = t.clientX - startX;
             const ady = Math.abs(t.clientY - startY);
-            if (gestureMoved && Math.abs(dx) > 56 && ady < 100) {
-                if (dx < 0) swipeGoNext();
-                else swipeGoPrev();
+            const adx = Math.abs(dx);
+
+            if (gestureMoved && adx > 70 && ady < 130) {
+                const w = window.innerWidth;
+                const exitX = dx < 0 ? -w * 1.1 : w * 1.1;
+                if (layer) {
+                    layer.style.transition = "transform 0.32s cubic-bezier(0.4, 0, 0.2, 1)";
+                    layer.style.transform = `translateX(${exitX}px) rotate(${dx * 0.06}deg)`;
+                }
+                resetLabels();
+                const goNext = dx < 0;
+                setTimeout(() => {
+                    if (goNext) swipeGoNext();
+                    else swipeGoPrev();
+                }, 300);
                 swipeLastTap = 0;
                 return;
             }
+            if (layer) {
+                layer.style.transition = "transform 0.35s cubic-bezier(0.34, 1.4, 0.64, 1)";
+                layer.style.transform = "translateX(0) rotate(0deg)";
+            }
+            resetLabels();
             if (gestureMoved) {
                 swipeLastTap = 0;
                 return;
@@ -1600,8 +1668,12 @@ function setupPhoneSwipe() {
             renderSuggestions(true);
         });
     }
-    if (swipePrev) swipePrev.addEventListener("click", () => swipeGoPrev());
-    if (swipeNext) swipeNext.addEventListener("click", () => swipeGoNext());
+    if (filtersMobileToggle && filtersSection) {
+        filtersMobileToggle.addEventListener("click", () => {
+            const open = filtersSection.classList.toggle("filters-open");
+            filtersMobileToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+    }
     attachSwipeDeckGestures();
 }
 
