@@ -202,6 +202,30 @@ const isTouchDevice = () => {
     return hasTouch && !hasFinePointer && !isWideScreen;
 };
 
+/** Exposé pour la console / diagnostic_frontend.js (let global ≠ window.* en mode script classique). */
+if (typeof window !== "undefined") {
+    window.__lyceeDiag = {
+        get allSuggestions() {
+            return allSuggestions;
+        },
+        get voteLocksBySuggestionId() {
+            return voteLocksBySuggestionId;
+        },
+        get lastVoteServerTs() {
+            return lastVoteServerTs;
+        },
+        get voteOptimisticUntil() {
+            return voteOptimisticUntil;
+        },
+        get swipeDoubleTapVoteCooldownUntil() {
+            return swipeDoubleTapVoteCooldownUntil;
+        },
+        get phoneUiMode() {
+            return phoneUiMode;
+        },
+    };
+}
+
 // --------------- Init ---------------
 
 let submissionsOpen = true;

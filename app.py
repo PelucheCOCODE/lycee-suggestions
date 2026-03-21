@@ -290,12 +290,19 @@ def _vote_burst_response(sid: int, session_id: str, needs_debate: bool):
     if not s:
         return jsonify({"error": "Trop de requêtes. Réessaie plus tard.", "server_ts": _server_ts_ms()}), 429
     my = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
+    if needs_debate:
+        vf = Vote.query.filter_by(suggestion_id=sid, vote_type="for").count()
+        va = Vote.query.filter_by(suggestion_id=sid, vote_type="against").count()
+        vc = vf + va
+    else:
+        total = Vote.query.filter_by(suggestion_id=sid).count()
+        vc, vf, va = total, total, 0
     d = {
         "error": "Trop de requêtes sur cette action. Réessaie dans quelques secondes.",
         "server_ts": _server_ts_ms(),
-        "vote_count": s.vote_count,
-        "vote_for": getattr(s, "vote_for", 0),
-        "vote_against": getattr(s, "vote_against", 0),
+        "vote_count": vc,
+        "vote_for": vf,
+        "vote_against": va,
         "has_voted": my is not None,
         "my_vote": my.vote_type if my else None,
     }
@@ -308,6 +315,7 @@ def _vote_burst_response(sid: int, session_id: str, needs_debate: bool):
 def get_session_id():
     if "visitor_id" not in session:
         session["visitor_id"] = str(uuid.uuid4())
+        session.modified = True
     session.permanent = True
     return session["visitor_id"]
 
@@ -605,9 +613,44 @@ def list_suggestions():
     suggestions = [s for s in query.all() if _terminée_still_visible(s)]
     session_id = get_session_id()
 
+    ids = [s.id for s in suggestions]
+    vote_totals = {}
+    for_counts = {}
+    against_counts = {}
+    if ids:
+        vote_totals = dict(
+            db.session.query(Vote.suggestion_id, func.count(Vote.id))
+            .filter(Vote.suggestion_id.in_(ids))
+            .group_by(Vote.suggestion_id)
+            .all()
+        )
+        for_counts = dict(
+            db.session.query(Vote.suggestion_id, func.count(Vote.id))
+            .filter(Vote.suggestion_id.in_(ids), Vote.vote_type == "for")
+            .group_by(Vote.suggestion_id)
+            .all()
+        )
+        against_counts = dict(
+            db.session.query(Vote.suggestion_id, func.count(Vote.id))
+            .filter(Vote.suggestion_id.in_(ids), Vote.vote_type == "against")
+            .group_by(Vote.suggestion_id)
+            .all()
+        )
+
     result = []
     for s in suggestions:
         d = s.to_dict()
+        if getattr(s, "needs_debate", False):
+            vf = int(for_counts.get(s.id, 0))
+            va = int(against_counts.get(s.id, 0))
+            d["vote_for"] = vf
+            d["vote_against"] = va
+            d["vote_count"] = vf + va
+        else:
+            total = int(vote_totals.get(s.id, 0))
+            d["vote_count"] = total
+            d["vote_for"] = total
+            d["vote_against"] = 0
         my_vote = Vote.query.filter_by(suggestion_id=s.id, session_id=session_id).first()
         d["has_voted"] = my_vote is not None
         d["my_vote"] = my_vote.vote_type if my_vote else None
@@ -1226,14 +1269,20 @@ def _process_suggestion_argument_background(arg_id: int):
 
 
 def _update_suggestion_vote_counts(sid: int):
+    """Recalcule les compteurs depuis la table `votes` uniquement (pas d’incrément in-place)."""
     s = Suggestion.query.get(sid)
     if not s:
         return
     if getattr(s, "needs_debate", False):
         s.vote_for = Vote.query.filter_by(suggestion_id=sid, vote_type="for").count()
         s.vote_against = Vote.query.filter_by(suggestion_id=sid, vote_type="against").count()
+        s.vote_count = (s.vote_for or 0) + (s.vote_against or 0)
     else:
-        s.vote_count = Vote.query.filter_by(suggestion_id=sid).count()
+        total = Vote.query.filter_by(suggestion_id=sid).count()
+        s.vote_count = total
+        # Mode classique : tous les votes sont « for » ; vote_for reflète le total affiché
+        s.vote_for = total
+        s.vote_against = 0
     s.updated_at = datetime.now(timezone.utc)
     db.session.commit()
 
@@ -1298,11 +1347,18 @@ def _vote_simple_suggestion_locked(sid: int, suggestion: Suggestion, session_id:
 def _pack_vote_json(suggestion: Suggestion, session_id: str, needs_debate: bool, **overrides) -> dict:
     """État vote complet + server_ts (réconciliation client / désordre des réponses)."""
     my = Vote.query.filter_by(suggestion_id=suggestion.id, session_id=session_id).first()
+    if needs_debate:
+        vf = Vote.query.filter_by(suggestion_id=suggestion.id, vote_type="for").count()
+        va = Vote.query.filter_by(suggestion_id=suggestion.id, vote_type="against").count()
+        vc = vf + va
+    else:
+        total = Vote.query.filter_by(suggestion_id=suggestion.id).count()
+        vc, vf, va = total, total, 0
     d = {
         "server_ts": _server_ts_ms(),
-        "vote_count": suggestion.vote_count,
-        "vote_for": getattr(suggestion, "vote_for", 0),
-        "vote_against": getattr(suggestion, "vote_against", 0),
+        "vote_count": vc,
+        "vote_for": vf,
+        "vote_against": va,
         "has_voted": my is not None,
         "my_vote": my.vote_type if my else None,
     }
@@ -1738,7 +1794,10 @@ def _recalc_suggestion_vote_count(s):
         s.vote_against = Vote.query.filter_by(suggestion_id=s.id, vote_type="against").count()
         s.vote_count = s.vote_for + s.vote_against
     else:
-        s.vote_count = Vote.query.filter_by(suggestion_id=s.id).count()
+        total = Vote.query.filter_by(suggestion_id=s.id).count()
+        s.vote_count = total
+        s.vote_for = total
+        s.vote_against = 0
 
 
 @app.route("/api/display/suggestions", methods=["GET"])
