@@ -5530,6 +5530,8 @@ with app.app_context():
         for stmt in (
             "ALTER TABLE proposal_arguments ADD COLUMN reject_reason TEXT DEFAULT ''",
             "ALTER TABLE suggestions ADD COLUMN reject_reason TEXT DEFAULT ''",
+            # Anciennes BDD sans migration manuelle (sinon OperationalError sur /api/suggestions)
+            "ALTER TABLE suggestions ADD COLUMN importance_score REAL DEFAULT 0",
         ):
             try:
                 db.session.execute(_sql_text(stmt))

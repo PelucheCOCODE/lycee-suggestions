@@ -1,7 +1,21 @@
 const API = {
     async get(url) {
         const res = await fetch(url, { credentials: "same-origin" });
-        return res.json();
+        const ct = (res.headers.get("content-type") || "").toLowerCase();
+        if (ct.includes("application/json")) {
+            const data = await res.json();
+            if (!res.ok) {
+                const err = data && (data.error || data.message);
+                throw new Error(err || `HTTP ${res.status}`);
+            }
+            return data;
+        }
+        const text = await res.text();
+        throw new Error(
+            res.ok
+                ? `Réponse inattendue (pas du JSON). ${text.slice(0, 120)}`
+                : `HTTP ${res.status} — ${text.replace(/\s+/g, " ").slice(0, 160)}`,
+        );
     },
     async post(url, data) {
         const res = await fetch(url, {

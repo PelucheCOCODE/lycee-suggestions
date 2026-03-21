@@ -317,7 +317,7 @@ sudo systemctl stop lycee-suggestions
 # git pull ou déploiement des fichiers
 source .venv/bin/activate
 pip install -r requirements.txt
-# Migrations manuelles si le projet en fournit
+python migrate_db.py
 sudo systemctl start lycee-suggestions
 ```
 
@@ -327,6 +327,7 @@ sudo systemctl start lycee-suggestions
 
 | Symptôme | Piste |
 |----------|--------|
+| **500 sur `/api/suggestions`**, console : `Unexpected token '<'` (HTML au lieu de JSON) | Souvent une **colonne SQLite manquante** sur une ancienne base. Après mise à jour du code, **redémarrer** le service : au démarrage l’app tente d’ajouter `importance_score` etc. Sinon : `python migrate_db.py` puis redémarrage. Voir les logs : `journalctl -u lycee-suggestions -n 80` |
 | **502 Bad Gateway** | Gunicorn arrêté : `journalctl -u lycee-suggestions -n 50` |
 | **Permission denied** sur la base | `chown` / droits sur le répertoire du projet |
 | **Session qui ne tient pas** | Vérifier `HTTPS=1` si vous êtes en HTTPS |
