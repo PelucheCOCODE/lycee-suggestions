@@ -792,6 +792,25 @@ body.student-phone-ui .phone-swipe-content {
     font-size: 1.5rem;
     font-weight: 700;
     color: var(--primary);
+    transition: color 0.2s ease, filter 0.2s ease, text-shadow 0.2s ease;
+}
+.swipe-card-votes-big--liked {
+    color: #e11d48;
+    text-shadow: 0 0 14px rgba(225, 29, 72, 0.35);
+}
+.swipe-card--liked .swipe-card-footer {
+    border-top-color: rgba(225, 29, 72, 0.35);
+    background: linear-gradient(180deg, rgba(254, 242, 242, 0.65) 0%, transparent 100%);
+    border-radius: 0 0 18px 18px;
+    margin-left: -4px;
+    margin-right: -4px;
+    padding-left: 12px;
+    padding-right: 12px;
+    padding-bottom: 10px;
+}
+.swipe-card--liked .swipe-card-hint:not(.swipe-card-hint-debate-inner) {
+    color: #be123c;
+    font-weight: 600;
 }
 .swipe-card-hint { font-size: 0.75rem; color: var(--text-muted); text-align: center; }
 .swipe-deck-empty { text-align: center; padding: 2.5rem 1rem; color: var(--text-secondary); }
@@ -1305,6 +1324,12 @@ body.st-phone-swipe .swipe-counter-wrap {
     transition: all var(--transition);
     animation: card-slide-up 0.4s ease both;
 }
+.suggestion-card--user-voted:not(.suggestion-card-debate) {
+    border-color: rgba(225, 29, 72, 0.45);
+    box-shadow:
+        0 0 0 1px rgba(225, 29, 72, 0.12),
+        0 4px 18px -4px rgba(225, 29, 72, 0.18);
+}
 
 @media (hover: hover) {
     .suggestion-card:hover {
@@ -1586,11 +1611,16 @@ body.dark-theme .cvl-args-against,
 }
 
 .suggestion-vote-btn.voted {
-    border-color: var(--primary);
-    background: var(--primary);
-    color: white;
-    cursor: default;
+    border-color: #e11d48;
+    background: linear-gradient(135deg, #e11d48 0%, #ec4899 100%);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 2px 14px rgba(225, 29, 72, 0.38);
     animation: vote-pop 0.4s var(--bounce);
+}
+.suggestion-vote-btn.voted:focus-visible {
+    outline: 2px solid rgba(225, 29, 72, 0.55);
+    outline-offset: 2px;
 }
 
 .suggestion-subtitle {

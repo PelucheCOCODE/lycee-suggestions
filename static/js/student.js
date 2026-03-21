@@ -272,8 +272,10 @@ function patchSwipeVoteUiForCurrentCard() {
     const card = swipeDeckInner.querySelector(`#swipe-active-layer .swipe-card[data-id="${s.id}"]`);
     if (!card) return;
     if (!s.needs_debate) {
+        card.classList.toggle("swipe-card--liked", s.has_voted === true);
         const big = card.querySelector(".swipe-card-votes-big");
         if (big) {
+            big.classList.toggle("swipe-card-votes-big--liked", s.has_voted === true);
             const t = `♥ ${s.vote_count}`;
             if (big.textContent !== t) tickLiveField(big);
             big.textContent = t;
@@ -797,8 +799,9 @@ async function loadSuggestions(opts = {}) {
             return applyPollVoteMerge(prev, s);
         });
         suggestions = reconcileOptimisticVotes(suggestions);
+        suggestions.forEach(normalizeSuggestionVoteState);
         const proposal = merged.proposal;
-        syncVoteCacheFromServer(suggestionsRaw, proposalRaw);
+        syncVoteCacheFromServer(suggestions, proposalRaw);
         const newSig = buildIdsSignature(proposal, suggestions);
         const prevProposal = officialProposal;
         const proposalChanged = (!!proposal !== !!prevProposal) || (proposal && prevProposal && proposal.id !== prevProposal.id);
@@ -1056,6 +1059,7 @@ function updateSuggestionsInPlace() {
             stBadge.textContent = s.status;
             stBadge.setAttribute("data-status", s.status);
         }
+        if (!s.needs_debate) card.classList.toggle("suggestion-card--user-voted", s.has_voted === true);
         const meta = card.querySelector(".suggestion-meta");
         let locBadge = card.querySelector(".badge-location");
         if (s.location_name) {
@@ -1576,6 +1580,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
     const isFading = withAnimation && !expanded && index === INITIAL_SHOW - 1 && totalVisible === INITIAL_SHOW && listLen > INITIAL_SHOW;
     const fadeClass = isFading ? " suggestion-card-fade" : "";
     const hotClass = s.hot ? " suggestion-card-hot" : "";
+    const userVotedBand = !needsDebate && s.has_voted === true ? " suggestion-card--user-voted" : "";
     const delay = withAnimation ? index * 60 : 0;
 
     const subtitle = s.subtitle ? `<p class="suggestion-subtitle">${escapeHtml(s.subtitle)}</p>` : "";
@@ -1639,7 +1644,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
     ` : "";
 
     return `
-        <div class="suggestion-card${fadeClass}${needsDebate ? " suggestion-card-debate" : ""}${hotClass}" style="animation-delay:${delay}ms" data-id="${s.id}">
+        <div class="suggestion-card${fadeClass}${needsDebate ? " suggestion-card-debate" : ""}${hotClass}${userVotedBand}" style="animation-delay:${delay}ms" data-id="${s.id}">
             <div class="suggestion-card-header">
                 <div class="suggestion-title-block">
                     <span class="suggestion-title">${icon} ${escapeHtml(s.title)}</span>
@@ -1818,6 +1823,14 @@ function triggerHeartBurst(card) {
 
 // --------------- Vote — couche unique ----------------
 
+/** Normalise has_voted / my_vote après fetch ou merge poll (évite undefined, chaînes, etc.). */
+function normalizeSuggestionVoteState(s) {
+    if (!s) return;
+    s.has_voted = s.has_voted === true;
+    if (!s.has_voted) s.my_vote = null;
+    else if (s.my_vote == null || s.my_vote === "") s.my_vote = "for";
+}
+
 /** Après réponse vote : patch ciblé (liste simple) ou re-render débat si la structure des panneaux change. */
 function refreshVoteDomAfterSuggestionAction(s) {
     if (isTouchDevice() && phoneUiMode === "swipe") {
@@ -1855,16 +1868,17 @@ async function submitSuggestionVoteAction(p) {
     if (s.needs_debate) {
         removeVote = false;
     } else if (mode === "simple_toggle") {
-        removeVote = !!s.has_voted;
+        removeVote = s.has_voted === true;
     } else {
         if (opts.removeVote === true) removeVote = true;
-        else removeVote = !!s.has_voted;
+        else removeVote = s.has_voted === true;
     }
 
     if (!s.needs_debate) {
-        if (removeVote && !s.has_voted) return false;
-        if (!removeVote && s.has_voted) return false;
-        if (Date.now() < (suggestionVoteCooldownUntil[id] || 0)) return false;
+        if (removeVote && s.has_voted !== true) return false;
+        if (!removeVote && s.has_voted === true) return false;
+        // Cooldown uniquement sur l’ajout (anti-spam) — ne jamais bloquer le retrait (unlike).
+        if (!removeVote && Date.now() < (suggestionVoteCooldownUntil[id] || 0)) return false;
     }
 
     const lockToken = tryAcquireVoteLock(id);
@@ -1893,8 +1907,8 @@ async function submitSuggestionVoteAction(p) {
         }
         const { data, status } = await API.post(`/api/suggestions/${id}/vote`, body);
         if (status === 429 && data && typeof data.vote_count === "number") {
-            s.has_voted = !!data.has_voted;
-            s.my_vote = data.my_vote;
+            s.has_voted = data.has_voted === true;
+            s.my_vote = data.has_voted === true ? data.my_vote || "for" : null;
             s.vote_count = data.vote_count;
             s.vote_for = data.vote_for;
             s.vote_against = data.vote_against;
@@ -1912,8 +1926,8 @@ async function submitSuggestionVoteAction(p) {
         }
         if (status === 200) {
             const simple = !s.needs_debate;
-            s.has_voted = data.has_voted;
-            s.my_vote = data.my_vote;
+            s.has_voted = data.has_voted === true;
+            s.my_vote = data.has_voted === true ? data.my_vote || "for" : null;
             s.vote_count = data.vote_count;
             s.vote_for = data.vote_for;
             s.vote_against = data.vote_against;
@@ -1921,7 +1935,10 @@ async function submitSuggestionVoteAction(p) {
             s.arguments_against = data.arguments_against || [];
             if (data.server_ts) lastVoteServerTs[id] = Math.max(lastVoteServerTs[id] || 0, data.server_ts);
             voteOptimisticUntil[id] = Date.now() + 14000;
-            if (simple) suggestionVoteCooldownUntil[id] = Date.now() + 720;
+            if (simple) {
+                if (data.has_voted === true) suggestionVoteCooldownUntil[id] = Date.now() + 720;
+                else delete suggestionVoteCooldownUntil[id];
+            }
             syncVoteCacheFromServer(allSuggestions, officialProposal);
             refreshVoteDomAfterSuggestionAction(s);
             const addedSupport = simple && data.has_voted && !removeVote;
@@ -2440,7 +2457,7 @@ function createSpecialCardHtml(item) {
 
 function createSwipeCardHtml(s) {
     const icon = CATEGORY_ICONS[s.category] || "📌";
-    const liked = !!s.has_voted;
+    const liked = s.has_voted === true;
     const debate = !!s.needs_debate;
     const vf = s.vote_for ?? 0;
     const va = s.vote_against ?? 0;
@@ -2468,7 +2485,7 @@ function createSwipeCardHtml(s) {
         </div>`;
     }
     return `
-        <div class="swipe-card swipe-card--dating${hotClass}" data-id="${s.id}">
+        <div class="swipe-card swipe-card--dating${hotClass}${liked ? " swipe-card--liked" : ""}" data-id="${s.id}">
             <div class="swipe-card-inner">
                 <div class="suggestion-title-block">
                     <span class="swipe-card-emoji" aria-hidden="true">${icon}</span>
@@ -2480,7 +2497,7 @@ function createSwipeCardHtml(s) {
                     <span class="badge badge-status" data-status="${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
                 </div>
                 <div class="swipe-card-footer">
-                    <span class="swipe-card-votes-big">♥ ${s.vote_count}</span>
+                    <span class="swipe-card-votes-big${liked ? " swipe-card-votes-big--liked" : ""}">♥ ${s.vote_count}</span>
                     <span class="swipe-card-hint">${liked ? "Double tap · retirer le soutien" : "Double tap · soutenir"}</span>
                 </div>
                 <div class="suggestion-heart-burst" aria-hidden="true"></div>
