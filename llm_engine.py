@@ -624,10 +624,15 @@ def process_argument(proposal_text: str, argument_text: str, side: str, existing
         context=ctx,
         existing_args_block=existing_args_block,
     )
-    result = _call_ollama(prompt, temperature=0.15, num_predict=220, timeout=35)
+    result = _call_ollama(prompt, temperature=0.15, num_predict=220, timeout=22)
 
     if not result:
-        return False, "Modération IA indisponible (Ollama arrêté, timeout ou crédits épuisés)."
+        # Fallback : ne pas bloquer le parcours si Ollama est lent / hors ligne (filtre déjà passé en amont)
+        cleaned = " ".join(argument_text.split())
+        if len(cleaned) >= 5:
+            summary = cleaned[:220] + ("…" if len(cleaned) > 220 else "")
+            return True, summary
+        return False, "Texte trop court."
 
     result = result.strip()
     # Prendre la première ligne utile (certains modèles ajoutent un préambule)

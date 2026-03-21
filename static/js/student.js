@@ -124,8 +124,8 @@ const INITIAL_SHOW = 4;
 const voteLocksBySuggestionId = new Map();
 /** @type {Record<number, number>} dernier server_ts appliqué après une réponse vote */
 const lastVoteServerTs = {};
-/** Cooldown swipe après vote (anti rafales multi double-tap). */
-const swipeVoteCooldownUntil = {};
+/** Cooldown par suggestion après une action vote simple réussie (toggle add/remove). */
+const suggestionVoteCooldownUntil = {};
 let pendingOfficialProposalVote = false;
 
 // --------------- DOM ---------------
@@ -171,8 +171,6 @@ let swipeTouchStartX = 0;
 let swipeTouchStartY = 0;
 let swipeDragging = false;
 let swipeLastTap = 0;
-/** Anti double tap / spam like en swipe */
-const swipeSimpleLikeCooldownUntil = {};
 /** Évite reshuffle / re-render du deck pendant un geste tactile */
 let swipeUserInteracting = false;
 let pendingSwipeDeckRebuild = false;
@@ -943,7 +941,11 @@ function appendNewSuggestionsOnly() {
             });
         });
         card.querySelectorAll(".suggestion-vote-btn").forEach((btn) => {
-            btn.addEventListener("click", () => voteSuggestion(parseInt(btn.dataset.id)));
+            btn.addEventListener("click", () => {
+                submitSuggestionVoteAction({ suggestionId: parseInt(btn.dataset.id, 10), mode: "simple_toggle" }).catch(
+                    () => {},
+                );
+            });
         });
         card.querySelectorAll(".cvl-arguments-toggle").forEach((btn) => {
             btn.addEventListener("click", () => {
@@ -1074,8 +1076,8 @@ function updateSuggestionsInPlace() {
             if (voteBtn.textContent !== t) tickLiveField(voteBtn);
             voteBtn.textContent = t;
             voteBtn.classList.toggle("voted", s.has_voted);
-            voteBtn.disabled = !!s.has_voted;
-            voteBtn.setAttribute("aria-disabled", s.has_voted ? "true" : "false");
+            voteBtn.disabled = false;
+            voteBtn.setAttribute("aria-pressed", s.has_voted ? "true" : "false");
         }
         if (voteCount) {
             const t = `${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}${s.has_voted ? " · Soutenu" : ""}`;
@@ -1228,7 +1230,11 @@ function renderSuggestions(withAnimation = true) {
         btn.addEventListener("click", () => submitOfficialAddArgument(btn));
     });
     suggestionsContainer.querySelectorAll(".suggestion-vote-btn").forEach((btn) => {
-        btn.addEventListener("click", () => voteSuggestion(parseInt(btn.dataset.id)));
+        btn.addEventListener("click", () => {
+            submitSuggestionVoteAction({ suggestionId: parseInt(btn.dataset.id, 10), mode: "simple_toggle" }).catch(
+                () => {},
+            );
+        });
     });
     suggestionsContainer.querySelectorAll(".cvl-arguments-toggle").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -1405,7 +1411,11 @@ function onSuggestionVoteClick(btn) {
     const card = btn.closest(".suggestion-card-debate");
     const panel = card?.querySelector(".cvl-argument-panel");
     const suggestion = allSuggestions.find((s) => s.id === id);
-    if (!suggestion?.needs_debate || !panel) {
+    if (!suggestion?.needs_debate) {
+        void submitSuggestionVoteAction({ suggestionId: id, mode: "simple_toggle" }).catch(() => {});
+        return;
+    }
+    if (!panel) {
         voteSuggestion(id, vote);
         return;
     }
@@ -1425,27 +1435,35 @@ function onSuggestionVoteClick(btn) {
 
 async function submitSuggestionVoteWithArgument(btn) {
     const panel = btn.closest(".cvl-argument-panel");
-    const id = parseInt(panel?.dataset.suggestionId);
+    const id = parseInt(String(panel?.dataset.suggestionId || ""), 10);
     const vote = panel?.dataset.pendingVote;
     const input = panel?.querySelector(".cvl-argument-input");
     const argument = input?.value?.trim() || "";
-    if (!id || !vote) return;
+    if (!Number.isFinite(id) || !vote) {
+        showFeedback("Choisis d’abord Pour ou Contre, puis valide.", "warning");
+        return;
+    }
     btn.disabled = true;
     try {
-        await voteSuggestion(id, vote, argument);
-        panel?.classList.add("hidden");
-    } catch (err) { console.error(err); }
+        const ok = await voteSuggestion(id, vote, argument);
+        if (ok) panel?.classList.add("hidden");
+    } catch (err) {
+        console.warn("submitSuggestionVoteWithArgument", err);
+    }
     btn.disabled = false;
 }
 
 async function submitAddArgument(btn) {
     const form = btn.closest(".cvl-add-arg-form");
     const panel = btn.closest(".cvl-add-arg-panel");
-    const id = parseInt(panel?.dataset.suggestionId);
+    const id = parseInt(String(panel?.dataset.suggestionId || ""), 10);
     const ta = form?.querySelector(".cvl-argument-input");
     const argument = ta?.value?.trim() || "";
     const s = allSuggestions.find((x) => x.id === id);
-    if (!id || !argument || !s?.has_voted) return;
+    if (!Number.isFinite(id) || !argument || argument.length < 5 || !s?.has_voted) {
+        if (argument && argument.length < 5) showFeedback("Argument trop court (5 caractères min).", "warning");
+        return;
+    }
     btn.disabled = true;
     try {
         const { data, status } = await API.post(`/api/suggestions/${id}/argument`, {
@@ -1454,6 +1472,10 @@ async function submitAddArgument(btn) {
         });
         if (status === 429) {
             showFeedback((data && data.error) || "Trop de requêtes.", "error");
+            return;
+        }
+        if (data && data.error && status >= 400) {
+            showFeedback(data.error, "error");
             return;
         }
         if (s && status === 200) {
@@ -1564,8 +1586,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
             </div>
         `;
     } else {
-        const disabledAttr = s.has_voted ? " disabled" : "";
-        voteBtn = `<button type="button" class="suggestion-vote-btn${votedClass}" data-id="${s.id}"${disabledAttr} aria-disabled="${s.has_voted ? "true" : "false"}">${voteLabel} · ${s.vote_count}</button>`;
+        voteBtn = `<button type="button" class="suggestion-vote-btn${votedClass}" data-id="${s.id}" aria-pressed="${s.has_voted ? "true" : "false"}">${voteLabel} · ${s.vote_count}</button>`;
     }
 
     let argsHtml = "";
@@ -1782,33 +1803,43 @@ function triggerHeartBurst(card) {
     setTimeout(() => burst.classList.remove("heart-burst-active"), 600);
 }
 
-// --------------- Vote ---------------
+// --------------- Vote — couche unique ----------------
 
-async function voteSuggestion(id, voteType, argument, opts = {}) {
-    const removeVote = opts.removeVote === true;
+/**
+ * Toutes les actions vote / soutien sur une suggestion passent par ici (liste, swipe, débat, feuille).
+ * @param {object} p
+ * @param {number} p.suggestionId
+ * @param {"simple_toggle"|"legacy"} [p.mode] — simple_toggle = bascule soutien (mobile + liste) ; legacy = compat voteSuggestion(...)
+ * @param {"for"|"against"} [p.voteType]
+ * @param {string} [p.argument]
+ * @param {object} [p.opts]
+ */
+async function submitSuggestionVoteAction(p) {
+    const id = p.suggestionId;
+    const mode = p.mode || "legacy";
+    const voteType = p.voteType;
+    const argument = p.argument;
+    const opts = p.opts || {};
+
     const s = allSuggestions.find((x) => x.id === id);
     if (!s) return false;
-    if (!s.needs_debate) {
-        if (removeVote) {
-            if (!s.has_voted) return false;
-        } else if (s.has_voted) return false;
-        if (
-            !removeVote &&
-            isTouchDevice() &&
-            phoneUiMode === "swipe" &&
-            Date.now() < (swipeSimpleLikeCooldownUntil[id] || 0)
-        ) {
-            return false;
-        }
-        if (
-            !removeVote &&
-            isTouchDevice() &&
-            phoneUiMode === "swipe" &&
-            Date.now() < (swipeVoteCooldownUntil[id] || 0)
-        ) {
-            return false;
-        }
+
+    let removeVote = false;
+    if (s.needs_debate) {
+        removeVote = false;
+    } else if (mode === "simple_toggle") {
+        removeVote = !!s.has_voted;
+    } else {
+        if (opts.removeVote === true) removeVote = true;
+        else removeVote = !!s.has_voted;
     }
+
+    if (!s.needs_debate) {
+        if (removeVote && !s.has_voted) return false;
+        if (!removeVote && s.has_voted) return false;
+        if (Date.now() < (suggestionVoteCooldownUntil[id] || 0)) return false;
+    }
+
     const lockToken = tryAcquireVoteLock(id);
     if (lockToken === null) return false;
 
@@ -1854,7 +1885,7 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             return false;
         }
         if (status === 200) {
-            const simpleSupport = !s.needs_debate;
+            const simple = !s.needs_debate;
             s.has_voted = data.has_voted;
             s.my_vote = data.my_vote;
             s.vote_count = data.vote_count;
@@ -1864,17 +1895,15 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             s.arguments_against = data.arguments_against || [];
             if (data.server_ts) lastVoteServerTs[id] = Math.max(lastVoteServerTs[id] || 0, data.server_ts);
             voteOptimisticUntil[id] = Date.now() + 14000;
+            if (simple) suggestionVoteCooldownUntil[id] = Date.now() + 720;
             syncVoteCacheFromServer(allSuggestions, officialProposal);
             if (isTouchDevice() && phoneUiMode === "swipe") {
                 patchSwipeVoteUiForCurrentCard();
             } else {
                 renderSuggestionsSilent();
             }
-            if (simpleSupport && data.has_voted) {
-                if (!removeVote && isTouchDevice() && phoneUiMode === "swipe") {
-                    swipeSimpleLikeCooldownUntil[id] = Date.now() + 1200;
-                    swipeVoteCooldownUntil[id] = Date.now() + 650;
-                }
+            const addedSupport = simple && data.has_voted && !removeVote;
+            if (addedSupport) {
                 requestAnimationFrame(() => {
                     const card =
                         suggestionsContainer.querySelector(`.suggestion-card[data-id="${id}"]`) ||
@@ -1898,13 +1927,14 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             return true;
         }
     } catch (err) {
-        console.warn("voteSuggestion", err);
+        console.warn("submitSuggestionVoteAction", err);
     } finally {
         releaseVoteLock(id, lockToken);
         const s2 = allSuggestions.find((x) => x.id === id);
         suggestionsContainer.querySelectorAll(`.suggestion-vote-btn[data-id="${id}"]`).forEach((b) => {
-            b.disabled = !!s2?.has_voted;
+            b.disabled = false;
             b.removeAttribute("aria-busy");
+            if (s2 && !s2.needs_debate) b.setAttribute("aria-pressed", s2.has_voted ? "true" : "false");
         });
         debateVoteBtns().forEach((b) => {
             b.disabled = false;
@@ -1912,6 +1942,17 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
         });
     }
     return false;
+}
+
+/** Compatibilité : anciens appels (débat, feuille swipe, etc.) */
+async function voteSuggestion(id, voteType, argument, opts = {}) {
+    return submitSuggestionVoteAction({
+        suggestionId: id,
+        mode: "legacy",
+        voteType,
+        argument,
+        opts,
+    });
 }
 
 /** Cœur plein écran façon Instagram (double tap / like). */
@@ -2845,8 +2886,11 @@ function attachSwipeDeckGestures() {
                 if (!sug || sug.needs_debate) return;
                 const cx = t.clientX;
                 const cy = t.clientY;
-                if (sug.has_voted) voteSuggestion(id, undefined, undefined, { removeVote: true });
-                else voteSuggestion(id, undefined, undefined, { igBurstAt: { x: cx, y: cy } });
+                void submitSuggestionVoteAction({
+                    suggestionId: id,
+                    mode: "simple_toggle",
+                    opts: { igBurstAt: { x: cx, y: cy } },
+                });
             } else {
                 swipeLastTap = now;
             }
