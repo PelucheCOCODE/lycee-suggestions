@@ -37,11 +37,18 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "lycee-suggestions-secret-key-2026")
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///suggestions.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-# Session security
+# Cookie de session (élève / visitor_id)
+# CRITIQUE HTTP : Secure=True → le navigateur n’envoie PAS le cookie sur http:// (IP publique sans TLS).
+# Ne pas dériver Secure depuis HTTPS=1 (souvent posé par nginx vers WSGI alors que le client est en HTTP).
+# Défaut : Secure désactivé. En HTTPS réel (domaine + certificat) : SESSION_COOKIE_SECURE=true
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.environ.get("HTTPS", "").lower() in ("1", "true", "yes")
-app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=400)
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("SESSION_COOKIE_SECURE", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=365)
 app.config["SESSION_COOKIE_NAME"] = "lycee_session"
 # Session anonyme persistante (cookie) — aligné avec get_session_id() qui pose session.permanent = True
 app.config["SESSION_PERMANENT"] = True

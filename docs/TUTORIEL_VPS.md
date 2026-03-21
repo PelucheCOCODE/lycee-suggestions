@@ -120,8 +120,9 @@ Contenu type (adaptez les valeurs) :
 SECRET_KEY=changez-moi-une-longue-chaine-secrete-aleatoire
 ADMIN_PASSWORD=mot_de_passe_admin_fort
 
-# HTTPS activé (cookies sécurisés) une fois TLS en place
-HTTPS=1
+# Cookies de session « Secure » uniquement si le site est servi en HTTPS au navigateur
+# (ne pas activer sur accès http://IP — le cookie ne serait pas envoyé)
+# SESSION_COOKIE_SECURE=true
 
 # Optionnel : minification JS/CSS (true par défaut dans l’app)
 MINIFY=1
@@ -268,11 +269,13 @@ Certbot modifie la config Nginx pour ajouter **HTTPS** et, en général, la redi
 
 ### 8.3 — Cookies sécurisés côté Flask
 
-Ajoutez ou confirmez dans `/etc/lycee-suggestions.env` :
+Une fois **HTTPS** réellement utilisé par les navigateurs (certificat Let’s Encrypt, URL en `https://`), activez le flag **Secure** sur le cookie de session :
 
 ```ini
-HTTPS=1
+SESSION_COOKIE_SECURE=true
 ```
+
+**Sans HTTPS** (accès par `http://` + IP publique) : **ne pas** définir cette variable (défaut = cookies compatibles HTTP).
 
 Puis redémarrez l’application :
 
@@ -330,7 +333,7 @@ sudo systemctl start lycee-suggestions
 | **500 sur `/api/suggestions`**, console : `Unexpected token '<'` (HTML au lieu de JSON) | Souvent une **colonne SQLite manquante** sur une ancienne base. Après mise à jour du code, **redémarrer** le service : au démarrage l’app tente d’ajouter `importance_score` etc. Sinon : `python migrate_db.py` puis redémarrage. Voir les logs : `journalctl -u lycee-suggestions -n 80` |
 | **502 Bad Gateway** | Gunicorn arrêté : `journalctl -u lycee-suggestions -n 50` |
 | **Permission denied** sur la base | `chown` / droits sur le répertoire du projet |
-| **Session qui ne tient pas** | Vérifier `HTTPS=1` si vous êtes en HTTPS |
+| **Session qui ne tient pas** / **votes pas enregistrés** | En **HTTPS** : `SESSION_COOKIE_SECURE=true` dans l’env. En **HTTP** (IP sans TLS) : ne pas mettre `SESSION_COOKIE_SECURE=true` ; vérifier `Set-Cookie` dans l’onglet Réseau. |
 | **IA ne répond pas** | Ollama : `systemctl status ollama` ; `OLLAMA_URL` |
 | **Trop lent** | Augmenter `--timeout` Gunicorn ; alléger le modèle Ollama |
 
