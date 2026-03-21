@@ -30,10 +30,15 @@
 
     <div id="display-bus-panel" class="display-bus-panel hidden">
         <div class="display-bus-header">
-            <span class="display-bus-logo">🚌</span>
-            <h2>Horaires des bus</h2>
+            <div>
+                <h2 class="display-bus-title">Prochains départs</h2>
+                <p class="display-bus-sub">Temps d’attente estimé</p>
+            </div>
         </div>
-        <div id="display-bus-stops" class="display-bus-stops"></div>
+        <div id="display-bus-stops" class="display-bus-stops">
+            <div id="display-bus-viewport" class="bus-dep-viewport"></div>
+        </div>
+        <p id="display-bus-footnote" class="bus-dep-footnote"></p>
     </div>
 
     <div id="display-priority-announcement" class="display-priority-overlay hidden"></div>
@@ -49,6 +54,10 @@
     <!-- Announcement banner fixed at bottom -->
     <div id="display-announcements" class="display-announcements-bottom"></div>
 
+    <script src="{{ url_for('static', filename=asset('js/bus-diagnostics.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/display-announcements.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/bus-board-render.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/bus-board-pages.js')) }}"></script>
     <script src="{{ url_for('static', filename=asset('js/display.js')) }}"></script>
 </body>
 </html>

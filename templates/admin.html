@@ -787,77 +787,139 @@ Il y a un internat."></textarea>
         </section>
 
         <!-- Bus -->
-        <section id="section-bus" class="admin-section">
+        <section id="section-bus" class="admin-section admin-section-bus">
             <div class="section-header">
-                <h1>Horaires bus</h1>
+                <h1>Horaires bus (GTFS)</h1>
             </div>
-            <p class="context-hint">Configuration de l'affichage des horaires STRAN sur les écrans. Les bus s'affichent aux créneaux définis ou en mode forcé.</p>
+            <p class="context-hint bus-admin-lead">
+                Source principale : fichier GTFS public (transport.data.gouv — réseau Ycéo / STRAN). Aucune clé API requise.
+                Aux créneaux définis, si des départs sont trouvés, <strong>tous les écrans</strong> (mur + TV) n’affichent que les prochains bus.
+            </p>
 
-            <div class="bus-admin-grid">
-                <div class="bus-admin-block bus-admin-config">
-                    <h3>Configuration</h3>
+            <div class="bus-admin-layout">
+                <div class="bus-admin-block bus-admin-block--wide bus-admin-gtfs">
+                    <h3>Données GTFS</h3>
                     <div class="form-group">
-                        <label>Clé API Mecatran (STRAN)</label>
-                        <input type="text" id="bus-api-key" placeholder="Clé API ou URL complète avec apiKey=...">
-                        <span class="context-hint" style="display:block;margin-top:4px;">Collez la clé seule ou l'URL complète (ex: ...?apiKey=xxx), la clé sera extraite.</span>
+                        <label>URL du fichier GTFS (.zip)</label>
+                        <input type="url" id="bus-gtfs-url" class="bus-input-wide" placeholder="https://...">
+                        <span class="context-hint">Lien officiel Mecatran / data.gouv (re-téléchargement selon la fréquence ci-dessous).</span>
+                    </div>
+                    <div class="form-row-bus">
+                        <div class="form-group">
+                            <label>Re-téléchargement (jours)</label>
+                            <input type="number" id="bus-gtfs-refresh-days" min="1" max="30" value="7">
+                        </div>
+                        <div class="form-group">
+                            <label>Cache API affichage (s)</label>
+                            <input type="number" id="bus-cache-seconds" min="10" max="300" value="60">
+                        </div>
                     </div>
                     <div class="form-group">
+                        <label>Identifiants d’arrêts (<code>stop_id</code> ou code, un par entrée)</label>
+                        <textarea id="bus-stop-ids" class="bus-stop-ids-ta" rows="4" placeholder='["CSC01","CSC02","TRA01","TRA02","10869","10954"]' spellcheck="false"></textarea>
+                        <span class="context-hint"><strong>H1 / H2 (Cité Scolaire)</strong> : les deux sens passent aux quais <code>CSC01</code> et <code>CSC02</code> (inclure les deux — décalage typique ~5 min entre H1 et H2). <strong>Tranchée (ligne 7)</strong> : <code>TRA01</code>/<code>TRA02</code>. JSON tableau de chaînes ; quais GTFS résolus automatiquement.</span>
+                    </div>
+                    <div class="form-group">
+                        <label>Ordre d’affichage des lignes (JSON, optionnel)</label>
+                        <textarea id="bus-route-order" class="bus-stop-ids-ta" rows="3" placeholder='["H1","H2","L1"]' spellcheck="false"></textarea>
+                        <span class="context-hint">Stabilité du tableau : lignes connues en premier. Vide = ordre par défaut (H1… puis L…).</span>
+                    </div>
+                    <div class="form-row-bus">
+                        <div class="form-group">
+                            <label>Seuil imminent ≤ (min)</label>
+                            <input type="number" id="bus-eta-imminent-max" min="0" max="15" value="1">
+                        </div>
+                        <div class="form-group">
+                            <label>Seuil « bientôt » ≤ (min)</label>
+                            <input type="number" id="bus-eta-soon-max" min="0" max="30" value="3">
+                        </div>
+                        <div class="form-group">
+                            <label>Seuil « proche » ≤ (min)</label>
+                            <input type="number" id="bus-eta-near-max" min="0" max="45" value="7">
+                        </div>
+                    </div>
+                    <div class="form-row-bus">
+                        <div class="form-group">
+                            <label>Horizon de calcul GTFS (minutes)</label>
+                            <input type="number" id="bus-compute-horizon-minutes" min="30" max="600" value="600">
+                            <span class="context-hint">Fenêtre dans laquelle on cherche les prochains départs (élargir si une ligne utile manque). Ancien réglage « horizon » synchronisé à l’enregistrement.</span>
+                        </div>
+                        <div class="form-group">
+                            <label>Max lignes affichées</label>
+                            <input type="number" id="bus-max-departures" min="1" max="40" value="32">
+                        </div>
+                        <div class="form-group">
+                            <label>Pertinence (min ≤)</label>
+                            <input type="number" id="bus-relevance-minutes" min="5" max="120" value="30">
+                        </div>
+                    </div>
+                    <details class="bus-legacy-details">
+                        <summary>Options héritées (Mecatran temps réel)</summary>
+                        <div class="form-group">
+                            <label>Clé API Mecatran (optionnel)</label>
+                            <input type="text" id="bus-api-key" placeholder="Non utilisé par l’affichage GTFS actuel">
+                        </div>
                         <label class="bus-toggle-label">
                             <input type="checkbox" id="bus-use-static">
-                            Horaires statiques uniquement (GTFS)
+                            Ancien mode « statique via clé » (ignoré si GTFS URL ci-dessus)
                         </label>
-                        <span class="context-hint" style="display:block;margin-top:4px;">Utilise le flux GTFS statique au lieu du temps réel. Les bus sont souvent à l'heure.</span>
-                    </div>
-                    <div class="form-group">
+                    </details>
+                </div>
+
+                <div class="bus-admin-block bus-admin-schedule">
+                    <h3>Créneaux plein écran bus</h3>
+                    <label class="bus-toggle-label" style="margin-bottom:12px;display:block;">
+                        <input type="checkbox" id="bus-restrict-to-schedule">
+                        Ne calculer les départs que pendant les créneaux ci-dessous (sinon : GTFS toute l’année, H2 incluse)
+                    </label>
+                    <p class="context-hint">Pendant ces plages, les écrans passent en « PROCHAINS BUS » uniquement si l’API renvoie <code>available: true</code>.</p>
+                    <div id="bus-schedule-editor" class="bus-schedule-editor"></div>
+                    <button type="button" id="bus-add-slot" class="btn btn-secondary btn-sm">+ Créneau</button>
+                    <div class="form-group" style="margin-top:16px;">
                         <label class="bus-toggle-label">
                             <input type="checkbox" id="bus-force-display">
-                            Forcer l'affichage des bus
+                            Forcer l’affichage (ignore les créneaux, pas les données vides)
                         </label>
                     </div>
                     <div class="form-group" id="bus-force-until-group">
-                        <label>Jusqu'à (date/heure)</label>
-                        <input type="datetime-local" id="bus-force-display-until" placeholder="YYYY-MM-DDTHH:mm">
-                    </div>
-                    <div class="form-group">
-                        <label class="bus-toggle-label">
-                            <input type="checkbox" id="bus-alternance-enabled">
-                            Alternance bus / suggestions
-                        </label>
-                    </div>
-                    <div class="form-group" id="bus-alternance-interval-group">
-                        <label>Intervalle (secondes)</label>
-                        <input type="number" id="bus-alternance-interval-sec" value="60" min="10" max="600">
+                        <label>Jusqu’à (date/heure)</label>
+                        <input type="datetime-local" id="bus-force-display-until">
                     </div>
                 </div>
 
                 <div class="bus-admin-block bus-admin-exclude">
-                    <h3>Pages à exclure</h3>
-                    <p class="context-hint">Sélectionnez les écrans /tv/... à exclure de l'affichage bus (la page Boîte à Idées n'est pas concernée).</p>
+                    <h3>Pages TV à exclure</h3>
+                    <p class="context-hint">Cases cochées = pas de plein écran bus sur cette page /tv/…</p>
                     <div id="bus-exclude-pages" class="bus-exclude-list"></div>
+                </div>
+
+                <div class="bus-admin-block bus-admin-alt">
+                    <h3>Alternance (mur uniquement)</h3>
+                    <label class="bus-toggle-label">
+                        <input type="checkbox" id="bus-alternance-enabled">
+                        Alterner bus / suggestions hors créneaux
+                    </label>
+                    <div class="form-group" id="bus-alternance-interval-group">
+                        <label>Intervalle (s)</label>
+                        <input type="number" id="bus-alternance-interval-sec" value="60" min="10" max="600">
+                    </div>
                 </div>
 
                 <div class="bus-admin-block bus-admin-test">
                     <h3>Mode test</h3>
                     <label class="bus-toggle-label">
                         <input type="checkbox" id="bus-test-mode">
-                        Horaires fictifs (prochains bus uniquement, +3h)
+                        Données fictives (<code>available: true</code>)
                     </label>
                     <label class="bus-toggle-label" style="margin-top:8px;">
                         <input type="checkbox" id="bus-test-perturbations">
-                        Simuler des perturbations
+                        Notice perturbations (test)
                     </label>
-                </div>
-
-                <div class="bus-admin-block bus-admin-schedule">
-                    <h3>Créneaux d'affichage</h3>
-                    <p class="context-hint">Format HH:MM. Pendant ces créneaux, les bus s'affichent sur les écrans.</p>
-                    <div id="bus-schedule-editor" class="bus-schedule-editor"></div>
-                    <button id="bus-add-slot" class="btn btn-secondary btn-sm">+ Créneau</button>
                 </div>
             </div>
 
             <div class="bus-actions">
-                <button id="bus-save" class="btn btn-primary">Sauvegarder</button>
+                <button type="button" id="bus-save" class="btn btn-primary">Sauvegarder</button>
                 <span id="bus-save-status" class="save-status"></span>
             </div>
         </section>

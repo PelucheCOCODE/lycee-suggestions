@@ -1966,8 +1966,34 @@ function setupBus() {
 async function loadBusSettings() {
     try {
         const data = await API.get("/api/admin/bus-settings");
-        document.getElementById("bus-api-key").value = data.bus_api_key || "";
-        document.getElementById("bus-use-static").checked = data.bus_use_static || false;
+        const gtfsUrl = document.getElementById("bus-gtfs-url");
+        if (gtfsUrl) gtfsUrl.value = data.bus_gtfs_url || "";
+        const stopTa = document.getElementById("bus-stop-ids");
+        if (stopTa) stopTa.value = JSON.stringify(data.bus_stop_ids || [], null, 0);
+        const routeOrderTa = document.getElementById("bus-route-order");
+        if (routeOrderTa) routeOrderTa.value = JSON.stringify(data.bus_route_order || [], null, 2);
+        const etaI = document.getElementById("bus-eta-imminent-max");
+        if (etaI) etaI.value = data.bus_eta_imminent_max ?? 1;
+        const etaS = document.getElementById("bus-eta-soon-max");
+        if (etaS) etaS.value = data.bus_eta_soon_max ?? 3;
+        const etaN = document.getElementById("bus-eta-near-max");
+        if (etaN) etaN.value = data.bus_eta_near_max ?? 7;
+        const h = document.getElementById("bus-compute-horizon-minutes");
+        if (h) h.value = data.bus_compute_horizon_minutes ?? data.bus_horizon_minutes ?? 600;
+        const md = document.getElementById("bus-max-departures");
+        if (md) md.value = data.bus_max_departures ?? 32;
+        const rm = document.getElementById("bus-relevance-minutes");
+        if (rm) rm.value = data.bus_relevance_minutes ?? 30;
+        const cs = document.getElementById("bus-cache-seconds");
+        if (cs) cs.value = data.bus_cache_seconds ?? 60;
+        const gr = document.getElementById("bus-gtfs-refresh-days");
+        if (gr) gr.value = data.bus_gtfs_refresh_days ?? 7;
+        const apiKey = document.getElementById("bus-api-key");
+        if (apiKey) apiKey.value = data.bus_api_key || "";
+        const useStatic = document.getElementById("bus-use-static");
+        if (useStatic) useStatic.checked = data.bus_use_static || false;
+        const restrictSched = document.getElementById("bus-restrict-to-schedule");
+        if (restrictSched) restrictSched.checked = data.bus_restrict_to_schedule || false;
         document.getElementById("bus-force-display").checked = data.bus_force_display || false;
         document.getElementById("bus-force-display-until").value = data.bus_force_display_until ? data.bus_force_display_until.slice(0, 16) : "";
         document.getElementById("bus-alternance-enabled").checked = data.bus_alternance_enabled || false;
@@ -1995,10 +2021,9 @@ async function loadBusSettings() {
         });
         if (!editor.children.length) {
             const defaultSlots = [
-                { start: "07:40", end: "08:10" }, { start: "08:50", end: "09:10" }, { start: "09:50", end: "10:15" },
-                { start: "11:00", end: "11:10" }, { start: "11:50", end: "12:15" }, { start: "13:15", end: "13:30" },
-                { start: "14:20", end: "14:35" }, { start: "15:25", end: "15:35" }, { start: "16:25", end: "16:35" },
-                { start: "17:25", end: "17:40" },
+                { start: "07:15", end: "08:30" },
+                { start: "11:45", end: "13:15" },
+                { start: "16:15", end: "18:30" },
             ];
             defaultSlots.forEach((slot) => {
                 const div = document.createElement("div");
@@ -2019,9 +2044,44 @@ async function saveBusSettings() {
         if (start && end) schedule.push({ start, end });
     });
     const until = document.getElementById("bus-force-display-until")?.value;
+    let stopIds = ["CSC01", "CSC02", "TRA01", "TRA02", "10869", "10954"];
+    const ta = document.getElementById("bus-stop-ids")?.value?.trim();
+    if (ta) {
+        try {
+            const parsed = JSON.parse(ta);
+            if (Array.isArray(parsed)) stopIds = parsed.map(String);
+        } catch (e) {
+            alert("JSON invalide pour les stop_id.");
+            return;
+        }
+    }
+    let routeOrder = [];
+    const rota = document.getElementById("bus-route-order")?.value?.trim();
+    if (rota) {
+        try {
+            const parsed = JSON.parse(rota);
+            if (Array.isArray(parsed)) routeOrder = parsed.map(String);
+        } catch (e) {
+            alert("JSON invalide pour l’ordre des lignes.");
+            return;
+        }
+    }
     await API.put("/api/admin/bus-settings", {
+        bus_gtfs_url: document.getElementById("bus-gtfs-url")?.value?.trim() || "",
+        bus_stop_ids: stopIds,
+        bus_route_order: routeOrder,
+        bus_eta_imminent_max: parseInt(document.getElementById("bus-eta-imminent-max")?.value, 10) || 1,
+        bus_eta_soon_max: parseInt(document.getElementById("bus-eta-soon-max")?.value, 10) || 3,
+        bus_eta_near_max: parseInt(document.getElementById("bus-eta-near-max")?.value, 10) || 7,
+        bus_compute_horizon_minutes: parseInt(document.getElementById("bus-compute-horizon-minutes")?.value, 10) || 600,
+        bus_horizon_minutes: parseInt(document.getElementById("bus-compute-horizon-minutes")?.value, 10) || 600,
+        bus_max_departures: parseInt(document.getElementById("bus-max-departures")?.value, 10) || 32,
+        bus_relevance_minutes: parseInt(document.getElementById("bus-relevance-minutes")?.value, 10) || 30,
+        bus_cache_seconds: parseInt(document.getElementById("bus-cache-seconds")?.value, 10) || 60,
+        bus_gtfs_refresh_days: parseInt(document.getElementById("bus-gtfs-refresh-days")?.value, 10) || 7,
         bus_api_key: document.getElementById("bus-api-key")?.value?.trim() || "",
         bus_use_static: document.getElementById("bus-use-static")?.checked || false,
+        bus_restrict_to_schedule: document.getElementById("bus-restrict-to-schedule")?.checked || false,
         bus_force_display: document.getElementById("bus-force-display")?.checked || false,
         bus_force_display_until: until ? new Date(until).toISOString().slice(0, 19) : "",
         bus_schedule: schedule,

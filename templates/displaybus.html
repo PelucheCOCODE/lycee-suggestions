@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prochains bus</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
+</head>
+<body class="displaybus-body">
+    <div id="display-priority-announcement" class="display-priority-overlay hidden" aria-live="polite"></div>
+    <div class="displaybus-root">
+        <header class="displaybus-header">
+            <div class="displaybus-header-left">
+                <h1>Prochains départs</h1>
+            </div>
+            <div class="displaybus-header-right">
+                <time id="displaybus-clock" class="displaybus-clock" datetime="" aria-live="polite">—:—:—</time>
+            </div>
+        </header>
+        <main id="displaybus-main" class="displaybus-main">
+            <div id="displaybus-empty" class="displaybus-empty hidden" role="status">
+                <p class="displaybus-empty-title">Aucun horaire à afficher</p>
+                <p id="displaybus-empty-reason" class="displaybus-empty-reason"></p>
+            </div>
+            <div id="displaybus-rows" class="displaybus-rows">
+                <div id="displaybus-viewport" class="bus-dep-viewport"></div>
+            </div>
+        </main>
+        <footer class="displaybus-footer">
+            <p id="displaybus-footnote" class="displaybus-footnote"></p>
+            <div id="displaybus-page-hint" class="displaybus-page-hint" hidden></div>
+        </footer>
+    </div>
+    <div id="display-announcements" class="display-announcements-bottom"></div>
+    <script src="{{ url_for('static', filename=asset('js/bus-diagnostics.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/display-announcements.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/bus-board-render.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/bus-board-pages.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/displaybus.js')) }}"></script>
+</body>
+</html>

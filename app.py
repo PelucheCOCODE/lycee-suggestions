@@ -1,4 +1,5 @@
 import os
+import re
 import csv
 import io
 import json
@@ -32,6 +33,7 @@ from models import (
 )
 from ai_engine import AIEngine
 from content_filter import filter_content, filter_content_quick
+import bus_gtfs
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "lycee-suggestions-secret-key-2026")
@@ -558,6 +560,12 @@ def student_page():
 @app.route("/display")
 def display_page():
     return render_template("display.html")
+
+
+@app.route("/displaybus")
+def displaybus_page():
+    """Écran dédié : uniquement les prochains bus (horloge + pagination si besoin)."""
+    return render_template("displaybus.html")
 
 
 @app.route("/admin")
@@ -4100,7 +4108,8 @@ def public_settings():
         "display_mode": get_setting("display_mode", "normal"),
         "display_waiting_title": get_setting("display_waiting_title", ""),
         "display_waiting_text": get_setting("display_waiting_text", ""),
-        "bus_schedule": _parse_bus_schedule(),
+        "bus_schedule": _parse_bus_schedule_slots(),
+        "bus_restrict_to_schedule": get_setting("bus_restrict_to_schedule", "false") == "true",
         "bus_force_display": get_setting("bus_force_display", "false") == "true",
         "bus_force_display_until": get_setting("bus_force_display_until", ""),
         "bus_alternance_enabled": get_setting("bus_alternance_enabled", "false") == "true",
@@ -4117,6 +4126,849 @@ def _parse_bus_schedule():
         return json.loads(raw) if raw else []
     except json.JSONDecodeError:
         return []
+
+
+# --- GTFS statique (Ycéo / STRAN) : payload unifié pour /api/display/bus et TV ---
+_DEFAULT_BUS_GTFS_URL = (
+    "https://app.mecatran.com/utw/ws/gtfsfeed/static/stran-merge"
+    "?apiKey=2e6071036d276153761f0c090b4a45420e047612"
+)
+_BUS_DISPLAY_CACHE: dict = {"ts": 0.0, "payload": None}
+
+
+def _parse_bus_stop_ids_list() -> list[str]:
+    raw = get_setting("bus_stop_ids", "")
+    if raw:
+        try:
+            j = json.loads(raw)
+            if isinstance(j, list):
+                return [str(x) for x in j]
+        except json.JSONDecodeError:
+            pass
+    # Cité Scolaire : CSC01 + CSC02 (deux sens pour H1/H2 qui passent aux mêmes quais). Tranchée : TRA01/TRA02.
+    # Autres ids numériques (ex. lycée). Pas de 10826 (Cité Sanitaire) pour ne pas confondre avec la Cité Scolaire.
+    return ["CSC01", "CSC02", "TRA01", "TRA02", "10869", "10954"]
+
+
+def _parse_bus_route_order():
+    """Ordre d’affichage des lignes (stabilité type tableau des départs). JSON ou liste par défaut."""
+    raw = get_setting("bus_route_order", "")
+    if raw:
+        try:
+            j = json.loads(raw)
+            if isinstance(j, list) and len(j) > 0:
+                return [str(x).strip() for x in j if str(x).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [
+        "H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12",
+        "4", "5", "6", "7",
+        "L1", "L2", "L3", "L4", "L5", "HLP", "L",
+    ]
+
+
+def _parse_bus_eta_tiers():
+    """Seuils visuels (minutes, inclus) : imminent ≤ soon ≤ near. Configurable via réglages."""
+    return {
+        "imminent_max": max(0, int(get_setting("bus_eta_imminent_max", "1") or "1")),
+        "soon_max": max(0, int(get_setting("bus_eta_soon_max", "3") or "3")),
+        "near_max": max(0, int(get_setting("bus_eta_near_max", "7") or "7")),
+    }
+
+
+def _sort_bus_departures(departures, route_order):
+    """Tri : ordre de ligne (config), puis prochain passage, puis direction / arrêt."""
+
+    def rank(route_name: str) -> tuple:
+        r = (route_name or "").strip()
+        if r in route_order:
+            return (0, route_order.index(r))
+        return (1, r)
+
+    def key(d: dict) -> tuple:
+        rk = rank(d.get("route_name") or "")
+        dmin = int(d.get("delay_minutes") or 9999)
+        direction = (d.get("direction") or "").strip()
+        stop_k = (d.get("config_stop_id") or d.get("stop_name") or "").strip()
+        return (rk[0], rk[1], dmin, direction, stop_k)
+
+    return sorted(departures, key=key)
+
+
+def _route_sort_key_tuple(rn: str, route_order: list) -> tuple:
+    r = (rn or "").strip()
+    if r in route_order:
+        return (0, route_order.index(r))
+    return (1, r)
+
+
+def _matches_priority_slot(slot: str, route_name: str) -> bool:
+    """H1/H2/H3 ou 4 / H4 ou 7 / H7."""
+    rn = (route_name or "").strip()
+    s = slot.strip().upper()
+    if s == "4":
+        return rn in ("4", "H4")
+    if s == "7":
+        return rn in ("7", "H7")
+    return rn.upper() == s
+
+
+def _direction_bucket(r: dict) -> str:
+    """Discriminant de sens : direction_id GTFS si présent, sinon trip_headsign."""
+    did = r.get("direction_id")
+    if did is not None:
+        try:
+            return f"did:{int(did)}"
+        except (TypeError, ValueError):
+            pass
+    return (r.get("direction") or "").strip() or "—"
+
+
+def _pair_sides_by_direction(rows: list) -> tuple[dict | None, dict | None]:
+    """Sens 1 = direction_id 0, Sens 2 = direction_id 1 (GTFS). Sinon deux sens par trip_headsign."""
+    if not rows:
+        return (None, None)
+    by_dir: dict[str, list] = {}
+    for r in rows:
+        dr = _direction_bucket(r)
+        by_dir.setdefault(dr, []).append(r)
+    for k in by_dir:
+        by_dir[k].sort(key=lambda x: int(x.get("delay_minutes") or 9999))
+    # Dès qu’au moins un trip a direction_id 0 ou 1, on fixe Sens1/Sens2 sur ces créneaux
+    # (évite le fallback headsign si un seul trip sans direction_id pollue la liste).
+    if "did:0" in by_dir or "did:1" in by_dir:
+        a = (by_dir.get("did:0") or [None])[0]
+        b = (by_dir.get("did:1") or [None])[0]
+        return (a, b)
+    keys_sorted = sorted(
+        by_dir.keys(),
+        key=lambda k: min(int(x.get("delay_minutes") or 9999) for x in by_dir[k]),
+    )
+    if len(keys_sorted) >= 2:
+        return (by_dir[keys_sorted[0]][0], by_dir[keys_sorted[1]][0])
+    if len(keys_sorted) == 1:
+        return (by_dir[keys_sorted[0]][0], None)
+    return (None, None)
+
+
+def _rows_for_line7_tranchee_only(rows: list) -> list:
+    """Ligne 7 : ne garder que les départs à l’arrêt Tranchée (config TRA* ou libellé)."""
+    out = []
+    for r in rows:
+        cid = (r.get("config_stop_id") or "").strip().upper()
+        sn = (r.get("stop_name") or "").strip()
+        if cid.startswith("TRA"):
+            out.append(r)
+        elif re.search(r"(?i)tranch", sn):
+            out.append(r)
+    return out
+
+
+def _combined_stop_label(a: dict | None, b: dict | None, route_name: str = "") -> str:
+    rn = (route_name or "").strip()
+
+    def _cite_label(s: str) -> str:
+        t = (s or "").strip()
+        if rn in ("H1", "H2") and re.search(r"(?i)cité\s*sanitaire", t):
+            return re.sub(r"(?i)cité\s*sanitaire", "Cité Scolaire", t)
+        return t
+
+    if rn in ("7", "H7", "07"):
+        names: list[str] = []
+        for side in (a, b):
+            if not side:
+                continue
+            sn = (side.get("stop_name") or "").strip()
+            if re.search(r"(?i)tranch", sn):
+                names.append(sn)
+        if names:
+            uniq = list(dict.fromkeys(names))
+            return uniq[0] if len(uniq) == 1 else " · ".join(uniq)
+        return ""
+    if not a and not b:
+        return ""
+    if not b:
+        return _cite_label((a.get("stop_name") or "").strip())
+    if not a:
+        return _cite_label((b.get("stop_name") or "").strip())
+    sa = _cite_label((a.get("stop_name") or "").strip())
+    sb = _cite_label((b.get("stop_name") or "").strip())
+    if sa == sb or not sb:
+        return sa
+    if not sa:
+        return sb
+    return f"{sa} · {sb}"
+
+
+def _bundle_two_directions_per_route(departures: list, route_order: list) -> list:
+    """Une ligne d’écran par ligne de bus : jusqu’à 2 sens côte à côte (départs + attente chacun)."""
+    if not departures:
+        return []
+    by_route: dict[str, list] = {}
+    for d in departures:
+        rn = (d.get("route_name") or "").strip()
+        if rn not in by_route:
+            by_route[rn] = []
+        by_route[rn].append(d)
+    out = []
+    for rn in sorted(by_route.keys(), key=lambda r: _route_sort_key_tuple(r, route_order)):
+        rows = by_route[rn]
+        if (rn or "").strip() in ("7", "H7", "07"):
+            rows = _rows_for_line7_tranchee_only(rows)
+            if not rows:
+                continue
+        a, b = _pair_sides_by_direction(rows)
+        if a is None and b is None:
+            continue
+        if a is None:
+            a = _void_side_na(rn)
+        if b is None:
+            b = _void_side_na(rn)
+        out.append(
+            {
+                "route_name": rn,
+                "stop_name": _combined_stop_label(a, b, rn),
+                "side_a": a,
+                "side_b": b,
+            }
+        )
+    return out
+
+
+def _sort_priority_routes_first(departures: list, route_order: list) -> list:
+    """H1 → H2 → H3 → 4 → 7 en tête si présents, puis le reste selon l’ordre réseau."""
+    priority_slots = ["H1", "H2", "H3", "4", "7"]
+    by_rn = {(d.get("route_name") or "").strip(): d for d in departures}
+    out = []
+    for slot in priority_slots:
+        for rn, d in list(by_rn.items()):
+            if _matches_priority_slot(slot, rn):
+                out.append(d)
+                del by_rn[rn]
+                break
+    rest = sorted(
+        by_rn.values(),
+        key=lambda x: _route_sort_key_tuple((x.get("route_name") or "").strip(), route_order),
+    )
+    return out + rest
+
+
+BUS_PRIORITY_SLOTS: list[str] = ["H1", "H2", "H3", "4", "7"]
+
+
+def _get_bus_compute_horizon_minutes() -> int:
+    """Horizon GTFS pour l’index stop_times (défaut 10 h = 600 min). Plafond 600."""
+    co = (get_setting("bus_compute_horizon_minutes", "") or "").strip()
+    if co:
+        return max(30, min(600, int(co)))
+    ho = (get_setting("bus_horizon_minutes", "") or "").strip()
+    if ho:
+        return max(30, min(600, int(ho)))
+    return 600
+
+
+def _slot_display_route_name(slot: str) -> str:
+    return {"H1": "H1", "H2": "H2", "H3": "H3", "4": "4", "7": "7"}.get(slot, slot)
+
+
+def _void_side_na(route_display: str) -> dict:
+    return {
+        "route_name": route_display,
+        "direction": "—",
+        "stop_name": "",
+        "config_stop_id": "",
+        "delay_minutes": -1,
+        "no_departure": True,
+        "labels": ["—"],
+        "label": "—",
+        "urgency": "normal",
+        "is_imminent": False,
+        "primary": {"minutes": -1, "label": "—", "urgency": "normal", "is_imminent": False},
+        "secondary": None,
+    }
+
+
+def _placeholder_bundled_row(slot: str) -> dict:
+    rn = _slot_display_route_name(slot)
+    void_a = _void_side_na(rn)
+    void_b = _void_side_na(rn)
+    return {
+        "route_name": rn,
+        "stop_name": "Pas de départ dans l’horizon",
+        "side_a": void_a,
+        "side_b": void_b,
+        "is_placeholder": True,
+    }
+
+
+def _earliest_bundle_delay(row: dict) -> int:
+    """Plus petit délai (minutes) sur les deux sens ; placeholders en dernier."""
+
+    def min_side(side: dict | None) -> int:
+        if not side or not isinstance(side, dict):
+            return 99999
+        if side.get("no_departure"):
+            return 99999
+        p = side.get("primary") or {}
+        m = p.get("minutes")
+        if m is not None and int(m) >= 0:
+            return int(m)
+        dm = side.get("delay_minutes")
+        if dm is not None and int(dm) >= 0:
+            return int(dm)
+        return 99999
+
+    sa = row.get("side_a") or {}
+    sb = row.get("side_b")
+    return min(min_side(sa), min_side(sb) if sb else 99999)
+
+
+def _finalize_bus_departures_for_display(
+    bundled: list, max_dep: int, route_order: list
+) -> tuple[list, dict]:
+    """
+    Pass 1 : réserver les créneaux H1, H2, H3, 4, 7 (réel ou placeholder « — » si aucun départ).
+    Pass 2 : compléter avec les autres lignes par proximité du prochain passage, sans tronquer
+    une priorité par un simple [:N] sur une liste mal ordonnée.
+    """
+    priority_slots = BUS_PRIORITY_SLOTS
+    by_slot: dict[str, dict] = {}
+    for row in bundled:
+        if not isinstance(row, dict):
+            continue
+        rn = (row.get("route_name") or "").strip()
+        for slot in priority_slots:
+            if _matches_priority_slot(slot, rn):
+                if slot not in by_slot:
+                    by_slot[slot] = row
+                break
+
+    used_ids = {id(v) for v in by_slot.values()}
+    rest = [r for r in bundled if id(r) not in used_ids]
+    rest_sorted = sorted(
+        rest,
+        key=lambda r: (
+            _earliest_bundle_delay(r),
+            _route_sort_key_tuple((r.get("route_name") or "").strip(), route_order),
+        ),
+    )
+
+    out: list = []
+    for slot in priority_slots:
+        if len(out) >= max_dep:
+            break
+        row = by_slot.get(slot)
+        if row:
+            out.append(row)
+        else:
+            out.append(_placeholder_bundled_row(slot))
+
+    for r in rest_sorted:
+        if len(out) >= max_dep:
+            break
+        out.append(r)
+
+    meta = {
+        "priority_routes_found": [s for s in priority_slots if s in by_slot],
+        "priority_routes_missing": [s for s in priority_slots if s not in by_slot],
+        "placeholders_used": [s for s in priority_slots if s not in by_slot],
+    }
+    return out, meta
+
+
+def _dropped_routes_after_bundle(raw_departures: list, bundled: list) -> list[dict]:
+    """Routes présentes en lignes plates GTFS mais absentes après bundle (ex. ligne 7 sans quai Tranchée)."""
+    raw_routes: set[str] = set()
+    for d in raw_departures or []:
+        rn = (d.get("route_name") or "").strip()
+        if rn:
+            raw_routes.add(rn)
+    out_routes: set[str] = set()
+    for row in bundled or []:
+        if isinstance(row, dict):
+            rn = (row.get("route_name") or "").strip()
+            if rn:
+                out_routes.add(rn)
+    dropped: list[dict] = []
+    for rn in raw_routes - out_routes:
+        if rn in ("7", "H7", "07"):
+            reason = "filtre ligne 7 → uniquement arrêts Tranchée (TRA*) ; aucun départ retenu"
+        else:
+            reason = "agrégation par ligne : aucun sens retenu (best per direction)"
+        dropped.append({"route": rn, "stage": "bundle", "reason": reason})
+    return dropped
+
+
+def _h2_pipeline_diagnostics(
+    raw_flat: list,
+    bundled: list,
+    bundled_sorted: list | None,
+    final: list,
+) -> dict:
+    """Compteurs explicites H2 à chaque étape du pipeline (debug)."""
+
+    def count_h2_flat(rows: list) -> int:
+        return sum(1 for d in (rows or []) if (d.get("route_name") or "").strip() == "H2")
+
+    def count_h2_bundled(rows: list) -> int:
+        n = 0
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            if (r.get("route_name") or "").strip() == "H2":
+                n += 1
+        return n
+
+    h2r = count_h2_flat(raw_flat)
+    h2b = count_h2_bundled(bundled)
+    h2s = count_h2_bundled(bundled_sorted) if bundled_sorted is not None else None
+    h2f = count_h2_bundled(final)
+    if h2r == 0:
+        stage = "pas_dans_brut_gtfs"
+    elif h2b == 0:
+        stage = "perdue_au_bundle"
+    elif h2f == 0:
+        stage = "perdue_finale_ou_troncature"
+    else:
+        stage = "ok"
+    return {
+        "h2_before_bundle_count": h2r,
+        "h2_after_bundle_count": h2b,
+        "h2_after_sort_count": h2s,
+        "h2_after_truncate_count": h2f,
+        "h2_stage": stage,
+    }
+
+
+def _default_bus_schedule_slots() -> list[dict]:
+    return [
+        {"start": "07:15", "end": "08:30"},
+        {"start": "11:45", "end": "13:15"},
+        {"start": "16:15", "end": "18:30"},
+    ]
+
+
+def _parse_bus_schedule_slots() -> list[dict]:
+    s = _parse_bus_schedule()
+    if s:
+        return s
+    return _default_bus_schedule_slots()
+
+
+def _is_now_in_bus_slots(now_dt: datetime, slots: list[dict]) -> bool:
+    if not slots:
+        return True
+    now_min = now_dt.hour * 60 + now_dt.minute
+    for slot in slots:
+        try:
+            sh, sm = (slot.get("start") or "00:00").split(":")[:2]
+            eh, em = (slot.get("end") or "23:59").split(":")[:2]
+            a = int(sh) * 60 + int(sm)
+            b = int(eh) * 60 + int(em)
+            if a <= now_min <= b:
+                return True
+        except (ValueError, IndexError):
+            continue
+    return False
+
+
+def _parse_bus_force_display() -> bool:
+    if get_setting("bus_force_display", "false") != "true":
+        return False
+    until = get_setting("bus_force_display_until", "")
+    if not until:
+        return True
+    try:
+        u = datetime.fromisoformat(until.replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) < u
+    except Exception:
+        return True
+
+
+def _fake_bus_display_payload(test_perturbations: bool = False) -> dict:
+    now_ms = int(time.time() * 1000)
+    cache_sec = int(get_setting("bus_cache_seconds", "60") or "60")
+    tiers = _parse_bus_eta_tiers()
+    imax, smax, nmax = tiers["imminent_max"], tiers["soon_max"], tiers["near_max"]
+
+    def urg(dm: int) -> str:
+        if dm <= imax:
+            return "imminent"
+        if dm <= smax:
+            return "soon"
+        if dm <= nmax:
+            return "near"
+        return "normal"
+
+    def plab(dm: int) -> str:
+        if dm <= imax:
+            return "IMMINENT"
+        return f"{dm} min"
+
+    deps = [
+        {
+            "route_name": "H1",
+            "direction": "Gavy",
+            "stop_name": "Cité Scolaire (sens 1)",
+            "config_stop_id": "CSC01",
+            "delay_minutes": 2,
+            "delay_minutes_2": 14,
+            "times_minutes": [2, 14],
+            "labels": [plab(2), plab(14)],
+            "label": f"{plab(2)} · {plab(14)}",
+            "is_imminent": urg(2) == "imminent",
+            "urgency": urg(2),
+            "primary": {
+                "minutes": 2,
+                "label": plab(2),
+                "urgency": urg(2),
+                "is_imminent": urg(2) == "imminent",
+            },
+            "secondary": {"minutes": 14, "label": plab(14)},
+        },
+        {
+            "route_name": "H1",
+            "direction": "Saint-Joseph",
+            "stop_name": "Cité Scolaire (sens 2)",
+            "config_stop_id": "CSC02",
+            "delay_minutes": 7,
+            "delay_minutes_2": 19,
+            "times_minutes": [7, 19],
+            "labels": [plab(7), plab(19)],
+            "label": f"{plab(7)} · {plab(19)}",
+            "is_imminent": urg(7) == "imminent",
+            "urgency": urg(7),
+            "primary": {
+                "minutes": 7,
+                "label": plab(7),
+                "urgency": urg(7),
+                "is_imminent": urg(7) == "imminent",
+            },
+            "secondary": {"minutes": 19, "label": plab(19)},
+        },
+        {
+            "route_name": "H2",
+            "direction": "Pornichet",
+            "stop_name": "Cité Scolaire",
+            "config_stop_id": "SAN01",
+            "delay_minutes": 8,
+            "delay_minutes_2": 21,
+            "times_minutes": [8, 21],
+            "labels": [plab(8), plab(21)],
+            "label": f"{plab(8)} · {plab(21)}",
+            "is_imminent": False,
+            "urgency": urg(8),
+            "primary": {
+                "minutes": 8,
+                "label": plab(8),
+                "urgency": urg(8),
+                "is_imminent": False,
+            },
+            "secondary": {"minutes": 21, "label": plab(21)},
+        },
+        {
+            "route_name": "H2",
+            "direction": "Saint-Nazaire",
+            "stop_name": "Cité Scolaire",
+            "config_stop_id": "CSC02",
+            "delay_minutes": 15,
+            "delay_minutes_2": 33,
+            "times_minutes": [15, 33],
+            "labels": [plab(15), plab(33)],
+            "label": f"{plab(15)} · {plab(33)}",
+            "is_imminent": False,
+            "urgency": urg(15),
+            "primary": {
+                "minutes": 15,
+                "label": plab(15),
+                "urgency": urg(15),
+                "is_imminent": False,
+            },
+            "secondary": {"minutes": 33, "label": plab(33)},
+        },
+        {
+            "route_name": "H3",
+            "direction": "Saint-Nazaire",
+            "stop_name": "Cité Scolaire",
+            "config_stop_id": "CSC01",
+            "delay_minutes": 11,
+            "delay_minutes_2": 26,
+            "times_minutes": [11, 26],
+            "labels": [plab(11), plab(26)],
+            "label": f"{plab(11)} · {plab(26)}",
+            "is_imminent": False,
+            "urgency": urg(11),
+            "primary": {
+                "minutes": 11,
+                "label": plab(11),
+                "urgency": urg(11),
+                "is_imminent": False,
+            },
+            "secondary": {"minutes": 26, "label": plab(26)},
+        },
+        {
+            "route_name": "4",
+            "direction": "Mendès-France",
+            "stop_name": "Tranchée",
+            "config_stop_id": "TRA01",
+            "delay_minutes": 6,
+            "delay_minutes_2": 22,
+            "times_minutes": [6, 22],
+            "labels": [plab(6), plab(22)],
+            "label": f"{plab(6)} · {plab(22)}",
+            "is_imminent": urg(6) == "imminent",
+            "urgency": urg(6),
+            "primary": {
+                "minutes": 6,
+                "label": plab(6),
+                "urgency": urg(6),
+                "is_imminent": urg(6) == "imminent",
+            },
+            "secondary": {"minutes": 22, "label": plab(22)},
+        },
+        {
+            "route_name": "7",
+            "direction": "Méan",
+            "stop_name": "Tranchée",
+            "config_stop_id": "TRA01",
+            "delay_minutes": 9,
+            "delay_minutes_2": 24,
+            "times_minutes": [9, 24],
+            "labels": [plab(9), plab(24)],
+            "label": f"{plab(9)} · {plab(24)}",
+            "is_imminent": False,
+            "urgency": urg(9),
+            "primary": {
+                "minutes": 9,
+                "label": plab(9),
+                "urgency": urg(9),
+                "is_imminent": False,
+            },
+            "secondary": {"minutes": 24, "label": plab(24)},
+        },
+        {
+            "route_name": "7",
+            "direction": "Gare de St Nazaire",
+            "stop_name": "Tranchée",
+            "config_stop_id": "TRA02",
+            "delay_minutes": 11,
+            "delay_minutes_2": 26,
+            "times_minutes": [11, 26],
+            "labels": [plab(11), plab(26)],
+            "label": f"{plab(11)} · {plab(26)}",
+            "is_imminent": False,
+            "urgency": urg(11),
+            "primary": {
+                "minutes": 11,
+                "label": plab(11),
+                "urgency": urg(11),
+                "is_imminent": False,
+            },
+            "secondary": {"minutes": 26, "label": plab(26)},
+        },
+        {
+            "route_name": "L1",
+            "direction": "Gavy",
+            "stop_name": "Lycée Sainte-Anne",
+            "config_stop_id": "LAE01",
+            "delay_minutes": 12,
+            "delay_minutes_2": None,
+            "times_minutes": [12],
+            "labels": [plab(12)],
+            "label": plab(12),
+            "is_imminent": False,
+            "urgency": urg(12),
+            "primary": {
+                "minutes": 12,
+                "label": plab(12),
+                "urgency": urg(12),
+                "is_imminent": False,
+            },
+            "secondary": None,
+        },
+    ]
+    ro = _parse_bus_route_order()
+    max_fake = int(get_setting("bus_max_departures", "32") or "32")
+    deps = _bundle_two_directions_per_route(deps, ro)
+    deps, _ = _finalize_bus_departures_for_display(deps, max_fake, ro)
+    out = {
+        "available": True,
+        "source": "test",
+        "computed_at": now_ms,
+        "valid_until": now_ms + cache_sec * 1000,
+        "departures": deps,
+    }
+    if test_perturbations:
+        out["notice"] = "Perturbations simulées (mode test)"
+    return out
+
+
+def _bus_route_histogram(dep_list: list) -> dict[str, int]:
+    h: dict[str, int] = {}
+    for d in dep_list or []:
+        rn = (d.get("route_name") or "").strip()
+        if rn:
+            h[rn] = h.get(rn, 0) + 1
+    return h
+
+
+def _build_bus_display_payload(include_diagnostics: bool = False) -> dict:
+    diag: dict = {}
+    if include_diagnostics:
+        diag = {
+            "hint": "localStorage.setItem('bus_debug','1') puis recharge, ou ?bus_debug=1 — API: /api/display/bus?debug=1",
+            "settings": {
+                "feature_bus_enabled": get_setting("feature_bus_enabled", "true") == "true",
+                "bus_test_mode": get_setting("bus_test_mode", "false") == "true",
+                "bus_restrict_to_schedule": get_setting("bus_restrict_to_schedule", "false") == "true",
+                "bus_compute_horizon_minutes": _get_bus_compute_horizon_minutes(),
+                "bus_horizon_minutes_legacy": int(get_setting("bus_horizon_minutes", "45") or "45"),
+                "bus_relevance_minutes": int(get_setting("bus_relevance_minutes", "30") or "30"),
+                "bus_max_departures": int(get_setting("bus_max_departures", "32") or "32"),
+                "stop_ids_config": _parse_bus_stop_ids_list(),
+                "horizon_note": "calcul GTFS = bus_compute_horizon_minutes (ou bus_horizon_minutes si calcul vide) ; pagination UI après payload",
+            },
+        }
+
+    if get_setting("bus_test_mode", "false") == "true":
+        test_pert = get_setting("bus_test_perturbations", "false") == "true"
+        out = _fake_bus_display_payload(test_pert)
+        if include_diagnostics:
+            out = dict(out)
+            diag["mode"] = "test_fake_payload"
+            diag["note"] = "Mode test admin — pas le GTFS réel"
+            out["diagnostics"] = diag
+        return out
+
+    if get_setting("feature_bus_enabled", "true") != "true":
+        out = {"available": False, "source": "gtfs_static", "reason": "disabled"}
+        if include_diagnostics:
+            out["diagnostics"] = {**diag, "failure": "feature_bus_enabled false"}
+        return out
+
+    slots = _parse_bus_schedule_slots()
+    force = _parse_bus_force_display()
+    if ZoneInfo:
+        try:
+            tz = ZoneInfo("Europe/Paris")
+        except Exception:
+            tz = timezone.utc
+    else:
+        tz = timezone.utc
+    now_dt = datetime.now(tz)
+
+    if include_diagnostics:
+        diag["paris_now"] = now_dt.isoformat()
+        diag["schedule_slots"] = slots
+        diag["bus_force_display"] = force
+
+    # Par défaut le panneau bus suit le GTFS toute l’année ; horaires « scolaires » optionnels.
+    if get_setting("bus_restrict_to_schedule", "false") == "true":
+        if not force and not _is_now_in_bus_slots(now_dt, slots):
+            out = {"available": False, "source": "gtfs_static", "reason": "outside_schedule"}
+            if include_diagnostics:
+                out["diagnostics"] = {**diag, "failure": "outside_schedule (bus_restrict_to_schedule actif)"}
+            return out
+
+    url = (get_setting("bus_gtfs_url", "") or "").strip() or _DEFAULT_BUS_GTFS_URL
+    cache_dir = os.path.join(app.instance_path, "gtfs_cache")
+    refresh_days = int(get_setting("bus_gtfs_refresh_days", "7") or "7")
+
+    gtfs = bus_gtfs.ensure_gtfs_loaded(url, cache_dir, refresh_days)
+    if gtfs is None:
+        out = {"available": False, "source": "gtfs_static", "reason": "gtfs_not_loaded"}
+        if include_diagnostics:
+            out["diagnostics"] = {**diag, "failure": "gtfs_not_loaded", "gtfs_url": url}
+        return out
+
+    stop_ids = _parse_bus_stop_ids_list()
+    horizon_compute = _get_bus_compute_horizon_minutes()
+    max_dep = int(get_setting("bus_max_departures", "32") or "32")
+    eta_tiers = _parse_bus_eta_tiers()
+    route_order = _parse_bus_route_order()
+    now_ms = int(time.time() * 1000)
+    cache_sec = int(get_setting("bus_cache_seconds", "60") or "60")
+
+    departures, no_svc, _ = bus_gtfs.compute_next_departures(
+        gtfs, stop_ids, now_dt, horizon_minutes=horizon_compute, eta_tiers=eta_tiers
+    )
+    if include_diagnostics:
+        diag["gtfs_no_service_today"] = bool(no_svc)
+        diag["horizon_compute_minutes"] = horizon_compute
+        diag["raw_rows_before_bundle"] = len(departures or [])
+        diag["routes_histogram_raw"] = _bus_route_histogram(departures)
+        diag["h2_rows_raw"] = sum(
+            1 for d in (departures or []) if (d.get("route_name") or "").strip() == "H2"
+        )
+
+    if no_svc:
+        out = {"available": False, "source": "gtfs_static", "reason": "no_service_today"}
+        if include_diagnostics:
+            out["diagnostics"] = {**diag, "failure": "no_service_today (calendrier GTFS)"}
+        return out
+
+    if not departures:
+        final_departures, fin_meta = _finalize_bus_departures_for_display([], max_dep, route_order)
+        out = {
+            "available": True,
+            "source": "gtfs_static",
+            "computed_at": now_ms,
+            "valid_until": now_ms + cache_sec * 1000,
+            "departures": final_departures,
+            "notice": "Aucun départ dans l’horizon calculé — créneaux prioritaires avec « — »",
+        }
+        if include_diagnostics:
+            diag["bundled_rows"] = 0
+            diag["routes_histogram_bundled"] = {}
+            diag["priority_routes_found"] = fin_meta.get("priority_routes_found", [])
+            diag["priority_routes_missing"] = fin_meta.get("priority_routes_missing", [])
+            diag["dropped_routes_with_reason"] = []
+            diag["final_routes"] = [(d.get("route_name") or "").strip() for d in final_departures]
+            diag["h2_pipeline"] = _h2_pipeline_diagnostics([], [], None, final_departures)
+            diag["success"] = True
+            out["diagnostics"] = diag
+        return out
+
+    bundled = _bundle_two_directions_per_route(departures, route_order)
+    bundled_sorted = _sort_priority_routes_first(bundled, route_order)
+    final_departures, fin_meta = _finalize_bus_departures_for_display(bundled, max_dep, route_order)
+
+    if include_diagnostics:
+        diag["bundled_rows"] = len(bundled)
+        diag["routes_histogram_bundled"] = _bus_route_histogram(
+            [x for x in bundled if isinstance(x, dict)]
+        )
+        diag["priority_routes_found"] = fin_meta.get("priority_routes_found", [])
+        diag["priority_routes_missing"] = fin_meta.get("priority_routes_missing", [])
+        diag["dropped_routes_with_reason"] = _dropped_routes_after_bundle(departures, bundled)
+        diag["final_routes"] = [(d.get("route_name") or "").strip() for d in final_departures]
+        diag["h2_pipeline"] = _h2_pipeline_diagnostics(
+            departures, bundled, bundled_sorted, final_departures
+        )
+        diag["success"] = True
+
+    out = {
+        "available": True,
+        "source": "gtfs_static",
+        "computed_at": now_ms,
+        "valid_until": now_ms + cache_sec * 1000,
+        "departures": final_departures,
+    }
+    if include_diagnostics:
+        out["diagnostics"] = diag
+    return out
+
+
+def _get_bus_display_payload_cached() -> dict:
+    cache_sec = int(get_setting("bus_cache_seconds", "60") or "60")
+    now = time.time()
+    p = _BUS_DISPLAY_CACHE.get("payload")
+    if p is not None and (now - _BUS_DISPLAY_CACHE["ts"]) < cache_sec:
+        return p
+    p = _build_bus_display_payload()
+    _BUS_DISPLAY_CACHE["ts"] = now
+    _BUS_DISPLAY_CACHE["payload"] = p
+    return p
 
 
 BUS_STOPS = [
@@ -4502,19 +5354,55 @@ def _fake_bus_data(test_perturbations: bool = False) -> dict:
     return {"stops": result, "alerts": alerts}
 
 
+@app.route("/api/debug/bus", methods=["GET"])
+@admin_required
+def debug_bus_pipeline():
+    """Diagnostic pipeline GTFS (admin) : horizon, stop_ids, comptages H2/ligne 7, direction_id."""
+    if get_setting("feature_bus_enabled", "true") != "true":
+        return jsonify({"error": "feature_bus_disabled"}), 400
+    url = (get_setting("bus_gtfs_url", "") or "").strip() or _DEFAULT_BUS_GTFS_URL
+    cache_dir = os.path.join(app.instance_path, "gtfs_cache")
+    refresh_days = int(get_setting("bus_gtfs_refresh_days", "7") or "7")
+    gtfs = bus_gtfs.ensure_gtfs_loaded(url, cache_dir, refresh_days)
+    if gtfs is None:
+        return jsonify({"error": "gtfs_not_loaded", "gtfs_url": url}), 503
+    if ZoneInfo:
+        try:
+            tz = ZoneInfo("Europe/Paris")
+        except Exception:
+            tz = timezone.utc
+    else:
+        tz = timezone.utc
+    now_dt = datetime.now(tz)
+    stop_ids = _parse_bus_stop_ids_list()
+    horizon = _get_bus_compute_horizon_minutes()
+    eta_tiers = _parse_bus_eta_tiers()
+    deps, no_svc, pipe_dbg = bus_gtfs.compute_next_departures(
+        gtfs,
+        stop_ids,
+        now_dt,
+        horizon_minutes=horizon,
+        eta_tiers=eta_tiers,
+        pipeline_debug=True,
+    )
+    return jsonify({
+        "generated_at": now_dt.isoformat(),
+        "no_service_today": no_svc,
+        "horizon_compute_minutes": horizon,
+        "stop_ids_config": stop_ids,
+        "pipeline": pipe_dbg,
+        "departures_flat_count": len(deps or []),
+    })
+
+
 @app.route("/api/display/bus", methods=["GET"])
 def display_bus():
-    """Proxy bus arrivals from Mecatran for display. Format simplifié type aéroport/métro."""
-    if get_setting("bus_test_mode", "false") == "true":
-        test_pert = get_setting("bus_test_perturbations", "false") == "true"
-        return jsonify(_fake_bus_data(test_pert))
-    api_key = _extract_bus_api_key(get_setting("bus_api_key", ""))
-    if not api_key:
-        return jsonify({"stops": [], "alerts": [], "error": "Clé API non configurée"})
-    use_static = get_setting("bus_use_static", "false") == "true"
-    if use_static:
-        return _display_bus_from_gtfs_static(api_key)
-    return _display_bus_from_realtime(api_key)
+    """Horaires théoriques GTFS (source principale) + cache court. Voir bus_gtfs.py.
+    ?debug=1 ou header X-Bus-Debug: 1 → champ diagnostics (sans cache) pour console navigateur."""
+    dbg = request.args.get("debug") in ("1", "true", "yes") or request.headers.get("X-Bus-Debug") == "1"
+    if dbg:
+        return jsonify(_build_bus_display_payload(include_diagnostics=True))
+    return jsonify(_get_bus_display_payload_cached())
 
 
 def _format_bus_time_label(mins: int) -> str:
@@ -4896,9 +5784,22 @@ def get_bus_settings():
     return jsonify({
         "bus_api_key": get_setting("bus_api_key", ""),
         "bus_use_static": get_setting("bus_use_static", "false") == "true",
+        "bus_gtfs_url": get_setting("bus_gtfs_url", "") or _DEFAULT_BUS_GTFS_URL,
+        "bus_stop_ids": _parse_bus_stop_ids_list(),
+        "bus_route_order": _parse_bus_route_order(),
+        "bus_eta_imminent_max": int(get_setting("bus_eta_imminent_max", "1") or "1"),
+        "bus_eta_soon_max": int(get_setting("bus_eta_soon_max", "3") or "3"),
+        "bus_eta_near_max": int(get_setting("bus_eta_near_max", "7") or "7"),
+        "bus_compute_horizon_minutes": _get_bus_compute_horizon_minutes(),
+        "bus_horizon_minutes": int(get_setting("bus_horizon_minutes", "45") or "45"),
+        "bus_max_departures": int(get_setting("bus_max_departures", "32") or "32"),
+        "bus_relevance_minutes": int(get_setting("bus_relevance_minutes", "30") or "30"),
+        "bus_cache_seconds": int(get_setting("bus_cache_seconds", "60") or "60"),
+        "bus_gtfs_refresh_days": int(get_setting("bus_gtfs_refresh_days", "7") or "7"),
         "bus_force_display": get_setting("bus_force_display", "false") == "true",
         "bus_force_display_until": get_setting("bus_force_display_until", ""),
-        "bus_schedule": _parse_bus_schedule(),
+        "bus_restrict_to_schedule": get_setting("bus_restrict_to_schedule", "false") == "true",
+        "bus_schedule": _parse_bus_schedule_slots(),
         "bus_alternance_enabled": get_setting("bus_alternance_enabled", "false") == "true",
         "bus_alternance_interval_sec": int(get_setting("bus_alternance_interval_sec", "60") or "60"),
         "bus_test_mode": get_setting("bus_test_mode", "false") == "true",
@@ -4917,6 +5818,8 @@ def update_bus_settings():
         set_setting("bus_api_key", key if key else raw.strip())
     if "bus_use_static" in data:
         set_setting("bus_use_static", "true" if data["bus_use_static"] else "false")
+    if "bus_restrict_to_schedule" in data:
+        set_setting("bus_restrict_to_schedule", "true" if data["bus_restrict_to_schedule"] else "false")
     if "bus_force_display" in data:
         set_setting("bus_force_display", "true" if data["bus_force_display"] else "false")
     if "bus_force_display_until" in data:
@@ -4939,6 +5842,52 @@ def update_bus_settings():
         ids = [int(x) for x in data["bus_excluded_page_ids"] if isinstance(x, (int, str)) and str(x).isdigit()]
         for page in DisplayPage.query.all():
             page.bus_excluded = page.id in ids
+    if "bus_gtfs_url" in data:
+        set_setting("bus_gtfs_url", str(data.get("bus_gtfs_url") or "").strip())
+        bus_gtfs.reset_gtfs_data()
+    if "bus_stop_ids" in data:
+        ids = data.get("bus_stop_ids")
+        if isinstance(ids, list):
+            set_setting("bus_stop_ids", json.dumps([str(x) for x in ids], ensure_ascii=False))
+            bus_gtfs.reset_gtfs_data()
+    if "bus_route_order" in data:
+        arr = data.get("bus_route_order")
+        if isinstance(arr, list):
+            if len(arr) == 0:
+                set_setting("bus_route_order", "")
+            else:
+                set_setting("bus_route_order", json.dumps([str(x) for x in arr], ensure_ascii=False))
+    if "bus_eta_imminent_max" in data:
+        v = int(data.get("bus_eta_imminent_max") or 1)
+        set_setting("bus_eta_imminent_max", str(max(0, min(15, v))))
+    if "bus_eta_soon_max" in data:
+        v = int(data.get("bus_eta_soon_max") or 3)
+        set_setting("bus_eta_soon_max", str(max(0, min(30, v))))
+    if "bus_eta_near_max" in data:
+        v = int(data.get("bus_eta_near_max") or 7)
+        set_setting("bus_eta_near_max", str(max(0, min(45, v))))
+    if "bus_compute_horizon_minutes" in data:
+        v = int(data.get("bus_compute_horizon_minutes") or 600)
+        v = max(30, min(600, v))
+        set_setting("bus_compute_horizon_minutes", str(v))
+        set_setting("bus_horizon_minutes", str(v))
+    if "bus_horizon_minutes" in data and "bus_compute_horizon_minutes" not in data:
+        v = int(data.get("bus_horizon_minutes") or 45)
+        set_setting("bus_horizon_minutes", str(max(5, min(600, v))))
+    if "bus_max_departures" in data:
+        v = int(data.get("bus_max_departures") or 32)
+        set_setting("bus_max_departures", str(max(1, min(40, v))))
+    if "bus_relevance_minutes" in data:
+        v = int(data.get("bus_relevance_minutes") or 30)
+        set_setting("bus_relevance_minutes", str(max(5, min(120, v))))
+    if "bus_cache_seconds" in data:
+        v = int(data.get("bus_cache_seconds") or 60)
+        set_setting("bus_cache_seconds", str(max(10, min(300, v))))
+    if "bus_gtfs_refresh_days" in data:
+        v = int(data.get("bus_gtfs_refresh_days") or 7)
+        set_setting("bus_gtfs_refresh_days", str(max(1, min(30, v))))
+    _BUS_DISPLAY_CACHE["ts"] = 0.0
+    _BUS_DISPLAY_CACHE["payload"] = None
     db.session.commit()
     return jsonify({"success": True})
 
@@ -5385,25 +6334,6 @@ def tv_viewer(slug):
     return render_template("tv.html", page=page)
 
 
-def _is_bus_schedule_now():
-    """True si on est dans un créneau horaire bus (affichage bus uniquement)."""
-    sched = _parse_bus_schedule()
-    if not sched:
-        return True  # Pas de créneau configuré = afficher le bus (aucune restriction)
-    from datetime import datetime
-    now = datetime.now()
-    h, m = now.hour, now.minute
-    now_min = h * 60 + m
-    for slot in sched:
-        sh, sm = (slot.get("start") or "00:00").split(":")[:2]
-        eh, em = (slot.get("end") or "23:59").split(":")[:2]
-        start_min = int(sh) * 60 + int(sm)
-        end_min = int(eh) * 60 + int(em)
-        if start_min <= now_min <= end_min:
-            return True
-    return False
-
-
 @app.route("/api/tv/<slug>", methods=["GET"])
 def tv_data(slug):
     if get_setting("feature_display_dynamic_enabled", "true") != "true":
@@ -5413,7 +6343,7 @@ def tv_data(slug):
             "slides": [],
             "name": "",
             "show_bus": False,
-            "bus_schedule": _parse_bus_schedule(),
+            "bus_schedule": _parse_bus_schedule_slots(),
         })
     page = DisplayPage.query.filter_by(slug=slug, active=True).first()
     if not page:
@@ -5421,24 +6351,10 @@ def tv_data(slug):
 
     bus_enabled = get_setting("feature_bus_enabled", "true") == "true"
     bus_excluded = getattr(page, "bus_excluded", False)
-    show_bus = bus_enabled and _is_bus_schedule_now() and not bus_excluded
-    bus_schedule = _parse_bus_schedule()
-    bus_force = get_setting("bus_force_display", "false") == "true"
-    bus_until = get_setting("bus_force_display_until", "")
-    if bus_force and bus_until:
-        from datetime import datetime, timezone
-        try:
-            until = datetime.fromisoformat(bus_until.replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) < until:
-                show_bus = True
-        except Exception:
-            pass
-    elif bus_force:
-        show_bus = True
-    if bus_excluded:
-        show_bus = False
-    if not bus_enabled:
-        show_bus = False
+    show_bus = False
+    if bus_enabled and not bus_excluded:
+        show_bus = _get_bus_display_payload_cached().get("available") is True
+    bus_schedule = _parse_bus_schedule_slots()
 
     page_type = getattr(page, "page_type", None) or "presentation"
     if page_type == "autonews":

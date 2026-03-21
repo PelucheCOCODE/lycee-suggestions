@@ -1,0 +1,176 @@
+/**
+ * Rendu commun du tableau des départs (mur /display, /displaybus, TV).
+ * Grille 5 colonnes : Ligne | Arrêt | bloc sens 1 | séparateur | bloc sens 2 (même largeur).
+ */
+(function () {
+    const G = typeof window !== "undefined" ? window : globalThis;
+
+    function esc(s) {
+        if (s == null || s === "") return "";
+        const d = document.createElement("div");
+        d.textContent = String(s);
+        return d.innerHTML;
+    }
+
+    function escAttr(s) {
+        return String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/"/g, "&quot;")
+            .replace(/</g, "&lt;");
+    }
+
+    function displayRouteLabel(routeName) {
+        const r = String(routeName || "").trim();
+        if (r === "H4" || r === "04" || r === "4") return "4";
+        if (r === "H7" || r === "07" || r === "7") return "7";
+        return r;
+    }
+
+    function lineDataKey(routeName) {
+        return String(displayRouteLabel(routeName))
+            .trim()
+            .replace(/\s+/g, "") || "?";
+    }
+
+    function lineShapeClass(routeName) {
+        const k = lineDataKey(routeName);
+        if (/^H\d+/i.test(k)) return "bus-dep-line-shape--h";
+        if (/^\d+$/.test(k)) return "bus-dep-line-shape--num";
+        return "bus-dep-line-shape--def";
+    }
+
+    function firstEtaTier(d) {
+        if (d.urgency === "imminent" || d.is_imminent) return "imminent";
+        if (d.urgency === "soon") return "soon";
+        if (d.urgency === "near") return "near";
+        if (d.urgency === "far") return "far";
+        return "normal";
+    }
+
+    function primaryEtaTier(d) {
+        const p = d.primary;
+        if (p && typeof p === "object") {
+            if (p.urgency === "imminent" || p.is_imminent) return "imminent";
+            if (p.urgency === "soon") return "soon";
+            if (p.urgency === "near") return "near";
+            if (p.urgency === "far") return "far";
+            return "normal";
+        }
+        return firstEtaTier(d);
+    }
+
+    function busBoardTimesHtml(d) {
+        if (d && d.no_departure) {
+            return `<div class="bus-dep-times-stack"><span class="bus-dep-eta bus-dep-eta--muted bus-dep-eta--primary">—</span></div>`;
+        }
+        const p = d.primary;
+        const s = d.secondary;
+        if (p && p.label != null && String(p.label) !== "") {
+            const tier = primaryEtaTier(d);
+            const primaryLine = `<span class="bus-dep-eta bus-dep-eta--${tier} bus-dep-eta--primary">${esc(p.label)}</span>`;
+            const secTier = s && s.urgency === "far" ? "far" : "secondary";
+            const secLine =
+                s && s.label != null && String(s.label) !== ""
+                    ? `<span class="bus-dep-eta bus-dep-eta--${secTier} bus-dep-eta--sub">${esc(s.label)}</span>`
+                    : "";
+            return `<div class="bus-dep-times-stack" aria-label="Départs">${primaryLine}${secLine}</div>`;
+        }
+
+        const labels = d.labels && d.labels.length ? d.labels : null;
+        if (!labels) {
+            return `<span class="bus-dep-eta bus-dep-eta--${firstEtaTier(d)} bus-dep-eta--primary">${esc(d.label || "—")}</span>`;
+        }
+        if (labels.length === 1) {
+            return `<div class="bus-dep-times-stack"><span class="bus-dep-eta bus-dep-eta--${firstEtaTier(d)} bus-dep-eta--primary">${esc(labels[0])}</span></div>`;
+        }
+        const tier0 = firstEtaTier(d);
+        return `<div class="bus-dep-times-stack" aria-label="Départs">
+            <span class="bus-dep-eta bus-dep-eta--${tier0} bus-dep-eta--primary">${esc(labels[0])}</span>
+            <span class="bus-dep-eta bus-dep-eta--secondary bus-dep-eta--sub">${esc(labels[1])}</span>
+        </div>`;
+    }
+
+    function sideBlockClass(side) {
+        if (!side) return "bus-dep-side bus-dep-side--empty";
+        if (side.no_departure) return "bus-dep-side bus-dep-side--muted";
+        const u = side.primary && typeof side.primary === "object" ? side.primary.urgency : side.urgency;
+        if (u === "imminent" || side.is_imminent) return "bus-dep-side bus-dep-side--imminent";
+        if (u === "soon") return "bus-dep-side bus-dep-side--soon";
+        if (u === "far") return "bus-dep-side bus-dep-side--far";
+        return "bus-dep-side";
+    }
+
+    /** Libellés proches du réseau (ex. Trignac-Les Forges → Trignac Les Forges). */
+    function formatHeadsign(s) {
+        let t = String(s || "—").trim();
+        t = t.replace(/Trignac-Les Forges/gi, "Trignac Les Forges");
+        return t;
+    }
+
+    function normalizeBusRow(d) {
+        if (d && d.side_a) return d;
+        return {
+            route_name: d.route_name,
+            stop_name: d.stop_name || "",
+            side_a: d,
+            side_b: null,
+        };
+    }
+
+    G.busBoardRowHtml = function busBoardRowHtml(d) {
+        const row = normalizeBusRow(d);
+        const route = esc(displayRouteLabel(row.route_name));
+        const stop = esc(row.stop_name || "");
+        const lk = escAttr(lineDataKey(row.route_name));
+        const sh = lineShapeClass(row.route_name);
+        const h2Title = lineDataKey(row.route_name) === "H2" ? ' title="Ligne Hélyce 2"' : "";
+        const sa = row.side_a;
+        const sb = row.side_b;
+        const destA = esc(formatHeadsign(sa.direction || "—"));
+        const timesA = busBoardTimesHtml(sa);
+        const destB = sb ? esc(formatHeadsign(sb.direction || "—")) : "";
+        const timesB = sb
+            ? busBoardTimesHtml(sb)
+            : sa && sa.no_departure
+              ? busBoardTimesHtml(sa)
+              : `<div class="bus-dep-times-stack"><span class="bus-dep-eta bus-dep-eta--muted bus-dep-eta--primary">—</span></div>`;
+        const clsA = sideBlockClass(sa);
+        const clsB = sb
+            ? sideBlockClass(sb)
+            : sa && sa.no_departure
+              ? "bus-dep-side bus-dep-side--muted"
+              : "bus-dep-side bus-dep-side--empty";
+        return `
+        <div class="bus-dep-row bus-dep-row--compact bus-dep-row--dual" role="listitem">
+            <div class="bus-dep-line">
+                <span class="bus-dep-line-badge ${sh}" data-line="${lk}"${h2Title}>${route}</span>
+            </div>
+            <div class="bus-dep-stop-label bus-scroll-text">${stop}</div>
+            <div class="${clsA}">
+                <div class="bus-dep-dest bus-dep-dest--dual bus-scroll-text">${destA}</div>
+                <div class="bus-dep-times bus-dep-times--in-side">${timesA}</div>
+            </div>
+            <div class="bus-dep-dual-sep" role="separator" aria-hidden="true"></div>
+            <div class="${clsB}">
+                <div class="bus-dep-dest bus-dep-dest--dual bus-scroll-text">${destB || "—"}</div>
+                <div class="bus-dep-times bus-dep-times--in-side">${timesB}</div>
+            </div>
+        </div>`;
+    };
+
+    G.busBoardTableHtml = function busBoardTableHtml(departures, opts) {
+        const o = opts || {};
+        const showHead = o.showHead !== false;
+        const head = showHead
+            ? `<div class="bus-dep-colhead" aria-hidden="true">
+                <span class="bus-dep-ch bus-dep-ch-line">Ligne</span>
+                <span class="bus-dep-ch bus-dep-ch-stop">Arrêt</span>
+                <span class="bus-dep-ch bus-dep-ch-sensblock">Sens 1 · départs</span>
+                <span class="bus-dep-ch bus-dep-ch-sep"></span>
+                <span class="bus-dep-ch bus-dep-ch-sensblock">Sens 2 · départs</span>
+            </div>`
+            : "";
+        const body = (departures || []).map((r) => G.busBoardRowHtml(r)).join("");
+        return `<div class="bus-dep-board" role="list">${head}${body}</div>`;
+    };
+})();

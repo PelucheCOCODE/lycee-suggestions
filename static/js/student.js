@@ -2277,14 +2277,8 @@ async function refreshEngagementBootstrap() {
     }
 }
 
-function buildSwipeDeck() {
-    if (!isTouchDevice()) return;
-    if (!allSuggestions.length) {
-        swipeDeckItems = [];
-        clampSwipeIndex();
-        return;
-    }
-    const shuffled = shuffle(allSuggestions.map((s) => ({ kind: "suggestion", id: s.id })));
+/** Cartes engagement (hors morpion « vide ») : chaque type au plus une fois par deck. */
+function buildEngagementGamePool(includeTtt) {
     const done = engagementBootstrap?.cards_done_today || [];
     const pool = [];
     const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -2298,18 +2292,35 @@ function buildSwipeDeck() {
     if (!done.includes("message")) pool.push({ kind: "special", type: "message" });
     if (!done.includes("mood")) pool.push({ kind: "special", type: "mood" });
     if (!done.includes("dilemma") && dlm && dlm.id) pool.push({ kind: "special", type: "dilemma" });
-    if (!done.includes("ttt")) pool.push({ kind: "special", type: "ttt" });
+    if (includeTtt && !done.includes("ttt")) pool.push({ kind: "special", type: "ttt" });
+    return pool;
+}
 
-    const maxSlots = Math.floor(shuffled.length / 4);
-    const specialsToUse = shuffle(pool).slice(0, maxSlots);
-    const deck = [];
-    let sIdx = 0;
-    let spIdx = 0;
-    while (sIdx < shuffled.length) {
-        const chunk = Math.min(4, shuffled.length - sIdx);
-        for (let j = 0; j < chunk; j++) deck.push(shuffled[sIdx++]);
-        if (chunk === 4 && spIdx < specialsToUse.length) deck.push(specialsToUse[spIdx++]);
+function buildSwipeDeck() {
+    if (!isTouchDevice()) return;
+
+    const seen = new Set();
+    const sugItems = [];
+    for (const s of allSuggestions) {
+        if (!seen.has(s.id)) {
+            seen.add(s.id);
+            sugItems.push({ kind: "suggestion", id: s.id });
+        }
     }
+    const shuffledSug = shuffle(sugItems);
+
+    const gamePool = buildEngagementGamePool(true);
+    const shuffledGames = shuffle(gamePool);
+
+    let deck;
+    if (shuffledSug.length > 0) {
+        deck = [...shuffledSug, ...shuffledGames];
+    } else if (shuffledGames.length > 0) {
+        deck = [...shuffledGames];
+    } else {
+        deck = [{ kind: "special", type: "ttt", emptyState: true }];
+    }
+
     swipeDeckItems = deck;
     clampSwipeIndex();
 }
@@ -2593,6 +2604,23 @@ function createSpecialCardHtml(item) {
     }
     if (item.type === "ttt") {
         const cells = Array.from({ length: 9 }, (_, i) => `<button type="button" class="ttt-cell" data-idx="${i}" aria-label="Case ${i + 1}"></button>`).join("");
+        if (item.emptyState) {
+            return `
+        <div class="swipe-card swipe-card--dating swipe-card--special swipe-card--ttt swipe-card--ttt-empty" data-special="1">
+            <div class="swipe-card-inner">
+                <p class="swipe-eng-empty-banner" role="status">Aucune suggestion à voter, revenez plus tard.</p>
+                <span class="swipe-eng-badge">Mini-jeu</span>
+                <p class="swipe-eng-title">Morpion</p>
+                <p class="swipe-eng-sub">Tu joues les <strong>X</strong>, l’IA les <strong>O</strong> (niveau difficile).</p>
+                <div class="ttt-grid" id="swipe-ttt-grid">${cells}</div>
+                <p class="ttt-status" id="swipe-ttt-status" aria-live="polite"></p>
+                <div class="swipe-eng-empty-actions">
+                    <button type="button" class="btn btn-secondary" data-eng="swipe-empty-retry">Réessayer</button>
+                    <button type="button" class="btn btn-primary swipe-eng-continue hidden" id="swipe-ttt-done" data-eng="ttt-dismiss">Continuer</button>
+                </div>
+            </div>
+        </div>`;
+        }
         return `
         <div class="swipe-card swipe-card--dating swipe-card--special swipe-card--ttt" data-special="1">
             <div class="swipe-card-inner">
@@ -3106,6 +3134,15 @@ async function handleEngagementClick(ev) {
     const t = ev.target.closest("[data-eng]");
     if (!t) return;
     const eng = t.dataset.eng;
+    if (eng === "swipe-empty-retry") {
+        ev.preventDefault();
+        await loadSuggestions({ reason: "user" });
+        lastSwipeDeckSig = computeSwipeDeckSig();
+        buildSwipeDeck();
+        clampSwipeIndex();
+        renderSwipeView();
+        return;
+    }
     if (eng === "imp") {
         const sid = parseInt(t.dataset.sid, 10);
         const level = parseInt(t.dataset.level, 10);
@@ -3202,6 +3239,7 @@ async function handleEngagementClick(ev) {
             clampSwipeIndex();
             renderSwipeView();
         } else showFeedback((data && data.error) || "Erreur", "error");
+        return;
     }
 }
 

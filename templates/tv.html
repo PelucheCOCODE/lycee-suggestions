@@ -13,8 +13,10 @@
     <div id="tv-announcements" class="display-announcements-bottom tv-announcements"></div>
     <div id="tv-bus-panel" class="display-bus-panel hidden">
         <div class="display-bus-header">
-            <span class="display-bus-logo">🚌</span>
-            <h2>Horaires des bus</h2>
+            <div>
+                <h2 class="display-bus-title">Prochains départs</h2>
+                <p class="display-bus-sub">Temps d’attente estimé</p>
+            </div>
         </div>
         <div id="tv-bus-stops" class="display-bus-stops"></div>
     </div>
@@ -30,6 +32,8 @@
     <script>
         const TV_SLUG = "{{ page.slug }}";
     </script>
+    <script src="{{ url_for('static', filename=asset('js/bus-diagnostics.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/bus-board-render.js')) }}"></script>
     <script src="{{ url_for('static', filename=asset('js/tv.js')) }}"></script>
 </body>
 </html>

@@ -4,3 +4,7 @@ __pycache__/
 backups/
 instance/*.db
 static/uploads/
+instance/gtfs_cache/
+_gtfs_test_cache/
+_gtfs_extract/
+_gtfs_tmp.zip

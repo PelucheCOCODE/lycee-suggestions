@@ -337,57 +337,33 @@ async function renderSuggestionsSlide(el, c) {
     }
 }
 
+function tvBusDeparturesHtml(data) {
+    if (!data.available || !data.departures?.length) return "";
+    const deps = data.departures;
+    const theory = data.source === "gtfs_static" || data.source === "test";
+    const table =
+        typeof busBoardTableHtml === "function"
+            ? busBoardTableHtml(deps, { showHead: true })
+            : "";
+    const foot = theory ? `<p class="bus-dep-footnote">Horaires théoriques (GTFS)</p>` : "";
+    return `${table}${foot}`;
+}
+
 async function renderBusSlideInSlot(el) {
     try {
-        const res = await fetch("/api/display/bus");
+        const url =
+            typeof busDisplayApiUrl === "function"
+                ? busDisplayApiUrl("/api/display/bus")
+                : "/api/display/bus";
+        const res = await fetch(url);
         const data = await res.json();
-        const stops = data.stops || [];
-        const alerts = data.alerts || [];
-        const alertsHtml = alerts.length ? `
-            <div class="bus-alerts-section">
-                <div class="bus-alerts-header">Perturbations</div>
-                <div class="bus-alerts-grid">
-                    ${alerts.map((a) => `
-                        <div class="bus-alert-row">
-                            <span class="bus-alert-title">${esc(typeof a === "string" ? a : a.text || "")}</span>
-                            ${(typeof a === "object" && a.detail) ? `<span class="bus-alert-detail">${esc(a.detail)}</span>` : ""}
-                        </div>
-                    `).join("")}
-                </div>
-            </div>
-        ` : "";
-        const rows = [];
-        for (const s of stops) {
-            if (s.error) continue;
-            for (const l of s.lines || []) {
-                const items = (l.items || []).map((it) => ({ ...it, route: l.route }));
-                rows.push({ route: l.route, headsign: l.headsign || "—", stopName: s.name, items });
-            }
-        }
-        const rowsHtml = rows.map((r) => {
-            const timesHtml = (r.items || []).map((it) => {
-                const imminent = it.status === "imminent";
-                return `<span class="bus-time-item ${imminent ? "bus-time-imminent" : ""}">${esc(it.label)}</span>`;
-            }).join(" · ");
-            const routeClass = r.route === "H1" ? "bus-route-h1" : r.route === "H2" ? "bus-route-h2" : "";
-            return `
-                <div class="bus-line-row ${routeClass}">
-                    <span class="bus-line-route">${esc(r.route)}</span>
-                    <span class="bus-line-arrow">→</span>
-                    <span class="bus-line-dest">${esc(r.headsign)}</span>
-                    <span class="bus-line-stop">${esc(r.stopName)}</span>
-                    <span class="bus-line-times">${timesHtml || "—"}</span>
-                </div>`;
-        }).join("");
-        const content = rows.length ? `
-            <div class="bus-departures-section">
-                <div class="bus-departures-header">Départs</div>
-                <div class="bus-lines-table">${rowsHtml}</div>
-            </div>
-        ` : '<div class="bus-no-dep">Aucun départ</div>';
-        el.innerHTML = `<div class="tv-bus-slide-in-slot">${alertsHtml}${content}</div>`;
+        if (typeof busLogPayload === "function") busLogPayload(data, "tv-slide");
+        const inner = tvBusDeparturesHtml(data);
+        el.innerHTML = inner
+            ? `<div class="tv-bus-slide-in-slot">${inner}</div>`
+            : `<div class="tv-bus-slide-in-slot tv-bus-slide-empty"><p>Prochains bus indisponibles</p></div>`;
     } catch (e) {
-        el.innerHTML = `<div class="tv-text-slide" style="background:#0a0f1a;color:#fff"><div class="tv-text-inner"><h1>Horaires bus</h1><p>Chargement...</p></div></div>`;
+        el.innerHTML = `<div class="tv-text-slide" style="background:#0a0f1a;color:#fff"><div class="tv-text-inner"><h1>PROCHAINS BUS</h1><p>Chargement...</p></div></div>`;
     }
 }
 
@@ -421,59 +397,21 @@ async function renderAutoNewsSlideInSlot(el) {
 async function updateTvBusDisplay() {
     if (!busStopsEl) return;
     try {
-        const res = await fetch("/api/display/bus");
+        const url =
+            typeof busDisplayApiUrl === "function"
+                ? busDisplayApiUrl("/api/display/bus")
+                : "/api/display/bus";
+        const res = await fetch(url);
         const data = await res.json();
+        if (typeof busLogPayload === "function") busLogPayload(data, "tv-panel");
         renderTvBusPanel(data);
     } catch (e) { /* ignore */ }
 }
 
 function renderTvBusPanel(data) {
     if (!busStopsEl) return;
-    const stops = data.stops || [];
-    const alerts = data.alerts || [];
-    const alertsHtml = alerts.length ? `
-        <div class="bus-alerts-section">
-            <div class="bus-alerts-header">Perturbations</div>
-            <div class="bus-alerts-grid">
-                ${alerts.map((a) => `
-                    <div class="bus-alert-row">
-                        <span class="bus-alert-title">${esc(typeof a === "string" ? a : a.text || "")}</span>
-                        ${(typeof a === "object" && a.detail) ? `<span class="bus-alert-detail">${esc(a.detail)}</span>` : ""}
-                    </div>
-                `).join("")}
-            </div>
-        </div>
-    ` : "";
-    const rows = [];
-    for (const s of stops) {
-        if (s.error) continue;
-        for (const l of s.lines || []) {
-            const items = (l.items || []).map((it) => ({ ...it, route: l.route }));
-            rows.push({ route: l.route, headsign: l.headsign || "—", stopName: s.name, items });
-        }
-    }
-    const rowsHtml = rows.map((r) => {
-        const timesHtml = (r.items || []).map((it) => {
-            const imminent = it.status === "imminent";
-            return `<span class="bus-time-item ${imminent ? "bus-time-imminent" : ""}">${esc(it.label)}</span>`;
-        }).join(" · ");
-        const routeClass = r.route === "H1" ? "bus-route-h1" : r.route === "H2" ? "bus-route-h2" : "";
-        return `
-            <div class="bus-line-row ${routeClass}">
-                <span class="bus-line-route">${esc(r.route)}</span>
-                <span class="bus-line-arrow">→</span>
-                <span class="bus-line-dest">${esc(r.headsign)}</span>
-                <span class="bus-line-stop">${esc(r.stopName)}</span>
-                <span class="bus-line-times">${timesHtml || "—"}</span>
-            </div>`;
-    }).join("");
-    const content = rows.length ? `
-        <div class="bus-departures-section">
-            <div class="bus-departures-header">Départs</div>
-            <div class="bus-lines-table">${rowsHtml}</div>
-        </div>
-    ` : '<div class="bus-no-dep">Aucun départ</div>';
-    busStopsEl.innerHTML = alertsHtml + content;
+    const inner = tvBusDeparturesHtml(data);
+    busStopsEl.innerHTML = inner || "";
 }
 
 let busSlideRefreshTimer = null;

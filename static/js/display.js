@@ -19,7 +19,6 @@ let currentData = [];
 let currentProposal = null;
 let currentCritical = [];
 let currentMode = "normal";
-let currentPriorityAnnouncement = null;
 
 async function checkDisplayMode() {
     try {
@@ -27,6 +26,7 @@ async function checkDisplayMode() {
         const settings = await res.json();
         busSettings = {
             bus_schedule: settings.bus_schedule || [],
+            bus_restrict_to_schedule: settings.bus_restrict_to_schedule === true,
             bus_force_display: settings.bus_force_display || false,
             bus_force_display_until: settings.bus_force_display_until || "",
             bus_alternance_enabled: settings.bus_alternance_enabled || false,
@@ -46,7 +46,7 @@ async function checkDisplayMode() {
 }
 
 function applyDisplayMode(settings) {
-    if (currentPriorityAnnouncement) return;
+    if (typeof DisplayAnnouncements !== "undefined" && DisplayAnnouncements.isPriorityActive()) return;
     if (currentMode === "waiting") {
         grid.classList.add("hidden");
         header.classList.add("hidden");
@@ -64,66 +64,12 @@ function applyDisplayMode(settings) {
     }
 }
 
-async function fetchPriorityAnnouncement() {
-    try {
-        const res = await fetch("/api/display/priority-announcement");
-        const data = await res.json();
-        if (data && data.id) {
-            currentPriorityAnnouncement = data;
-            showPriorityAnnouncement(data);
-        } else {
-            if (currentPriorityAnnouncement) {
-                hidePriorityAnnouncementWithAnimation();
-            }
-            currentPriorityAnnouncement = null;
-        }
-    } catch (e) {
-        if (currentPriorityAnnouncement) hidePriorityAnnouncementWithAnimation();
-        currentPriorityAnnouncement = null;
-    }
-}
-
-function showPriorityAnnouncement(ann) {
-    const overlay = document.getElementById("display-priority-announcement");
-    if (!overlay) return;
-    overlay.classList.remove("hidden");
-    overlay.innerHTML = `
-        <div class="display-priority-content">
-            <h1 class="display-priority-title">${escapeHtml(ann.title)}</h1>
-            ${ann.content ? `<div class="display-priority-body">${escapeHtml(ann.content)}</div>` : ""}
-            ${ann.extra_info ? `<div class="display-priority-extra">${escapeHtml(ann.extra_info)}</div>` : ""}
-        </div>
-    `;
-    document.querySelector(".display-header")?.classList.add("hidden");
-    document.getElementById("display-grid")?.classList.add("hidden");
-    document.getElementById("display-critical-banner")?.classList.add("hidden");
-    document.getElementById("display-completed-banner")?.classList.add("hidden");
-    document.getElementById("display-waiting")?.classList.add("hidden");
-    annContainer?.classList.add("hidden");
-}
-
-function hidePriorityAnnouncement() {
-    const overlay = document.getElementById("display-priority-announcement");
-    if (overlay) overlay.classList.add("hidden");
-    document.querySelector(".display-header")?.classList.remove("hidden");
-    document.getElementById("display-grid")?.classList.remove("hidden");
-    document.getElementById("display-critical-banner")?.classList.remove("hidden");
-    document.getElementById("display-completed-banner")?.classList.remove("hidden");
-    annContainer?.classList.remove("hidden");
-}
-
-function hidePriorityAnnouncementWithAnimation() {
-    const overlay = document.getElementById("display-priority-announcement");
-    if (!overlay) return;
-    overlay.classList.add("display-priority-exit");
-    setTimeout(() => {
-        overlay.classList.remove("display-priority-exit");
-        hidePriorityAnnouncement();
-    }, 400);
-}
-
 async function fetchCompletedSuggestions() {
-    if (currentPriorityAnnouncement || currentMode !== "normal") return;
+    if (
+        (typeof DisplayAnnouncements !== "undefined" && DisplayAnnouncements.isPriorityActive()) ||
+        currentMode !== "normal"
+    )
+        return;
     try {
         const res = await fetch("/api/display/completed-suggestions");
         const data = await res.json();
@@ -153,7 +99,7 @@ function updateCompletedBanner(completed) {
 }
 
 async function fetchSuggestions() {
-    if (currentPriorityAnnouncement) return;
+    if (typeof DisplayAnnouncements !== "undefined" && DisplayAnnouncements.isPriorityActive()) return;
     if (currentMode !== "normal") return;
     try {
         const [suggestionsRes, proposalRes, criticalRes] = await Promise.all([
@@ -359,55 +305,7 @@ function escapeHtml(str) {
     return d.innerHTML;
 }
 
-// --------------- Announcements ---------------
-
 const annContainer = document.getElementById("display-announcements");
-const displayGrid = document.getElementById("display-grid");
-let currentAnnouncements = [];
-
-async function fetchAnnouncements() {
-    if (currentMode !== "normal") return;
-    try {
-        const res = await fetch("/api/display/announcements");
-        const data = await res.json();
-        updateAnnouncements(data);
-    } catch (e) {
-        console.error(e);
-    }
-}
-
-function updateAnnouncements(announcements) {
-    const currentIds = new Set(currentAnnouncements.map((a) => a.id));
-    const newIds = new Set(announcements.map((a) => a.id));
-
-    announcements.forEach((a) => {
-        if (!document.getElementById(`ann-${a.id}`)) {
-            const el = document.createElement("div");
-            el.id = `ann-${a.id}`;
-            el.className = `display-announcement display-ann-${a.style} display-ann-enter`;
-            el.innerHTML = `<div class="display-ann-icon">${a.style === "urgent" ? "🚨" : a.style === "warning" ? "⚠️" : a.style === "success" ? "✅" : "ℹ️"}</div><div class="display-ann-text"><strong>${escapeHtml(a.title)}</strong>${a.content ? `<span>${escapeHtml(a.content)}</span>` : ""}</div>`;
-            annContainer.appendChild(el);
-            requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("display-ann-enter")));
-        }
-    });
-
-    currentIds.forEach((id) => {
-        if (!newIds.has(id)) {
-            const el = document.getElementById(`ann-${id}`);
-            if (el) {
-                el.classList.add("display-ann-exit");
-                setTimeout(() => el.remove(), 500);
-            }
-        }
-    });
-
-    currentAnnouncements = announcements;
-
-    requestAnimationFrame(() => {
-        const h = annContainer.offsetHeight || 0;
-        displayGrid.style.paddingBottom = h > 0 ? `${h + 24}px` : "100px";
-    });
-}
 
 // --------------- Bus Display ---------------
 
@@ -418,145 +316,69 @@ let showBusNow = false;
 let alternanceShowBus = false;
 let lastAlternanceSwitch = Date.now();
 
-function isInBusSchedule(now) {
-    if (!busSettings?.bus_schedule?.length) return false;
-    const h = now.getHours();
-    const m = now.getMinutes();
-    const nowMin = h * 60 + m;
-    for (const slot of busSettings.bus_schedule) {
-        const [sh, sm] = (slot.start || "00:00").split(":").map(Number);
-        const [eh, em] = (slot.end || "23:59").split(":").map(Number);
-        const startMin = sh * 60 + sm;
-        const endMin = eh * 60 + em;
-        if (nowMin >= startMin && nowMin <= endMin) return true;
-    }
-    return false;
-}
-
-function shouldShowBus() {
-    if (!busSettings) return false;
-    if (!busSettings.feature_bus_enabled) return false;
-    if (busSettings.bus_force_display) {
-        if (busSettings.bus_force_display_until) {
-            const until = new Date(busSettings.bus_force_display_until);
-            if (new Date() < until) return true;
-        } else return true;
-    }
-    if (busSettings.bus_schedule?.length) {
-        if (isInBusSchedule(new Date())) return true;
-    } else {
-        // Pas de créneau configuré = afficher le bus (aucune restriction horaire)
-        return true;
-    }
+/** UI : on peut interroger l’API bus (alternance ou plein écran). La disponibilité réelle vient du backend (`available`). */
+function canPollBusUi() {
+    if (!busSettings?.feature_bus_enabled) return false;
     if (busSettings.bus_alternance_enabled) return alternanceShowBus;
-    return false;
+    return true;
 }
 
 async function fetchBusData() {
     try {
-        const res = await fetch("/api/display/bus");
+        const url =
+            typeof busDisplayApiUrl === "function"
+                ? busDisplayApiUrl("/api/display/bus")
+                : "/api/display/bus";
+        const res = await fetch(url);
         const data = await res.json();
+        if (typeof busLogPayload === "function") {
+            busLogPayload(data, "display", { busSettings: busSettings });
+        }
         return data;
-    } catch (e) { return { stops: [] }; }
+    } catch (e) {
+        if (typeof busLogPayload === "function") {
+            busLogPayload(
+                { available: false, reason: "network_error", source: "error" },
+                "display",
+                { error: String(e) }
+            );
+        }
+        return { available: false, departures: [], source: "error" };
+    }
 }
 
-const BUS_ROWS_PER_PAGE = 8;
-const BUS_PAGE_SWITCH_MS = 15000;
-let busPageIndex = 0;
-let busPageSwitchTimer = null;
 let lastBusData = null;
+let displayBusPageCtl = null;
 
 function renderBusPanel(data) {
     lastBusData = data;
-    if (!busStopsEl) return;
-    const stops = data.stops || [];
-    const alerts = data.alerts || [];
-    const errorMsg = data.error || null;
-    const alertsHtml = alerts.length ? `
-        <div class="bus-alerts-section">
-            <div class="bus-alerts-header">Perturbations</div>
-            <div class="bus-alerts-grid">
-                ${alerts.map((a) => `
-                    <div class="bus-alert-row">
-                        <span class="bus-alert-title">${escapeHtml(typeof a === "string" ? a : a.text || "")}</span>
-                        ${(typeof a === "object" && a.detail) ? `<span class="bus-alert-detail">${escapeHtml(a.detail)}</span>` : ""}
-                    </div>
-                `).join("")}
-            </div>
-        </div>
-    ` : "";
-
-    // Grouper par arrêt (sections) puis lignes — style gare/aéroport
-    const sections = [];
-    for (const s of stops) {
-        if (s.error) continue;
-        const sectionRows = [];
-        for (const l of s.lines || []) {
-            const items = (l.items || []).map((it) => ({ label: it.label, status: it.status }));
-            sectionRows.push({
-                route: l.route,
-                headsign: l.headsign || "—",
-                stopName: s.name,
-                items,
-            });
-        }
-        if (sectionRows.length) sections.push({ name: s.name, rows: sectionRows });
+    const footEl = document.getElementById("display-bus-footnote");
+    if (displayBusPageCtl) {
+        displayBusPageCtl.destroy();
+        displayBusPageCtl = null;
     }
+    if (!busStopsEl) return;
+    if (!data.available || !data.departures?.length) {
+        busStopsEl.innerHTML = '<div id="display-bus-viewport" class="bus-dep-viewport"></div>';
+        if (footEl) footEl.textContent = "";
+        return;
+    }
+    const deps = data.departures;
+    const theory = data.source === "gtfs_static" || data.source === "test";
+    if (footEl) footEl.textContent = theory ? "Horaires théoriques (GTFS)" : "";
 
-    const allRows = sections.flatMap((sec) => sec.rows);
-    const totalRows = allRows.length;
-    const vh = window.innerHeight;
-    const rowHeight = 56;
-    const headerHeight = 120;
-    const maxVisible = Math.max(4, Math.floor((vh - headerHeight) / rowHeight));
-    const needsPagination = totalRows > maxVisible;
-    const rowsPerPage = needsPagination ? Math.ceil(totalRows / 2) : totalRows;
-
-    const pageIndex = needsPagination ? (busPageIndex % 2) : 0;
-    const start = pageIndex * rowsPerPage;
-    const end = Math.min(start + rowsPerPage, totalRows);
-    const pageRows = allRows.slice(start, end);
-
-    const rowsHtml = pageRows.map((r) => {
-        const routeClass = r.route === "H1" ? "bus-route-h1" : r.route === "H2" ? "bus-route-h2" : "";
-        const timesHtml = (r.items || []).map((it) => {
-            const imminent = it.status === "imminent";
-            return `<span class="bus-time-item ${imminent ? "bus-time-imminent" : ""}">${escapeHtml(it.label)}</span>`;
-        }).join(" · ");
-        return `
-        <div class="bus-line-row ${routeClass}">
-            <span class="bus-line-route">${escapeHtml(r.route)}</span>
-            <span class="bus-line-arrow">→</span>
-            <span class="bus-line-dest bus-scroll-text">${escapeHtml(r.headsign)}</span>
-            <span class="bus-line-stop">${escapeHtml(r.stopName)}</span>
-            <span class="bus-line-times">${timesHtml || "—"}</span>
-        </div>`;
-    }).join("");
-
-    const content = errorMsg
-        ? `<div class="bus-no-dep bus-error">${escapeHtml(errorMsg)}</div>`
-        : totalRows
-            ? `
-        <div class="bus-departures-section">
-            <div class="bus-departures-header">Départs</div>
-            <div class="bus-lines-table">
-                ${rowsHtml}
-            </div>
-        </div>
-    `
-            : '<div class="bus-no-dep">Aucun départ</div>';
-
-    busStopsEl.innerHTML = alertsHtml + content;
-    busStopsEl.querySelectorAll(".bus-scroll-text").forEach((el) => {
-        if (el.scrollWidth > el.parentElement.offsetWidth) el.classList.add("bus-scroll-animate");
-    });
-
-    if (busPageSwitchTimer) clearInterval(busPageSwitchTimer);
-    if (needsPagination && lastBusData) {
-        busPageSwitchTimer = setInterval(() => {
-            busPageIndex++;
-            renderBusPanel(lastBusData);
-        }, BUS_PAGE_SWITCH_MS);
+    const viewport = document.getElementById("display-bus-viewport");
+    if (viewport && typeof busBoardPagesMount === "function") {
+        displayBusPageCtl = busBoardPagesMount(viewport, deps, { pageSwitchMs: 12000 });
+    } else {
+        const table =
+            typeof busBoardTableHtml === "function"
+                ? busBoardTableHtml(deps, { showHead: true })
+                : "";
+        busStopsEl.innerHTML = table;
+        busStopsEl.querySelectorAll(".bus-scroll-text").forEach((el) => {
+            if (el.scrollWidth > el.parentElement.offsetWidth) el.classList.add("bus-scroll-animate");
+        });
     }
 }
 
@@ -567,13 +389,13 @@ function switchToBus() {
     document.getElementById("display-critical-banner")?.classList.add("hidden");
     document.getElementById("display-completed-banner")?.classList.add("hidden");
     annContainer?.classList.add("hidden");
+    waitingEl?.classList.add("hidden");
     busPanel?.classList.remove("hidden");
     busPanel?.classList.add("display-bus-fade-in");
 }
 
 function switchToSuggestions() {
     showBusNow = false;
-    if (busPageSwitchTimer) { clearInterval(busPageSwitchTimer); busPageSwitchTimer = null; }
     busPanel?.classList.add("hidden");
     busPanel?.classList.remove("display-bus-fade-in");
     if (currentMode === "waiting") {
@@ -592,11 +414,15 @@ function switchToSuggestions() {
 }
 
 async function updateBusDisplay() {
-    if (!shouldShowBus()) {
+    if (!canPollBusUi()) {
         if (showBusNow) switchToSuggestions();
         return;
     }
     const data = await fetchBusData();
+    if (!data.available || !data.departures?.length) {
+        if (showBusNow) switchToSuggestions();
+        return;
+    }
     renderBusPanel(data);
     if (!showBusNow) switchToBus();
 }
@@ -605,7 +431,6 @@ function checkAlternance() {
     if (!busSettings?.bus_alternance_enabled || !busSettings.bus_alternance_interval_sec) return;
     const interval = busSettings.bus_alternance_interval_sec * 1000;
     const now = Date.now();
-    if (busSettings.bus_schedule?.length && isInBusSchedule(new Date())) return;
     if (now - lastAlternanceSwitch >= interval) {
         lastAlternanceSwitch = now;
         alternanceShowBus = !alternanceShowBus;
@@ -617,16 +442,19 @@ function checkAlternance() {
 // --------------- Start ---------------
 
 async function initDisplay() {
-    await fetchPriorityAnnouncement();
-    if (currentPriorityAnnouncement) return;
+    if (typeof DisplayAnnouncements !== "undefined") {
+        DisplayAnnouncements.setModeProvider(() => currentMode);
+        await DisplayAnnouncements.fetchPriorityAnnouncement();
+        if (DisplayAnnouncements.isPriorityActive()) return;
+    }
     await checkDisplayMode();
-    if (shouldShowBus()) {
+    if (canPollBusUi()) {
         await updateBusDisplay();
     } else {
         fetchSuggestions();
         fetchCompletedSuggestions();
     }
-    fetchAnnouncements();
+    if (typeof DisplayAnnouncements !== "undefined") DisplayAnnouncements.fetchAnnouncements();
 }
 
 let busRefreshInterval = 30000;  // 30 sec for bus
@@ -638,12 +466,14 @@ let lastSuggestionsRefresh = 0;
 initDisplay();
 setInterval(checkDisplayMode, 3000);
 setInterval(async () => {
-    await fetchPriorityAnnouncement();
-    if (currentPriorityAnnouncement) return;
+    if (typeof DisplayAnnouncements !== "undefined") {
+        await DisplayAnnouncements.fetchPriorityAnnouncement();
+        if (DisplayAnnouncements.isPriorityActive()) return;
+    }
     await checkDisplayMode();
     checkAlternance();
     const now = Date.now();
-    if (shouldShowBus() && !busSettings?.bus_alternance_enabled) {
+    if (canPollBusUi() && !busSettings?.bus_alternance_enabled) {
         if (now - lastBusRefresh >= busRefreshInterval) {
             lastBusRefresh = now;
             await updateBusDisplay();
@@ -660,20 +490,20 @@ setInterval(async () => {
             fetchCompletedSuggestions();
         }
     }
-    fetchAnnouncements();
+    if (typeof DisplayAnnouncements !== "undefined") DisplayAnnouncements.fetchAnnouncements();
 }, 4000);
 
 // Bus-specific refresh: every 30 sec when showing bus
 setInterval(async () => {
-    if (currentPriorityAnnouncement) return;
-    if (showBusNow && (shouldShowBus() || busSettings?.bus_alternance_enabled)) {
+    if (typeof DisplayAnnouncements !== "undefined" && DisplayAnnouncements.isPriorityActive()) return;
+    if (showBusNow && (canPollBusUi() || busSettings?.bus_alternance_enabled)) {
         await updateBusDisplay();
     }
 }, 30000);
 
 // Suggestions refresh: every 10 sec when showing suggestions
 setInterval(async () => {
-    if (currentPriorityAnnouncement) return;
+    if (typeof DisplayAnnouncements !== "undefined" && DisplayAnnouncements.isPriorityActive()) return;
     if (!showBusNow && currentMode === "normal") {
         fetchSuggestions();
         fetchCompletedSuggestions();

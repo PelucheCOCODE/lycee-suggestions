@@ -1071,6 +1071,24 @@ body.st-phone-swipe .swipe-counter-wrap {
 .swipe-eng-textarea { resize: vertical; min-height: 90px; }
 .swipe-eng-continue { width: 100%; margin-top: 10px; }
 
+.swipe-eng-empty-banner {
+    font-size: 0.92rem;
+    color: var(--text-secondary);
+    text-align: center;
+    margin: 0 0 12px;
+    line-height: 1.4;
+}
+.swipe-eng-empty-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+    width: 100%;
+}
+.swipe-eng-empty-actions .btn {
+    width: 100%;
+}
+
 /* Dilemme + morpion (swipe) */
 .swipe-card--dilemma .dilemma-vote-grid {
     display: grid;
@@ -2717,7 +2735,7 @@ body.dark-theme .cvl-args-against,
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 100;
+    z-index: 1200;
     padding: 48px;
 }
 .display-priority-overlay.hidden { display: none; }
@@ -2751,12 +2769,12 @@ body.dark-theme .cvl-args-against,
     border-top: 1px solid rgba(255,255,255,0.3);
 }
 
-/* Bus display — plein écran, style aéroport/métro, lisible de loin */
+/* Bus — tableau des départs (signalétique transport, fond sombre) */
 .display-bus-panel {
     position: fixed;
     inset: 0;
-    background: #0a0f1a;
-    padding: 24px 48px;
+    background: #0b0f14;
+    padding: clamp(16px, 2.5vw, 40px) clamp(20px, 3vw, 56px);
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -2774,23 +2792,34 @@ body.dark-theme .cvl-args-against,
 }
 .display-bus-header {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
+    justify-content: space-between;
     gap: 20px;
-    margin-bottom: 20px;
-    padding-bottom: 16px;
-    border-bottom: 3px solid rgba(255,255,255,0.2);
+    margin-bottom: clamp(12px, 2vh, 20px);
+    padding-bottom: clamp(10px, 1.5vh, 16px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     flex-shrink: 0;
 }
-.display-bus-logo { font-size: 3rem; }
-.display-bus-header h2 {
-    font-size: clamp(1.8rem, 4vw, 2.8rem);
-    font-weight: 800;
-    margin: 0;
-    letter-spacing: 0.03em;
-    color: #fff;
-    text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+.display-bus-logo {
+    display: none;
 }
-/* Bus display — style gare/aéroport : adaptatif à la taille d'écran */
+.display-bus-header h2.display-bus-title,
+.display-bus-header h2 {
+    font-size: clamp(1.75rem, 3.6vw, 2.75rem);
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #f1f5f9;
+}
+.display-bus-sub {
+    margin: 6px 0 0;
+    font-size: clamp(0.85rem, 1.7vw, 1.05rem);
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(203, 213, 225, 0.92);
+}
 .display-bus-stops {
     flex: 1;
     display: flex;
@@ -2799,7 +2828,450 @@ body.dark-theme .cvl-args-against,
     min-height: 0;
     max-width: 100%;
     overflow: hidden;
-    font-size: clamp(0.85rem, 2vmin, 1.5rem);
+    font-size: clamp(1.05rem, 2.35vmin, 1.85rem);
+}
+#display-bus-footnote.bus-dep-footnote {
+    flex-shrink: 0;
+    margin: 0;
+    padding-top: 10px;
+}
+.bus-dep-viewport {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+}
+.bus-dep-page-inner {
+    min-height: 0;
+    transition: opacity 0.35s ease, transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.bus-dep-page-inner.bus-dep-page--exit {
+    opacity: 0;
+    transform: translateY(14px);
+}
+.bus-dep-page-inner.bus-dep-page--enter {
+    animation: bus-page-enter 0.45s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@keyframes bus-page-enter {
+    from {
+        opacity: 0;
+        transform: translateY(-12px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+/* Tableau des départs — 5 col : Ligne | Arrêt | sens1+temps | | sens2+temps (même largeur pour les deux sens) */
+.bus-dep-board {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    flex: 1;
+    min-height: 0;
+    --bus-grid: minmax(3.6rem, 5.25rem) minmax(0, 0.95fr) minmax(0, 1.35fr) 6px minmax(0, 1.35fr);
+}
+.bus-dep-colhead {
+    display: grid;
+    grid-template-columns: var(--bus-grid);
+    align-items: end;
+    gap: 8px 12px;
+    padding: 8px 12px 10px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+    font-size: 0.68em;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(203, 213, 225, 0.92);
+}
+.bus-dep-ch-stop {
+    text-align: left;
+}
+.bus-dep-ch-sensblock {
+    text-align: left;
+    letter-spacing: 0.08em;
+    line-height: 1.25;
+}
+.bus-dep-ch-sep {
+    min-height: 1.25em;
+    background: linear-gradient(180deg, transparent 10%, rgba(148, 163, 184, 0.45) 50%, transparent 90%);
+    border-radius: 2px;
+    opacity: 0.85;
+}
+.bus-dep-row {
+    display: grid;
+    grid-template-columns: var(--bus-grid);
+    align-items: center;
+    gap: 10px 14px;
+    padding: clamp(10px, 1.5vh, 16px) 12px;
+    margin-bottom: 2px;
+    background: linear-gradient(90deg, rgba(15, 23, 42, 0.88) 0%, rgba(30, 41, 59, 0.55) 100%);
+    border-left: 4px solid rgba(100, 116, 139, 0.75);
+    border-radius: 0 4px 4px 0;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.bus-dep-row--compact {
+    min-height: 0;
+}
+.bus-dep-board > .bus-dep-row:nth-child(2n + 3) {
+    background: linear-gradient(90deg, rgba(17, 24, 39, 0.92) 0%, rgba(30, 41, 59, 0.5) 100%);
+}
+/* Urgence « imminent / soon » : uniquement sur le bloc sens concerné (.bus-dep-side--*) */
+.bus-dep-line,
+.bus-dep-stop-label {
+    align-self: center;
+}
+.bus-dep-side {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: clamp(6px, 0.75vh, 10px);
+    min-width: 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.35);
+    border: 1px solid rgba(148, 163, 184, 0.12);
+}
+.bus-dep-side--empty {
+    opacity: 0.85;
+    border-style: dashed;
+}
+.bus-dep-side--muted {
+    opacity: 0.9;
+    border-style: dashed;
+    border-color: rgba(148, 163, 184, 0.2);
+}
+.bus-dep-side--soon {
+    border-color: rgba(148, 163, 184, 0.35);
+    background: rgba(30, 41, 59, 0.55);
+}
+.bus-dep-side--imminent {
+    border-color: rgba(248, 113, 113, 0.55);
+    background: rgba(127, 29, 29, 0.45);
+    box-shadow:
+        inset 0 0 0 1px rgba(248, 113, 113, 0.28),
+        0 0 20px rgba(220, 38, 38, 0.18);
+    animation: bus-side-imminent-glow 2.2s ease-in-out infinite;
+}
+@keyframes bus-side-imminent-glow {
+    0%, 100% {
+        box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.25), 0 0 16px rgba(220, 38, 38, 0.12);
+    }
+    50% {
+        box-shadow: inset 0 0 0 1px rgba(252, 165, 165, 0.4), 0 0 28px rgba(220, 38, 38, 0.22);
+    }
+}
+.bus-dep-times--in-side {
+    align-self: flex-end;
+    width: 100%;
+}
+.bus-dep-line {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+}
+/* Badges lignes — couleurs réseau (H1 rouge, H2 bleu, H3 vert, 4 violet, 7 jaune) */
+.bus-dep-line-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.85em;
+    padding: 0.32em 0.55em;
+    font-weight: 800;
+    font-size: 1.12em;
+    line-height: 1.05;
+    letter-spacing: 0.03em;
+    color: #fff;
+    background: #1e293b;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.45);
+}
+/* Lignes H* : forme « goutte » (inspirée signalétique bus) */
+.bus-dep-line-badge.bus-dep-line-shape--h {
+    border-radius: 10px 18px 16px 5px;
+    clip-path: polygon(0% 18%, 0% 88%, 14% 100%, 100% 100%, 100% 0%, 14% 0%);
+    padding-left: 0.45em;
+    padding-right: 0.5em;
+}
+/* Lignes numériques : pastille carrée arrondie */
+.bus-dep-line-badge.bus-dep-line-shape--num {
+    border-radius: 12px;
+    min-width: 2.5em;
+    aspect-ratio: 1;
+}
+.bus-dep-line-badge.bus-dep-line-shape--def {
+    border-radius: 6px;
+}
+.bus-dep-line-badge[data-line="H1"] { background: #e30613; color: #fff; }
+.bus-dep-line-badge[data-line="H2"] { background: #0066cc; color: #fff; }
+.bus-dep-line-badge[data-line="H3"] { background: #1b7f3a; color: #fff; }
+.bus-dep-line-badge[data-line="4"],
+.bus-dep-line-badge[data-line="H4"] { background: #6d28d9; color: #fff; }
+.bus-dep-line-badge[data-line="7"],
+.bus-dep-line-badge[data-line="H7"] { background: #f5a623; color: #111827; }
+.bus-dep-dual-sep {
+    align-self: stretch;
+    min-height: 3rem;
+    margin: 4px 0;
+    background: linear-gradient(180deg, transparent 6%, rgba(148, 163, 184, 0.5) 50%, transparent 94%);
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+.bus-dep-dest--dual {
+    font-weight: 700;
+    font-size: clamp(1.02em, 2.55vmin, 1.22em);
+    line-height: 1.2;
+    color: #f1f5f9;
+    min-width: 0;
+}
+.bus-dep-side .bus-dep-dest--dual {
+    font-size: clamp(1.05em, 2.65vmin, 1.28em);
+}
+.bus-dep-dest {
+    font-weight: 700;
+    font-size: 1.08em;
+    line-height: 1.22;
+    color: #f8fafc;
+    min-width: 0;
+}
+.bus-dep-stop-label {
+    font-size: clamp(1em, 2.2vmin, 1.12em);
+    line-height: 1.28;
+    font-weight: 600;
+    color: #e2e8f0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.bus-dep-times {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+}
+.bus-dep-times-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 2px;
+    line-height: 1.12;
+    text-align: right;
+}
+.bus-dep-eta-sep {
+    color: rgba(148, 163, 184, 0.55);
+    font-weight: 700;
+    font-size: 1em;
+}
+.bus-dep-eta {
+    font-weight: 800;
+    font-size: clamp(1.35em, 3.35vmin, 2.35em);
+    letter-spacing: 0.03em;
+    color: #f1f5f9;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.45);
+}
+.bus-dep-side .bus-dep-eta {
+    font-size: clamp(1.42em, 3.5vmin, 2.5em);
+}
+.bus-dep-eta--primary {
+    font-size: clamp(1.38em, 3.4vmin, 2.25em);
+    line-height: 1.1;
+}
+.bus-dep-side .bus-dep-eta--primary {
+    font-size: clamp(1.45em, 3.55vmin, 2.55em);
+}
+.bus-dep-eta--normal {
+    color: #f1f5f9;
+}
+.bus-dep-eta--secondary {
+    color: #94a3b8;
+    font-weight: 700;
+}
+.bus-dep-eta--sub {
+    font-size: clamp(0.78em, 1.75vmin, 1.05em);
+    letter-spacing: 0.02em;
+    opacity: 0.95;
+}
+.bus-dep-side .bus-dep-eta--sub {
+    font-size: clamp(0.82em, 1.85vmin, 1.12em);
+}
+.bus-dep-eta--soon {
+    color: #e2e8f0;
+}
+.bus-dep-eta--near {
+    color: #e2e8f0;
+}
+.bus-dep-eta--far {
+    color: rgba(148, 163, 184, 0.72);
+    font-weight: 700;
+    text-shadow: none;
+}
+.bus-dep-side--far {
+    opacity: 0.92;
+}
+.bus-dep-eta--imminent {
+    color: #fecaca;
+    font-weight: 900;
+    font-size: clamp(1.35em, 3.4vmin, 2.35em);
+    letter-spacing: 0.06em;
+    animation: bus-eta-pulse 1.8s ease-in-out infinite;
+}
+.bus-dep-eta--imminent.bus-dep-eta--primary {
+    font-size: clamp(1.4em, 3.45vmin, 2.45em);
+}
+.bus-dep-side .bus-dep-eta--imminent.bus-dep-eta--primary {
+    font-size: clamp(1.48em, 3.6vmin, 2.6em);
+}
+.bus-dep-eta--muted {
+    color: rgba(148, 163, 184, 0.5);
+    font-weight: 600;
+    font-size: clamp(0.95em, 2.2vmin, 1.1em);
+    text-shadow: none;
+}
+@keyframes bus-eta-pulse {
+    0%, 100% { opacity: 1; filter: brightness(1); }
+    50% { opacity: 0.92; filter: brightness(1.08); }
+}
+.bus-dep-footnote {
+    margin-top: 14px;
+    font-size: clamp(0.72rem, 1.4vw, 0.95rem);
+    color: rgba(148, 163, 184, 0.55);
+    text-align: center;
+    letter-spacing: 0.04em;
+}
+.tv-bus-slide-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+}
+
+/* Page /displaybus — écran dédié bus + horloge + pagination */
+.displaybus-body {
+    margin: 0;
+    min-height: 100vh;
+    background: #0b0f14;
+    color: #fff;
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+.displaybus-root {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    padding: clamp(12px, 2.5vw, 36px);
+    box-sizing: border-box;
+    max-height: 100vh;
+    overflow: hidden;
+}
+.displaybus-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: clamp(12px, 3vw, 28px);
+    flex-shrink: 0;
+    padding-bottom: clamp(12px, 2vh, 20px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.displaybus-header-left {
+    display: flex;
+    align-items: center;
+    gap: clamp(10px, 2vw, 20px);
+    min-width: 0;
+}
+.displaybus-logo {
+    display: none;
+}
+.displaybus-header h1 {
+    margin: 0;
+    font-size: clamp(1.45rem, 3.5vw, 2.5rem);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #f1f5f9;
+}
+.displaybus-header-right {
+    flex-shrink: 0;
+}
+.displaybus-clock {
+    display: block;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: clamp(1.5rem, 3.8vw, 2.75rem);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: #cbd5e1;
+    letter-spacing: 0.04em;
+}
+.displaybus-main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+.displaybus-rows {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    font-size: clamp(1.05rem, 2.35vmin, 1.85rem);
+}
+.displaybus-rows .bus-dep-viewport {
+    flex: 1;
+    min-height: 0;
+}
+.displaybus-rows .bus-dep-board {
+    flex: 1;
+    min-height: 0;
+    justify-content: flex-start;
+}
+.displaybus-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 12px;
+    padding: 24px;
+    color: rgba(255, 255, 255, 0.7);
+}
+.displaybus-empty-title {
+    font-size: clamp(1.15rem, 3vw, 1.75rem);
+    font-weight: 700;
+    margin: 0;
+}
+.displaybus-empty-reason {
+    font-size: clamp(0.9rem, 2vw, 1.1rem);
+    margin: 0;
+    max-width: 42ch;
+    line-height: 1.4;
+}
+.displaybus-footer {
+    flex-shrink: 0;
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+.displaybus-footnote {
+    margin: 0;
+    font-size: clamp(0.72rem, 1.4vw, 0.95rem);
+    color: rgba(255, 255, 255, 0.42);
+    text-align: center;
+}
+.displaybus-page-hint {
+    font-size: clamp(0.68rem, 1.25vw, 0.82rem);
+    color: rgba(255, 255, 255, 0.38);
+    letter-spacing: 0.05em;
 }
 
 .bus-alerts-section {
@@ -2960,7 +3432,22 @@ body.dark-theme .cvl-args-against,
 }
 
 /* Admin Horaires bus — layout moderne */
+.admin-section-bus .bus-admin-lead { max-width: 900px; line-height: 1.5; margin-bottom: 20px; }
 #section-bus .section-header h1 { margin-bottom: 4px; }
+.bus-admin-layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+    margin-bottom: 24px;
+}
+@media (min-width: 1100px) {
+    .bus-admin-layout {
+        grid-template-columns: 1.2fr 0.85fr;
+        grid-template-rows: auto auto;
+        align-items: start;
+    }
+    .bus-admin-block--wide { grid-column: 1 / -1; max-width: 100%; }
+}
 .bus-admin-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -2974,6 +3461,33 @@ body.dark-theme .cvl-args-against,
     padding: 20px;
     box-shadow: var(--shadow);
 }
+.bus-admin-gtfs {
+    border-color: rgba(13, 71, 161, 0.25);
+    background: linear-gradient(165deg, #f8fafc 0%, var(--surface) 55%);
+}
+.bus-input-wide { width: 100%; max-width: 100%; }
+.form-row-bus {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 16px;
+}
+.bus-stop-ids-ta {
+    width: 100%;
+    font-family: ui-monospace, monospace;
+    font-size: 0.88rem;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    resize: vertical;
+}
+.bus-legacy-details {
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: var(--bg);
+    border-radius: 10px;
+    border: 1px dashed var(--border);
+}
+.bus-legacy-details summary { cursor: pointer; font-weight: 600; color: var(--text-secondary); }
 .bus-admin-block h3 {
     font-size: 1rem;
     font-weight: 600;

@@ -43,7 +43,17 @@ def minify_css(path: str) -> None:
 
 def main():
     print("Minification JS...")
-    for name in ["student.js", "admin.js", "display.js", "tv.js"]:
+    for name in [
+        "student.js",
+        "admin.js",
+        "bus-diagnostics.js",
+        "display-announcements.js",
+        "bus-board-render.js",
+        "bus-board-pages.js",
+        "display.js",
+        "tv.js",
+        "displaybus.js",
+    ]:
         p = os.path.join(STATIC, "js", name)
         if os.path.exists(p):
             minify_js(p)
