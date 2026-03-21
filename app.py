@@ -1254,10 +1254,12 @@ def vote_suggestion(sid):
         vote = Vote(suggestion_id=sid, session_id=session_id, vote_type=vote_type)
         db.session.add(vote)
 
-    if vote_type == "for":
-        suggestion.vote_for = (getattr(suggestion, "vote_for", 0) or 0) + 1
-    else:
-        suggestion.vote_against = (getattr(suggestion, "vote_against", 0) or 0) + 1
+    # Compteurs Pour/Contre uniquement pour les fiches débat (sinon vote_for gonflait à tort sur votes simples)
+    if needs_debate:
+        if vote_type == "for":
+            suggestion.vote_for = (getattr(suggestion, "vote_for", 0) or 0) + 1
+        else:
+            suggestion.vote_against = (getattr(suggestion, "vote_against", 0) or 0) + 1
 
     pending_arg_ids = []
     if argument_text and needs_debate:

@@ -166,6 +166,11 @@ let swipeDragging = false;
 let swipeLastTap = 0;
 /** Anti double tap / spam like en swipe */
 const swipeSimpleLikeCooldownUntil = {};
+/** Évite reshuffle / re-render du deck pendant un geste tactile */
+let swipeUserInteracting = false;
+let pendingSwipeDeckRebuild = false;
+let lastSwipeDeckSig = "";
+let swipeInteractClearTimer = null;
 let debateArgSheetEl = null;
 /** Deck swipe (suggestions mélangées + cartes engagement), uniquement tactile */
 let engagementBootstrap = null;
@@ -202,9 +207,79 @@ async function init() {
     loadCategories();
     loadSuggestions();
     checkSubmissionsStatus();
-    setInterval(loadSuggestions, 6000);   // 6 sec pour actualisation en direct des suggestions (titres, sous-titres, votes)
-    setInterval(checkSubmissionsStatus, 10000);  // 10 sec pour statut soumissions
+    scheduleSuggestionsPoll();
+    setupLiveSyncActivityListeners();
+    setInterval(checkSubmissionsStatus, 90000);
+    document.addEventListener("visibilitychange", onDocumentVisibilityChange);
     setupEvents();
+}
+
+/**
+ * Rafraîchissement sans rechargement de page : fetch() périodique + fusion dans `allSuggestions`
+ * et mise à jour ciblée du DOM. Polling adaptatif via `scheduleNextPoll` / `computeNextPollDelayMs` (StudentLiveSync).
+ * Aucun location.reload — uniquement remplacement / animation de nœuds existants.
+ */
+
+/** Incrémenté à chaque load : les réponses obsolètes (requête plus ancienne) n’appliquent pas le DOM. */
+let loadSuggestionsGeneration = 0;
+
+/** Au retour sur l’onglet : statut soumissions + une synchro suggestions (évite données trop vieilles). */
+function onDocumentVisibilityChange() {
+    if (document.visibilityState === "visible") recordUserActivity();
+    if (document.visibilityState !== "visible") return;
+    checkSubmissionsStatus();
+    clearTimeout(window.__visibilityReloadTimer);
+    window.__visibilityReloadTimer = setTimeout(() => {
+        loadSuggestions({ reason: "poll" });
+    }, 400);
+}
+
+function computeSwipeDeckSig() {
+    const ids = allSuggestions
+        .map((s) => s.id)
+        .slice()
+        .sort((a, b) => a - b)
+        .join(",");
+    const done = (engagementBootstrap?.cards_done_today || []).slice().sort().join(",");
+    const guessEl = (engagementBootstrap?.guess_eligible_ids || []).slice().sort((a, b) => a - b).join(",");
+    const dlm = engagementBootstrap?.dilemma?.id ?? "";
+    return `${ids}|${done}|${guessEl}|${dlm}`;
+}
+
+/** Met à jour le compteur / texte sur la carte swipe courante sans recréer le DOM (évite reset du geste). */
+function patchSwipeVoteUiForCurrentCard() {
+    if (!swipeDeckInner) return;
+    const item = swipeDeckItems[swipeIndex];
+    if (!item || item.kind !== "suggestion") return;
+    const s = allSuggestions.find((x) => x.id === item.id);
+    if (!s) return;
+    const card = swipeDeckInner.querySelector(`#swipe-active-layer .swipe-card[data-id="${s.id}"]`);
+    if (!card) return;
+    if (!s.needs_debate) {
+        const big = card.querySelector(".swipe-card-votes-big");
+        if (big) {
+            const t = `♥ ${s.vote_count}`;
+            if (big.textContent !== t) tickLiveField(big);
+            big.textContent = t;
+        }
+        const hint = card.querySelector(".swipe-card-hint:not(.swipe-card-hint-debate-inner)");
+        if (hint) {
+            hint.textContent = s.has_voted ? "Double tap · retirer le soutien" : "Double tap · soutenir";
+        }
+    } else {
+        const vf = card.querySelector(".swipe-debate-score--for");
+        const va = card.querySelector(".swipe-debate-score--against");
+        if (vf) {
+            const t = `Pour ${s.vote_for ?? 0}`;
+            if (vf.textContent !== t) tickLiveField(vf);
+            vf.textContent = t;
+        }
+        if (va) {
+            const t = `Contre ${s.vote_against ?? 0}`;
+            if (va.textContent !== t) tickLiveField(va);
+            va.textContent = t;
+        }
+    }
 }
 
 async function checkSubmissionsStatus() {
@@ -258,6 +333,7 @@ function setupEvents() {
         currentSort = sortSelect.value;
         loadSuggestions();
     });
+    $("#btn-refresh-suggestions")?.addEventListener("click", () => loadSuggestions({ reason: "user" }));
 
     expandBtn.addEventListener("click", toggleExpand);
 }
@@ -319,8 +395,232 @@ function renderCvlOfficialInfo(list) {
 }
 
 // --------------- Load Suggestions ---------------
+//
+// StudentLiveSync : polling fetch adaptatif + patch DOM ciblé (évolutif vers SSE/WebSocket :
+// remplacer scheduleNextPoll par une souscription, garder applySuggestionDomPatch).
+
+/** @type {Record<number, number>} voteOptimisticUntil — timestamp jusqu’auquel on évite qu’un poll serveur « en retard » baisse un compteur qu’on vient d’augmenter. */
+const voteOptimisticUntil = {};
 
 let lastIdsSignature = "";
+/** Signature serveur brute (hors merge cache local) pour détecter « rien n’a changé » sans rerender. */
+let lastPollContentSig = "";
+let pollNoChangeStreak = 0;
+let pollFailStreak = 0;
+let pollBoostCycles = 0;
+let lastUserActivityAt = Date.now();
+let engagementNextFetchAt = 0;
+const ENGAGEMENT_MIN_INTERVAL_MS = 42000;
+
+const POLL_BASE_LIST_MS = 9000;
+const POLL_BASE_SWIPE_MS = 17000;
+const POLL_HIDDEN_MS = 38000;
+const POLL_INACTIVE_MS = 36000;
+const POLL_INACTIVE_AFTER_MS = 90000;
+const POLL_NOCHANGE_STEP_MS = 4500;
+const POLL_NOCHANGE_MAX_EXTRA_MS = 18000;
+const POLL_FAIL_BACKOFF_CAP_MS = 90000;
+
+let deferredPollDomPending = false;
+
+function recordUserActivity() {
+    lastUserActivityAt = Date.now();
+}
+
+function computeContentSignature(suggestions, proposal) {
+    const parts = [];
+    if (proposal) {
+        parts.push(
+            `p:${proposal.id}|vf:${proposal.vote_for ?? 0}|va:${proposal.vote_against ?? 0}|nd:${proposal.needs_debate ? 1 : 0}|u:${proposal.updated_at || ""}`,
+        );
+    }
+    (suggestions || []).forEach((s) => {
+        parts.push(
+            [
+                s.id,
+                s.vote_count,
+                s.status,
+                s.title,
+                s.subtitle || "",
+                s.needs_debate ? 1 : 0,
+                s.vote_for ?? 0,
+                s.vote_against ?? 0,
+                s.importance_score ?? 0,
+                s.updated_at || "",
+            ].join(":"),
+        );
+    });
+    return parts.sort().join("|");
+}
+
+function buildCardLiveSig(s) {
+    const af = (s.arguments_for || []).length;
+    const aa = (s.arguments_against || []).length;
+    return [
+        s.id,
+        s.vote_count,
+        s.status,
+        s.title,
+        s.subtitle || "",
+        s.category,
+        s.location_name || "",
+        s.needs_debate ? 1 : 0,
+        s.vote_for ?? 0,
+        s.vote_against ?? 0,
+        s.has_voted ? 1 : 0,
+        s.my_vote || "",
+        s.importance_score ?? 0,
+        s.updated_at || "",
+        af,
+        aa,
+    ].join("§");
+}
+
+function buildProposalLiveSig(p) {
+    if (!p) return "";
+    const af = (p.arguments_for || []).length;
+    const aa = (p.arguments_against || []).length;
+    return [
+        p.id,
+        p.vote_for ?? 0,
+        p.vote_against ?? 0,
+        p.needs_debate ? 1 : 0,
+        p.my_vote || "",
+        p.status || "",
+        p.updated_at || "",
+        af,
+        aa,
+    ].join("§");
+}
+
+function reconcileOptimisticVotes(nextList) {
+    const prevById = new Map(allSuggestions.map((x) => [x.id, x]));
+    return nextList.map((s) => {
+        const prev = prevById.get(s.id);
+        const until = voteOptimisticUntil[s.id];
+        if (!until || Date.now() >= until || !prev) return s;
+        if (s.needs_debate) {
+            let next = { ...s };
+            if (
+                typeof s.vote_for === "number" &&
+                typeof prev.vote_for === "number" &&
+                s.vote_for < prev.vote_for
+            ) {
+                next.vote_for = prev.vote_for;
+            }
+            if (
+                typeof s.vote_against === "number" &&
+                typeof prev.vote_against === "number" &&
+                s.vote_against < prev.vote_against
+            ) {
+                next.vote_against = prev.vote_against;
+            }
+            return next;
+        }
+        if (
+            typeof s.vote_count === "number" &&
+            typeof prev.vote_count === "number" &&
+            s.vote_count < prev.vote_count
+        ) {
+            return { ...s, vote_count: prev.vote_count };
+        }
+        return s;
+    });
+}
+
+function engagementRefreshDue() {
+    return Date.now() >= engagementNextFetchAt;
+}
+
+function shouldDeferPollDom() {
+    if (debateArgSheetEl) return true;
+    if (swipeUserInteracting) return true;
+    if (swipeDragging) return true;
+    const ae = document.activeElement;
+    if (!ae) return false;
+    const tag = ae.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (ae.closest?.(".debate-arg-sheet, .precision-modal, #precision-modal")) return true;
+    return false;
+}
+
+function scheduleDeferredPollDomApply() {
+    clearTimeout(window.__deferredPollDomTimer);
+    window.__deferredPollDomTimer = setTimeout(() => {
+        if (shouldDeferPollDom()) {
+            scheduleDeferredPollDomApply();
+            return;
+        }
+        deferredPollDomPending = false;
+        try {
+            updateSuggestionsInPlace();
+            reorderSuggestionCards();
+            if (isTouchDevice() && phoneUiMode === "swipe") patchSwipeVoteUiForCurrentCard();
+        } catch (e) {
+            console.warn("deferredPollDomApply", e);
+        }
+    }, 380);
+}
+
+function computeNextPollDelayMs() {
+    let ms =
+        isTouchDevice() && phoneUiMode === "swipe"
+            ? POLL_BASE_SWIPE_MS
+            : POLL_BASE_LIST_MS;
+    if (document.hidden) ms = Math.max(ms, POLL_HIDDEN_MS);
+    const idleFor = Date.now() - lastUserActivityAt;
+    if (idleFor > POLL_INACTIVE_AFTER_MS) ms = Math.max(ms, POLL_INACTIVE_MS);
+    ms += Math.min(pollNoChangeStreak * POLL_NOCHANGE_STEP_MS, POLL_NOCHANGE_MAX_EXTRA_MS);
+    if (pollBoostCycles > 0) {
+        const boostCap =
+            isTouchDevice() && phoneUiMode === "swipe" ? POLL_BASE_SWIPE_MS : POLL_BASE_LIST_MS;
+        ms = Math.min(ms, boostCap);
+    }
+    const failMul = Math.min(1.45 ** pollFailStreak, 4);
+    ms = Math.min(ms * failMul, POLL_FAIL_BACKOFF_CAP_MS);
+    return Math.round(ms);
+}
+
+/** Pointeurs / clavier / scroll : alimente le polling « actif » vs inactif. */
+function setupLiveSyncActivityListeners() {
+    const onAct = () => recordUserActivity();
+    document.addEventListener("pointerdown", onAct, { passive: true });
+    document.addEventListener("keydown", onAct);
+    let scrollT = 0;
+    window.addEventListener(
+        "scroll",
+        () => {
+            clearTimeout(scrollT);
+            scrollT = setTimeout(onAct, 120);
+        },
+        { passive: true },
+    );
+}
+
+function scheduleNextPoll() {
+    try {
+        clearTimeout(window.__pollTimeoutId);
+    } catch {
+        /* ignore */
+    }
+    window.__pollTimeoutId = setTimeout(() => {
+        loadSuggestions({ reason: "poll" });
+    }, computeNextPollDelayMs());
+}
+
+function scheduleSuggestionsPoll() {
+    try {
+        clearInterval(window.__suggestionsPollId);
+    } catch {
+        /* ignore */
+    }
+    try {
+        clearTimeout(window.__pollTimeoutId);
+    } catch {
+        /* ignore */
+    }
+    scheduleNextPoll();
+}
 
 function buildIdsSignature(proposal, suggestions) {
     const parts = [];
@@ -346,9 +646,22 @@ function debateOrProposalStructureMismatch(proposal) {
     return false;
 }
 
+/** Micro-transition quand un nombre affiché change (votes, etc.) — sans recharger la page. */
+function tickLiveField(el) {
+    if (!el) return;
+    el.classList.remove("live-field-tick");
+    void el.offsetWidth;
+    el.classList.add("live-field-tick");
+}
+
 function reorderSuggestionCards() {
     const showCount = expanded ? allSuggestions.length : INITIAL_SHOW;
     const visible = allSuggestions.slice(0, showCount);
+    const orderKey = visible.map((s) => s.id).join(",");
+    const cvlKey = officialProposal ? `p${officialProposal.id}` : "";
+    const nextOrderSig = `${cvlKey}|${orderKey}`;
+    if (reorderSuggestionCards._lastSig === nextOrderSig) return;
+    reorderSuggestionCards._lastSig = nextOrderSig;
     const container = suggestionsContainer;
     if (officialProposal) {
         const cvl = container.querySelector(`.suggestion-card-cvl[data-proposal-id="${officialProposal.id}"]`);
@@ -368,16 +681,25 @@ function removeSuggestionCardSilently(id) {
     }
 }
 
-async function loadSuggestions() {
-    const savedInput = input.value;
-    const hadFocus = document.activeElement === input;
-    const savedArguments = {};
-    suggestionsContainer.querySelectorAll(".cvl-argument-panel:not(.hidden)").forEach((panel) => {
-        const id = panel.dataset.suggestionId || panel.dataset.proposalId;
-        const ta = panel.querySelector(".cvl-argument-input");
-        if (id && ta) savedArguments[id] = ta.value;
-    });
+/**
+ * Charge les suggestions + proposition CVL + infos officielles via fetch (JSON).
+ * StudentLiveSync : polling (`reason: "poll"`) adaptatif, early-exit si signature inchangée,
+ * engagement moins fréquent, réconciliation votes optimistes, report DOM si interaction.
+ */
+async function loadSuggestions(opts = {}) {
+    const reason = opts.reason || "user";
     try {
+        if (reason === "poll" && document.hidden) return;
+        const myGen = ++loadSuggestionsGeneration;
+
+        const savedInput = input.value;
+        const hadFocus = document.activeElement === input;
+        const savedArguments = {};
+        suggestionsContainer.querySelectorAll(".cvl-argument-panel:not(.hidden)").forEach((panel) => {
+            const id = panel.dataset.suggestionId || panel.dataset.proposalId;
+            const ta = panel.querySelector(".cvl-argument-input");
+            if (id && ta) savedArguments[id] = ta.value;
+        });
         const params = { category: currentCategory, sort: currentSort };
         if (currentDebateFilter) params.debate = "1";
         const [suggestionsRaw, proposalRaw, cvlInfo] = await Promise.all([
@@ -385,8 +707,34 @@ async function loadSuggestions() {
             API.get("/api/official-proposal"),
             API.get("/api/cvl-official-info"),
         ]);
+        if (myGen !== loadSuggestionsGeneration) return;
+
+        const contentSig = computeContentSignature(suggestionsRaw, proposalRaw);
+        if (reason === "poll" && contentSig === lastPollContentSig) {
+            pollFailStreak = 0;
+            pollNoChangeStreak++;
+            if (isTouchDevice() && engagementRefreshDue()) {
+                await refreshEngagementBootstrap();
+                if (myGen !== loadSuggestionsGeneration) return;
+                engagementNextFetchAt = Date.now() + ENGAGEMENT_MIN_INTERVAL_MS;
+                const deckSig = computeSwipeDeckSig();
+                const needsDeckRebuild = deckSig !== lastSwipeDeckSig || swipeDeckItems.length === 0;
+                if (needsDeckRebuild && !swipeUserInteracting) {
+                    lastSwipeDeckSig = deckSig;
+                    buildSwipeDeck();
+                    renderSwipeView();
+                } else if (needsDeckRebuild) pendingSwipeDeckRebuild = true;
+            }
+            return;
+        }
+
+        pollNoChangeStreak = 0;
+        if (contentSig !== lastPollContentSig) pollBoostCycles = 3;
+        lastPollContentSig = contentSig;
+        pollFailStreak = 0;
+
         const merged = mergeLocalVoteHints(suggestionsRaw, proposalRaw);
-        const suggestions = merged.suggestions;
+        const suggestions = reconcileOptimisticVotes(merged.suggestions);
         const proposal = merged.proposal;
         syncVoteCacheFromServer(suggestionsRaw, proposalRaw);
         const newSig = buildIdsSignature(proposal, suggestions);
@@ -395,68 +743,94 @@ async function loadSuggestions() {
 
         allSuggestions = suggestions;
         officialProposal = proposal;
+        let swipeDeckRebuiltThisLoad = false;
         if (isTouchDevice()) {
-            await refreshEngagementBootstrap();
-            buildSwipeDeck();
+            if (engagementRefreshDue() || reason !== "poll") {
+                await refreshEngagementBootstrap();
+                engagementNextFetchAt = Date.now() + ENGAGEMENT_MIN_INTERVAL_MS;
+            }
+            if (myGen !== loadSuggestionsGeneration) return;
+            const deckSig = computeSwipeDeckSig();
+            const needsDeckRebuild = deckSig !== lastSwipeDeckSig || swipeDeckItems.length === 0;
+            if (needsDeckRebuild) {
+                if (swipeUserInteracting) {
+                    pendingSwipeDeckRebuild = true;
+                } else {
+                    lastSwipeDeckSig = deckSig;
+                    buildSwipeDeck();
+                    swipeDeckRebuiltThisLoad = true;
+                    pendingSwipeDeckRebuild = false;
+                }
+            }
         }
         renderCvlOfficialInfo(cvlInfo || []);
 
+        const skipHeavyDom = reason === "poll" && shouldDeferPollDom();
+        if (skipHeavyDom) {
+            deferredPollDomPending = true;
+            scheduleDeferredPollDomApply();
+        }
+
         const doDiscrete = async () => {
+            reorderSuggestionCards._lastSig = null;
             lastIdsSignature = newSig;
             await renderSuggestionsDiscrete();
         };
 
-        if (proposalChanged || !suggestionsContainer.children.length) {
-            await doDiscrete();
-        } else if (newSig === lastIdsSignature) {
-            if (debateOrProposalStructureMismatch(proposal)) {
-                lastIdsSignature = newSig;
-                await renderSuggestionsDiscrete();
-            } else if (isTouchDevice() && phoneUiMode === "list" && phoneListLikedOnly) {
-                lastIdsSignature = newSig;
-                await renderSuggestionsDiscrete();
-            } else {
-                updateSuggestionsInPlace();
-                reorderSuggestionCards();
-            }
-        } else {
-            const showCount = expanded ? allSuggestions.length : INITIAL_SHOW;
-            const visibleIds = allSuggestions.slice(0, showCount).map((s) => s.id);
-            const domIds = [...suggestionsContainer.querySelectorAll(".suggestion-card[data-id]")].map((el) =>
-                parseInt(el.dataset.id, 10),
-            );
-            const visSet = new Set(visibleIds);
-            const domSet = new Set(domIds);
-            const visAdded = visibleIds.filter((id) => !domSet.has(id));
-            const visRemoved = domIds.filter((id) => !visSet.has(id));
-
-            if (visAdded.length === 0 && visRemoved.length === 0) {
-                lastIdsSignature = newSig;
-                if (debateOrProposalStructureMismatch(proposal)) await doDiscrete();
-                else {
+        if (!skipHeavyDom) {
+            if (proposalChanged || !suggestionsContainer.children.length) {
+                await doDiscrete();
+            } else if (newSig === lastIdsSignature) {
+                if (debateOrProposalStructureMismatch(proposal)) {
+                    lastIdsSignature = newSig;
+                    await renderSuggestionsDiscrete();
+                } else if (isTouchDevice() && phoneUiMode === "list" && phoneListLikedOnly) {
+                    lastIdsSignature = newSig;
+                    await renderSuggestionsDiscrete();
+                } else {
                     updateSuggestionsInPlace();
                     reorderSuggestionCards();
                 }
-            } else if (visAdded.length === 1 && visRemoved.length === 0) {
-                lastIdsSignature = newSig;
-                updateSuggestionsInPlace();
-                appendNewSuggestionsOnly();
-                reorderSuggestionCards();
-            } else if (visRemoved.length === 1 && visAdded.length === 0) {
-                lastIdsSignature = newSig;
-                removeSuggestionCardSilently(visRemoved[0]);
-                updateSuggestionsInPlace();
-                reorderSuggestionCards();
-            } else if (visAdded.length === 1 && visRemoved.length === 1) {
-                lastIdsSignature = newSig;
-                removeSuggestionCardSilently(visRemoved[0]);
-                updateSuggestionsInPlace();
-                appendNewSuggestionsOnly();
-                reorderSuggestionCards();
             } else {
-                await doDiscrete();
+                const showCount = expanded ? allSuggestions.length : INITIAL_SHOW;
+                const visibleIds = allSuggestions.slice(0, showCount).map((s) => s.id);
+                const domIds = [...suggestionsContainer.querySelectorAll(".suggestion-card[data-id]")].map((el) =>
+                    parseInt(el.dataset.id, 10),
+                );
+                const visSet = new Set(visibleIds);
+                const domSet = new Set(domIds);
+                const visAdded = visibleIds.filter((id) => !domSet.has(id));
+                const visRemoved = domIds.filter((id) => !visSet.has(id));
+
+                if (visAdded.length === 0 && visRemoved.length === 0) {
+                    lastIdsSignature = newSig;
+                    if (debateOrProposalStructureMismatch(proposal)) await doDiscrete();
+                    else {
+                        updateSuggestionsInPlace();
+                        reorderSuggestionCards();
+                    }
+                } else if (visAdded.length === 1 && visRemoved.length === 0) {
+                    lastIdsSignature = newSig;
+                    updateSuggestionsInPlace();
+                    appendNewSuggestionsOnly();
+                    reorderSuggestionCards();
+                } else if (visRemoved.length === 1 && visAdded.length === 0) {
+                    lastIdsSignature = newSig;
+                    removeSuggestionCardSilently(visRemoved[0]);
+                    updateSuggestionsInPlace();
+                    reorderSuggestionCards();
+                } else if (visAdded.length === 1 && visRemoved.length === 1) {
+                    lastIdsSignature = newSig;
+                    removeSuggestionCardSilently(visRemoved[0]);
+                    updateSuggestionsInPlace();
+                    appendNewSuggestionsOnly();
+                    reorderSuggestionCards();
+                } else {
+                    await doDiscrete();
+                }
             }
         }
+
         input.value = savedInput;
         submitBtn.disabled = savedInput.trim().length < 5 || savedInput.length > 500;
         charCount.textContent = `${savedInput.length} / 500`;
@@ -466,11 +840,25 @@ async function loadSuggestions() {
             if (ta) ta.value = val;
         });
         if (hadFocus) input.focus();
-        if (isTouchDevice() && phoneUiMode === "swipe") {
-            renderSwipeView();
+        if (!skipHeavyDom && isTouchDevice() && phoneUiMode === "swipe") {
+            if (pendingSwipeDeckRebuild && !swipeUserInteracting) {
+                lastSwipeDeckSig = computeSwipeDeckSig();
+                buildSwipeDeck();
+                pendingSwipeDeckRebuild = false;
+                swipeDeckRebuiltThisLoad = true;
+            }
+            if (swipeDeckRebuiltThisLoad) {
+                renderSwipeView();
+            } else {
+                patchSwipeVoteUiForCurrentCard();
+            }
         }
+        if (pollBoostCycles > 0) pollBoostCycles -= 1;
     } catch (err) {
-        console.error(err);
+        pollFailStreak++;
+        console.warn("loadSuggestions", err);
+    } finally {
+        if (reason === "poll") scheduleNextPoll();
     }
 }
 
@@ -536,7 +924,7 @@ function appendNewSuggestionsOnly() {
         card.querySelectorAll(".cvl-add-arg-submit").forEach((btn) => {
             btn.addEventListener("click", () => submitAddArgument(btn));
         });
-        card.classList.remove("suggestion-card-new");
+        setTimeout(() => card.classList.remove("suggestion-card-new"), 480);
     });
 
     if (allSuggestions.length > INITIAL_SHOW && !expanded) {
@@ -575,9 +963,16 @@ function updateSuggestionsInPlace() {
     visible.forEach((s) => {
         const card = suggestionsContainer.querySelector(`.suggestion-card[data-id="${s.id}"]`);
         if (!card) return;
+        const liveSig = buildCardLiveSig(s);
+        if (card.dataset.liveSig === liveSig) return;
+        card.dataset.liveSig = liveSig;
         const icon = CATEGORY_ICONS[s.category] || "📌";
         const titleEl = card.querySelector(".suggestion-title");
-        if (titleEl) titleEl.textContent = `${icon} ${s.title}`;
+        if (titleEl) {
+            const t = `${icon} ${s.title}`;
+            if (titleEl.textContent !== t) tickLiveField(titleEl);
+            titleEl.textContent = t;
+        }
         let subEl = card.querySelector(".suggestion-subtitle");
         if (s.subtitle) {
             if (!subEl) {
@@ -611,20 +1006,30 @@ function updateSuggestionsInPlace() {
         const voteBtn = card.querySelector(".suggestion-vote-btn");
         const voteCount = card.querySelector(".suggestion-vote-count");
         if (voteFor) {
-            voteFor.textContent = `Pour ${s.vote_for || 0}`;
+            const t = `Pour ${s.vote_for || 0}`;
+            if (voteFor.textContent !== t) tickLiveField(voteFor);
+            voteFor.textContent = t;
             voteFor.classList.toggle("active", s.my_vote === "for");
         }
         if (voteAgainst) {
-            voteAgainst.textContent = `Contre ${s.vote_against || 0}`;
+            const t = `Contre ${s.vote_against || 0}`;
+            if (voteAgainst.textContent !== t) tickLiveField(voteAgainst);
+            voteAgainst.textContent = t;
             voteAgainst.classList.toggle("active", s.my_vote === "against");
         }
         if (voteBtn) {
-            voteBtn.textContent = (s.has_voted ? "✓ Soutenu" : "♥ Soutenir") + " · " + s.vote_count;
+            const t = (s.has_voted ? "✓ Soutenu" : "♥ Soutenir") + " · " + s.vote_count;
+            if (voteBtn.textContent !== t) tickLiveField(voteBtn);
+            voteBtn.textContent = t;
             voteBtn.classList.toggle("voted", s.has_voted);
             voteBtn.disabled = !!s.has_voted;
             voteBtn.setAttribute("aria-disabled", s.has_voted ? "true" : "false");
         }
-        if (voteCount) voteCount.textContent = `${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}${s.has_voted ? " · Soutenu" : ""}`;
+        if (voteCount) {
+            const t = `${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}${s.has_voted ? " · Soutenu" : ""}`;
+            if (voteCount.textContent !== t) tickLiveField(voteCount);
+            voteCount.textContent = t;
+        }
         const argsToggle = card.querySelector(".cvl-arguments-toggle[data-id]");
         if (argsToggle) {
             const total = (s.arguments_for?.length || 0) + (s.arguments_against?.length || 0);
@@ -636,6 +1041,11 @@ function updateSuggestionsInPlace() {
     if (officialProposal) {
         const card = suggestionsContainer.querySelector(`.suggestion-card-cvl[data-proposal-id="${officialProposal.id}"]`);
         if (card) {
+            const pSig = buildProposalLiveSig(officialProposal);
+            if (card.dataset.liveSig === pSig) {
+                return;
+            }
+            card.dataset.liveSig = pSig;
             const contentEl = card.querySelector(".cvl-content");
             if (contentEl && officialProposal.content != null) contentEl.innerHTML = officialProposal.content;
             const stBadge = card.querySelector(".badge-cvl");
@@ -643,9 +1053,23 @@ function updateSuggestionsInPlace() {
             const voteFor = card.querySelector(".cvl-vote-for[data-vote='for']");
             const voteAgainst = card.querySelector(".cvl-vote-against[data-vote='against']");
             const voteSimple = card.querySelector(".cvl-votes-simple .cvl-vote-for");
-            if (voteFor) { voteFor.textContent = `Pour ${officialProposal.vote_for}`; voteFor.classList.toggle("active", officialProposal.my_vote === "for"); }
-            if (voteAgainst) { voteAgainst.textContent = `Contre ${officialProposal.vote_against}`; voteAgainst.classList.toggle("active", officialProposal.my_vote === "against"); }
-            if (voteSimple && !officialProposal.needs_debate) voteSimple.textContent = `Soutenir · ${officialProposal.vote_for}`;
+            if (voteFor) {
+                const t = `Pour ${officialProposal.vote_for}`;
+                if (voteFor.textContent !== t) tickLiveField(voteFor);
+                voteFor.textContent = t;
+                voteFor.classList.toggle("active", officialProposal.my_vote === "for");
+            }
+            if (voteAgainst) {
+                const t = `Contre ${officialProposal.vote_against}`;
+                if (voteAgainst.textContent !== t) tickLiveField(voteAgainst);
+                voteAgainst.textContent = t;
+                voteAgainst.classList.toggle("active", officialProposal.my_vote === "against");
+            }
+            if (voteSimple && !officialProposal.needs_debate) {
+                const t = `Soutenir · ${officialProposal.vote_for}`;
+                if (voteSimple.textContent !== t) tickLiveField(voteSimple);
+                voteSimple.textContent = t;
+            }
             const argsToggle = card.querySelector(".cvl-arguments-toggle[data-proposal-id]");
             if (argsToggle && officialProposal.needs_debate) {
                 const total = (officialProposal.arguments_for?.length || 0) + (officialProposal.arguments_against?.length || 0);
@@ -1363,11 +1787,16 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             s.vote_against = data.vote_against;
             s.arguments_for = data.arguments_for || [];
             s.arguments_against = data.arguments_against || [];
+            voteOptimisticUntil[id] = Date.now() + 14000;
             syncVoteCacheFromServer(allSuggestions, officialProposal);
-            renderSuggestionsSilent();
+            if (isTouchDevice() && phoneUiMode === "swipe") {
+                patchSwipeVoteUiForCurrentCard();
+            } else {
+                renderSuggestionsSilent();
+            }
             if (simpleSupport && data.has_voted) {
                 if (!removeVote && isTouchDevice() && phoneUiMode === "swipe") {
-                    swipeSimpleLikeCooldownUntil[id] = Date.now() + 900;
+                    swipeSimpleLikeCooldownUntil[id] = Date.now() + 1200;
                 }
                 requestAnimationFrame(() => {
                     const card =
@@ -1502,6 +1931,7 @@ function syncPhoneUiChrome() {
         if (filtersSection) filtersSection.classList.add("filters-hidden-phone");
         if (phoneSwipeContent) phoneSwipeContent.classList.remove("phone-swipe-content--hidden");
     }
+    document.body.classList.toggle("st-phone-swipe", phoneUiMode === "swipe");
     if (btnPhoneModeSwipe && btnPhoneModeList && btnPhoneModeLiked) {
         btnPhoneModeSwipe.classList.toggle("active", phoneUiMode === "swipe");
         btnPhoneModeList.classList.toggle("active", phoneUiMode === "list" && !phoneListLikedOnly);
@@ -2018,6 +2448,27 @@ function attachSwipeDeckGestures() {
     if (!swipeDeckInner || swipeDeckInner.dataset.swipeBound === "1") return;
     swipeDeckInner.dataset.swipeBound = "1";
 
+    swipeDeckInner.addEventListener(
+        "touchstart",
+        () => {
+            swipeUserInteracting = true;
+        },
+        { passive: true, capture: true },
+    );
+    swipeDeckInner.addEventListener(
+        "touchend",
+        () => {
+            clearTimeout(swipeInteractClearTimer);
+            swipeInteractClearTimer = setTimeout(() => {
+                swipeUserInteracting = false;
+                if (pendingSwipeDeckRebuild) {
+                    loadSuggestions();
+                }
+            }, 420);
+        },
+        { passive: true, capture: true },
+    );
+
     let startX = 0;
     let startY = 0;
     let tracking = false;
@@ -2063,6 +2514,7 @@ function attachSwipeDeckGestures() {
             startY = t.clientY;
             dominant = null;
             tracking = true;
+            swipeDragging = false;
             layer.style.transition = "none";
             resetLabels();
         },
@@ -2081,6 +2533,7 @@ function attachSwipeDeckGestures() {
             if (!dominant && (Math.abs(mx) > 14 || Math.abs(my) > 14)) {
                 dominant = Math.abs(mx) >= Math.abs(my) ? "h" : "v";
             }
+            if (dominant && (Math.abs(mx) > 12 || Math.abs(my) > 12)) swipeDragging = true;
             const item = swipeDeckItems[swipeIndex];
             const cur = item && item.kind === "suggestion" ? allSuggestions.find((x) => x.id === item.id) : null;
             const isDeb = cur && cur.needs_debate;
@@ -2125,6 +2578,7 @@ function attachSwipeDeckGestures() {
         (e) => {
             if (!tracking) return;
             tracking = false;
+            swipeDragging = false;
             const layer = getLayer();
             const t = e.changedTouches[0];
             const mx = t.clientX - startX;
@@ -2360,7 +2814,7 @@ function setupPhoneSwipe() {
         });
     }
     if (btnPhoneModeSwipe) {
-        btnPhoneModeSwipe.addEventListener("click", () => {
+        btnPhoneModeSwipe.addEventListener("click", async () => {
             phoneUiMode = "swipe";
             phoneListLikedOnly = false;
             try {
@@ -2370,9 +2824,13 @@ function setupPhoneSwipe() {
                 /* ignore */
             }
             syncPhoneUiChrome();
+            await refreshEngagementBootstrap();
+            lastSwipeDeckSig = "";
             buildSwipeDeck();
+            lastSwipeDeckSig = computeSwipeDeckSig();
             engagementPingPresence();
             renderSwipeView();
+            scheduleSuggestionsPoll();
         });
     }
     if (btnPhoneModeList) {
@@ -2387,6 +2845,7 @@ function setupPhoneSwipe() {
             }
             syncPhoneUiChrome();
             renderSuggestions(true);
+            scheduleSuggestionsPoll();
         });
     }
     if (btnPhoneModeLiked) {
@@ -2402,6 +2861,7 @@ function setupPhoneSwipe() {
             expanded = true;
             syncPhoneUiChrome();
             renderSuggestions(true);
+            scheduleSuggestionsPoll();
         });
     }
     if (filtersMobileToggle && filtersSection) {

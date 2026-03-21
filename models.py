@@ -67,6 +67,7 @@ class Suggestion(db.Model):
             "ai_cost": getattr(self, "ai_cost", None),
             "ai_needs_debate": getattr(self, "ai_needs_debate", None),
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "reject_reason": getattr(self, "reject_reason", None) or "",
             "importance_score": float(getattr(self, "importance_score", 0) or 0),

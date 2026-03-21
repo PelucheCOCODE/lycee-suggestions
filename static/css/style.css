@@ -512,6 +512,34 @@ th { font-weight: 600; color: var(--text-secondary); font-size: 0.82rem; text-tr
     border-color: var(--primary);
     box-shadow: 0 0 0 2px var(--primary-glow);
 }
+.filter-sort-with-refresh {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.btn-refresh-suggestions {
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 1.15rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.35s ease, border-color 0.2s ease, color 0.2s ease;
+}
+.btn-refresh-suggestions:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+.btn-refresh-suggestions:active {
+    transform: rotate(200deg);
+}
 
 .filters-mobile-toggle {
     display: none;
@@ -774,6 +802,10 @@ body.student-phone-ui .phone-swipe-content {
     justify-content: center;
     gap: 4px;
     margin-top: 10px;
+}
+/* Compteur masqué en mode Découvrir (swipe) — demande UX */
+body.st-phone-swipe .swipe-counter-wrap {
+    display: none !important;
 }
 .swipe-counter-big {
     font-size: 2rem;
@@ -1238,6 +1270,25 @@ body.student-phone-ui .phone-swipe-content {
 @keyframes suggestion-pop {
     from { opacity: 0; transform: scale(0.97) translateY(8px); }
     to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Cartes ajoutées dynamiquement (fetch / polling) */
+@keyframes suggestion-card-enter {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.suggestion-card-new {
+    animation: suggestion-card-enter 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Pulse discret quand un nombre (votes) change sans recharger la page */
+@keyframes live-field-tick {
+    0% { opacity: 1; transform: translateY(0); }
+    40% { opacity: 0.72; transform: translateY(0.5px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+.live-field-tick {
+    animation: live-field-tick 0.36s ease-out;
 }
 
 .suggestion-card {

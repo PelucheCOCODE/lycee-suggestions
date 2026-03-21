@@ -76,11 +76,14 @@
                     <div class="filter-categories" id="category-filters">
                         <button class="filter-chip active" data-category="Toutes">Toutes</button>
                     </div>
-                    <div class="filter-sort">
+                    <div class="filter-sort filter-sort-with-refresh">
                         <select id="sort-select">
                             <option value="votes">Plus votées</option>
                             <option value="recent">Plus récentes</option>
                         </select>
+                        <button type="button" id="btn-refresh-suggestions" class="btn-refresh-suggestions" title="Actualiser la liste">
+                            <span aria-hidden="true">↻</span><span class="visually-hidden">Actualiser</span>
+                        </button>
                     </div>
                 </div>
             </div>
