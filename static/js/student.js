@@ -55,49 +55,57 @@ function writeVoteCache(obj) {
 
 /** Synchronise le cache local avec la vérité serveur (likes / votes CVL). */
 function syncVoteCacheFromServer(suggestions, proposal) {
-    const st = { v: 1, suggestions: {}, proposal: null };
+    const prev = readVoteCache();
+    const st = { v: 1, suggestions: { ...(prev.suggestions || {}) }, proposal: prev.proposal || null };
     (suggestions || []).forEach((s) => {
-        if (s.has_voted && s.my_vote) st.suggestions[String(s.id)] = s.my_vote;
+        if (s.has_voted) st.suggestions[String(s.id)] = s.my_vote || "for";
+        else delete st.suggestions[String(s.id)];
     });
-    if (proposal && proposal.my_vote) {
-        st.proposal = { id: proposal.id, vote: proposal.my_vote };
+    if (proposal) {
+        if (proposal.my_vote) st.proposal = { id: proposal.id, vote: proposal.my_vote };
+        else st.proposal = null;
     }
     writeVoteCache(st);
 }
 
 /**
- * Si le cookie de session n’est pas encore lu, réaffiche les votes depuis le cache (même id).
- * Écrasé au prochain chargement si le serveur dit le contraire.
+ * Source de vérité : la réponse API (has_voted / my_vote par session).
+ * On ne fusionne plus un cache local par-dessus le serveur : cela masquait les désynchros
+ * et entrait en conflit avec la persistance après refresh.
  */
 function mergeLocalVoteHints(suggestions, proposal) {
-    const c = readVoteCache();
-    const out = (suggestions || []).map((s) => {
-        if (s.has_voted) return s;
-        const v = c.suggestions && c.suggestions[String(s.id)];
-        if (v) return { ...s, has_voted: true, my_vote: v };
-        return s;
-    });
-    let prop = proposal;
-    if (prop && !prop.my_vote && c.proposal && c.proposal.id === prop.id && c.proposal.vote) {
-        prop = { ...prop, my_vote: c.proposal.vote };
-    }
-    return { suggestions: out, proposal: prop };
+    return { suggestions: suggestions || [], proposal: proposal || null };
 }
 
 async function sessionBootstrap() {
     try {
         const stored = localStorage.getItem(VISITOR_STORAGE_KEY);
-        if (stored && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(stored)) {
-            await fetch("/api/session/restore", {
-                method: "POST",
-                credentials: "same-origin",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ visitor_id: stored }),
-            });
+        const uuidOk = stored && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(stored);
+        let restoreOk = false;
+        if (uuidOk) {
+            const body = JSON.stringify({ visitor_id: stored });
+            const postRestore = async () =>
+                fetch("/api/session/restore", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body,
+                });
+            let res = await postRestore();
+            restoreOk = res.ok;
+            if (!restoreOk && (res.status === 429 || res.status >= 500)) {
+                await new Promise((r) => setTimeout(r, 450));
+                res = await postRestore();
+                restoreOk = res.ok;
+            }
         }
         const me = await API.get("/api/session/me");
         if (me && me.visitor_id) {
-            localStorage.setItem(VISITOR_STORAGE_KEY, me.visitor_id);
+            if (!stored) {
+                localStorage.setItem(VISITOR_STORAGE_KEY, me.visitor_id);
+            } else if (restoreOk) {
+                localStorage.setItem(VISITOR_STORAGE_KEY, me.visitor_id);
+            }
         }
     } catch (e) {
         console.warn("sessionBootstrap", e);
@@ -493,6 +501,8 @@ function computeContentSignature(suggestions, proposal) {
                 s.importance_score ?? 0,
                 s.updated_at || "",
                 s.server_ts ?? "",
+                s.has_voted ? 1 : 0,
+                s.my_vote || "",
             ].join(":"),
         );
     });
