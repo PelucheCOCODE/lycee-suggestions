@@ -400,6 +400,7 @@ th { font-weight: 600; color: var(--text-secondary); font-size: 0.82rem; text-tr
 
 .feedback.success { background: var(--success-bg); color: #166534; border: 1px solid #bbf7d0; }
 .feedback.error { background: var(--error-bg); color: #991b1b; border: 1px solid #fecaca; }
+.feedback.warning { background: var(--info-bg); color: #0f172a; border: 1px solid #93c5fd; }
 
 .feedback-enter { opacity: 0; transform: translateY(-8px); }
 .feedback-exit { opacity: 0; transform: translateY(-8px); }
@@ -841,6 +842,10 @@ body.st-phone-swipe .swipe-counter-wrap {
 .swipe-label-down {
     color: #e11d48;
     transform: rotate(10deg);
+}
+.swipe-label-up.swipe-dir-threshold,
+.swipe-label-down.swipe-dir-threshold {
+    filter: brightness(1.1);
 }
 
 .phone-list-search-wrap {

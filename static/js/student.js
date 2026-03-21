@@ -117,8 +117,15 @@ let officialProposal = null;
 let expanded = false;
 const INITIAL_SHOW = 4;
 
-/** Évite les votes en double (mobile : taps rapides, requêtes parallèles). */
-const pendingSuggestionVoteIds = new Set();
+/**
+ * Verrou synchrone par suggestion (Symbol) — posé avant tout await / fetch.
+ * voteLocksBySuggestionId + lastVoteServerTs : réconciliation poll vs vote.
+ */
+const voteLocksBySuggestionId = new Map();
+/** @type {Record<number, number>} dernier server_ts appliqué après une réponse vote */
+const lastVoteServerTs = {};
+/** Cooldown swipe après vote (anti rafales multi double-tap). */
+const swipeVoteCooldownUntil = {};
 let pendingOfficialProposalVote = false;
 
 // --------------- DOM ---------------
@@ -253,6 +260,7 @@ function patchSwipeVoteUiForCurrentCard() {
     if (!item || item.kind !== "suggestion") return;
     const s = allSuggestions.find((x) => x.id === item.id);
     if (!s) return;
+    if (voteLockOrClaimActive(s.id)) return;
     const card = swipeDeckInner.querySelector(`#swipe-active-layer .swipe-card[data-id="${s.id}"]`);
     if (!card) return;
     if (!s.needs_debate) {
@@ -402,6 +410,43 @@ function renderCvlOfficialInfo(list) {
 /** @type {Record<number, number>} voteOptimisticUntil — timestamp jusqu’auquel on évite qu’un poll serveur « en retard » baisse un compteur qu’on vient d’augmenter. */
 const voteOptimisticUntil = {};
 
+function tryAcquireVoteLock(suggestionId) {
+    if (voteLocksBySuggestionId.has(suggestionId)) return null;
+    const token = Symbol(`vote-${suggestionId}`);
+    voteLocksBySuggestionId.set(suggestionId, { token, started: Date.now() });
+    return token;
+}
+
+function releaseVoteLock(suggestionId, token) {
+    const cur = voteLocksBySuggestionId.get(suggestionId);
+    if (cur && cur.token === token) voteLocksBySuggestionId.delete(suggestionId);
+}
+
+function voteLockOrClaimActive(suggestionId) {
+    return (
+        voteLocksBySuggestionId.has(suggestionId) ||
+        (voteOptimisticUntil[suggestionId] && Date.now() < voteOptimisticUntil[suggestionId])
+    );
+}
+
+/** Si le poll arrive avec un server_ts plus ancien qu’un vote déjà appliqué, on garde les champs vote côté client. */
+function applyPollVoteMerge(prev, incoming) {
+    const incTs = incoming.server_ts ?? 0;
+    const gate = lastVoteServerTs[incoming.id] ?? 0;
+    const claim = voteLockOrClaimActive(incoming.id);
+    if (claim && gate > 0 && incTs > 0 && incTs < gate) {
+        return {
+            ...incoming,
+            vote_count: prev.vote_count,
+            has_voted: prev.has_voted,
+            my_vote: prev.my_vote,
+            vote_for: prev.vote_for,
+            vote_against: prev.vote_against,
+        };
+    }
+    return incoming;
+}
+
 let lastIdsSignature = "";
 /** Signature serveur brute (hors merge cache local) pour détecter « rien n’a changé » sans rerender. */
 let lastPollContentSig = "";
@@ -447,6 +492,7 @@ function computeContentSignature(suggestions, proposal) {
                 s.vote_against ?? 0,
                 s.importance_score ?? 0,
                 s.updated_at || "",
+                s.server_ts ?? "",
             ].join(":"),
         );
     });
@@ -471,6 +517,7 @@ function buildCardLiveSig(s) {
         s.my_vote || "",
         s.importance_score ?? 0,
         s.updated_at || "",
+        s.server_ts ?? "",
         af,
         aa,
     ].join("§");
@@ -734,7 +781,12 @@ async function loadSuggestions(opts = {}) {
         pollFailStreak = 0;
 
         const merged = mergeLocalVoteHints(suggestionsRaw, proposalRaw);
-        const suggestions = reconcileOptimisticVotes(merged.suggestions);
+        let suggestions = merged.suggestions.map((s) => {
+            const prev = allSuggestions.find((x) => x.id === s.id);
+            if (!prev) return s;
+            return applyPollVoteMerge(prev, s);
+        });
+        suggestions = reconcileOptimisticVotes(suggestions);
         const proposal = merged.proposal;
         syncVoteCacheFromServer(suggestionsRaw, proposalRaw);
         const newSig = buildIdsSignature(proposal, suggestions);
@@ -964,7 +1016,7 @@ function updateSuggestionsInPlace() {
         const card = suggestionsContainer.querySelector(`.suggestion-card[data-id="${s.id}"]`);
         if (!card) return;
         const liveSig = buildCardLiveSig(s);
-        if (card.dataset.liveSig === liveSig) return;
+        if (!voteLockOrClaimActive(s.id) && card.dataset.liveSig === liveSig) return;
         card.dataset.liveSig = liveSig;
         const icon = CATEGORY_ICONS[s.category] || "📌";
         const titleEl = card.querySelector(".suggestion-title");
@@ -1349,7 +1401,7 @@ async function submitProposalVoteWithArgument(btn) {
 function onSuggestionVoteClick(btn) {
     const vote = btn.dataset.vote;
     const id = parseInt(btn.dataset.id, 10);
-    if (pendingSuggestionVoteIds.has(id)) return;
+    if (voteLocksBySuggestionId.has(id)) return;
     const card = btn.closest(".suggestion-card-debate");
     const panel = card?.querySelector(".cvl-argument-panel");
     const suggestion = allSuggestions.find((s) => s.id === id);
@@ -1748,10 +1800,18 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
         ) {
             return false;
         }
+        if (
+            !removeVote &&
+            isTouchDevice() &&
+            phoneUiMode === "swipe" &&
+            Date.now() < (swipeVoteCooldownUntil[id] || 0)
+        ) {
+            return false;
+        }
     }
-    if (pendingSuggestionVoteIds.has(id)) return false;
+    const lockToken = tryAcquireVoteLock(id);
+    if (lockToken === null) return false;
 
-    pendingSuggestionVoteIds.add(id);
     const debateVoteBtns = () =>
         suggestionsContainer.querySelectorAll(`.cvl-vote-for[data-id="${id}"], .cvl-vote-against[data-id="${id}"]`);
     suggestionsContainer.querySelectorAll(`.suggestion-vote-btn[data-id="${id}"]`).forEach((b) => {
@@ -1774,6 +1834,21 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             body.remove_vote = true;
         }
         const { data, status } = await API.post(`/api/suggestions/${id}/vote`, body);
+        if (status === 429 && data && typeof data.vote_count === "number") {
+            s.has_voted = !!data.has_voted;
+            s.my_vote = data.my_vote;
+            s.vote_count = data.vote_count;
+            s.vote_for = data.vote_for;
+            s.vote_against = data.vote_against;
+            if (data.arguments_for) s.arguments_for = data.arguments_for;
+            if (data.arguments_against) s.arguments_against = data.arguments_against;
+            if (data.server_ts) lastVoteServerTs[id] = Math.max(lastVoteServerTs[id] || 0, data.server_ts);
+            syncVoteCacheFromServer(allSuggestions, officialProposal);
+            if (isTouchDevice() && phoneUiMode === "swipe") patchSwipeVoteUiForCurrentCard();
+            else renderSuggestionsSilent();
+            showFeedback((data && data.error) || "Trop de requêtes. Réessaie dans quelques secondes.", "warning");
+            return false;
+        }
         if (status === 429) {
             showFeedback((data && data.error) || "Trop de requêtes. Réessayez plus tard.", "error");
             return false;
@@ -1787,6 +1862,7 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             s.vote_against = data.vote_against;
             s.arguments_for = data.arguments_for || [];
             s.arguments_against = data.arguments_against || [];
+            if (data.server_ts) lastVoteServerTs[id] = Math.max(lastVoteServerTs[id] || 0, data.server_ts);
             voteOptimisticUntil[id] = Date.now() + 14000;
             syncVoteCacheFromServer(allSuggestions, officialProposal);
             if (isTouchDevice() && phoneUiMode === "swipe") {
@@ -1797,6 +1873,7 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             if (simpleSupport && data.has_voted) {
                 if (!removeVote && isTouchDevice() && phoneUiMode === "swipe") {
                     swipeSimpleLikeCooldownUntil[id] = Date.now() + 1200;
+                    swipeVoteCooldownUntil[id] = Date.now() + 650;
                 }
                 requestAnimationFrame(() => {
                     const card =
@@ -1821,9 +1898,9 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             return true;
         }
     } catch (err) {
-        console.error(err);
+        console.warn("voteSuggestion", err);
     } finally {
-        pendingSuggestionVoteIds.delete(id);
+        releaseVoteLock(id, lockToken);
         const s2 = allSuggestions.find((x) => x.id === id);
         suggestionsContainer.querySelectorAll(`.suggestion-vote-btn[data-id="${id}"]`).forEach((b) => {
             b.disabled = !!s2?.has_voted;
@@ -2472,8 +2549,11 @@ function attachSwipeDeckGestures() {
     let startX = 0;
     let startY = 0;
     let tracking = false;
-    /** @type {null | 'h' | 'v'} */
-    let dominant = null;
+    /** Verrou d’axe jusqu’au touchend : h | v_up | v_down */
+    let gestureLocked = null;
+    let gestureInvalid = false;
+    /** Échantillons pour vélocité (derniers ~90 ms) */
+    let moveSamples = [];
 
     function getLayer() {
         return swipeDeckInner.querySelector(".swipe-card-layer");
@@ -2493,8 +2573,14 @@ function attachSwipeDeckGestures() {
         const { nope, yep, up, down } = labelEls();
         if (nope) nope.style.opacity = "0";
         if (yep) yep.style.opacity = "0";
-        if (up) up.style.opacity = "0";
-        if (down) down.style.opacity = "0";
+        if (up) {
+            up.style.opacity = "0";
+            up.classList.remove("swipe-dir-threshold");
+        }
+        if (down) {
+            down.style.opacity = "0";
+            down.classList.remove("swipe-dir-threshold");
+        }
     }
 
     function springLayer(layer) {
@@ -2503,16 +2589,49 @@ function attachSwipeDeckGestures() {
         layer.style.transform = "translate(0, 0) rotate(0deg)";
     }
 
+    /** Zones angulaires + bande morte diagonale ; null = ambigu / trop court */
+    function classifySwipeIntent(mx, my) {
+        const dist = Math.hypot(mx, my);
+        if (dist < 12) return null;
+        const ax = Math.abs(mx);
+        const ay = Math.abs(my);
+        const ratio = ay / (ax + 0.001);
+        if (ratio > 0.52 && ratio < 1.9) return null;
+        if (ax > ay * 1.32) return { kind: "h" };
+        if (ay > ax * 1.38) {
+            if (my < 0) return { kind: "v_up" };
+            if (my > 0) return { kind: "v_down" };
+        }
+        return null;
+    }
+
+    function endVelocitySamples() {
+        const now = performance.now();
+        const recent = moveSamples.filter((s) => now - s.t <= 90);
+        if (recent.length < 2) return { vx: 0, vy: 0 };
+        const a = recent[0];
+        const b = recent[recent.length - 1];
+        const dt = (b.t - a.t) / 1000;
+        if (dt < 0.008) return { vx: 0, vy: 0 };
+        return { vx: (b.x - a.x) / dt, vy: (b.y - a.y) / dt };
+    }
+
     swipeDeckInner.addEventListener(
         "touchstart",
         (e) => {
-            if (e.touches.length !== 1) return;
+            if (e.touches.length !== 1) {
+                gestureInvalid = true;
+                tracking = false;
+                return;
+            }
             const layer = getLayer();
             if (!layer) return;
             const t = e.touches[0];
             startX = t.clientX;
             startY = t.clientY;
-            dominant = null;
+            gestureLocked = null;
+            gestureInvalid = false;
+            moveSamples = [{ t: performance.now(), x: t.clientX, y: t.clientY }];
             tracking = true;
             swipeDragging = false;
             layer.style.transition = "none";
@@ -2524,22 +2643,34 @@ function attachSwipeDeckGestures() {
     swipeDeckInner.addEventListener(
         "touchmove",
         (e) => {
-            if (!tracking || e.touches.length !== 1) return;
+            if (!tracking) return;
+            if (e.touches.length !== 1) {
+                gestureInvalid = true;
+                return;
+            }
             const layer = getLayer();
             if (!layer) return;
             const t = e.touches[0];
             const mx = t.clientX - startX;
             const my = t.clientY - startY;
-            if (!dominant && (Math.abs(mx) > 14 || Math.abs(my) > 14)) {
-                dominant = Math.abs(mx) >= Math.abs(my) ? "h" : "v";
-            }
-            if (dominant && (Math.abs(mx) > 12 || Math.abs(my) > 12)) swipeDragging = true;
+            const now = performance.now();
+            moveSamples.push({ t: now, x: t.clientX, y: t.clientY });
+            if (moveSamples.length > 10) moveSamples.shift();
+
+            const g = classifySwipeIntent(mx, my);
+            if (!gestureLocked && g) gestureLocked = g;
+
+            if (gestureLocked && (Math.abs(mx) > 12 || Math.abs(my) > 12)) swipeDragging = true;
+
             const item = swipeDeckItems[swipeIndex];
             const cur = item && item.kind === "suggestion" ? allSuggestions.find((x) => x.id === item.id) : null;
             const isDeb = cur && cur.needs_debate;
+            const inner = layer.querySelector(".swipe-card-inner");
+            const scrollBlockedUp = !!(inner && inner.scrollTop > 2);
             const { nope, yep, up, down } = labelEls();
 
-            if (dominant === "h") {
+            const k = gestureLocked?.kind;
+            if (k === "h") {
                 const rot = mx * 0.035;
                 layer.style.transform = `translateX(${mx}px) translateZ(0) rotate(${rot}deg)`;
                 const p = Math.min(1, Math.abs(mx) / 100);
@@ -2554,17 +2685,29 @@ function attachSwipeDeckGestures() {
                 }
                 if (up) up.style.opacity = "0";
                 if (down) down.style.opacity = "0";
-            } else if (dominant === "v") {
+            } else if (k === "v_up" || k === "v_down") {
                 if (isDeb) {
-                    layer.style.transform = `translateY(${my}px) translateZ(0) rotate(${my * 0.02}deg)`;
-                    const pu = my < 0 ? Math.min(1, Math.abs(my) / 90) : 0;
-                    const pd = my > 0 ? Math.min(1, Math.abs(my) / 90) : 0;
-                    if (up) up.style.opacity = String(pu);
-                    if (down) down.style.opacity = String(pd);
+                    layer.style.transform = `translateY(${my}px) translateZ(0) rotate(${my * 0.018}deg)`;
+                    let pu = 0;
+                    let pd = 0;
+                    if (k === "v_up" && !scrollBlockedUp) {
+                        pu = my < 0 ? Math.min(1, Math.abs(my) / 108) : 0;
+                    }
+                    if (k === "v_down") {
+                        pd = my > 0 ? Math.min(1, Math.abs(my) / 96) : 0;
+                    }
+                    if (up) {
+                        up.style.opacity = String(pu);
+                        up.classList.toggle("swipe-dir-threshold", pu > 0.82);
+                    }
+                    if (down) {
+                        down.style.opacity = String(pd);
+                        down.classList.toggle("swipe-dir-threshold", pd > 0.82);
+                    }
                     if (nope) nope.style.opacity = "0";
                     if (yep) yep.style.opacity = "0";
                 } else {
-                    layer.style.transform = `translateY(${my * 0.28}px) translateZ(0)`;
+                    layer.style.transform = `translateY(${my * 0.26}px) translateZ(0)`;
                     if (nope) nope.style.opacity = "0";
                     if (yep) yep.style.opacity = "0";
                 }
@@ -2585,8 +2728,18 @@ function attachSwipeDeckGestures() {
             const my = t.clientY - startY;
             const adx = Math.abs(mx);
             const ady = Math.abs(my);
+            const vel = endVelocitySamples();
             const item = swipeDeckItems[swipeIndex];
             const s = item && item.kind === "suggestion" ? allSuggestions.find((x) => x.id === item.id) : null;
+            const inner = layer?.querySelector(".swipe-card-inner");
+            const scrollBlockedUp = !!(inner && inner.scrollTop > 2);
+
+            if (gestureInvalid) {
+                springLayer(layer);
+                resetLabels();
+                swipeLastTap = 0;
+                return;
+            }
 
             const commitHorizontal = () => {
                 const w = window.innerWidth;
@@ -2604,14 +2757,20 @@ function attachSwipeDeckGestures() {
                 swipeLastTap = 0;
             };
 
-            if (dominant === "h" && adx > 70 && ady < 130) {
+            const k = gestureLocked?.kind;
+            const TH_UP = 100;
+            const TH_DN = 88;
+
+            if (k === "h" && adx > 72 && ady < 118 && adx > ady * 0.85) {
                 commitHorizontal();
                 return;
             }
 
-            if (dominant === "v" && s && s.needs_debate) {
-                const TH = 78;
-                if (my < -TH) {
+            if (k === "v_up" && s && s.needs_debate && !scrollBlockedUp) {
+                const velOk = vel.vy < -0.42;
+                const distOk = my < -TH_UP;
+                const notTooHorizontal = adx < 96;
+                if (distOk && notTooHorizontal && (velOk || my < -118)) {
                     const sid = s.id;
                     if (layer) {
                         layer.style.transition = "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
@@ -2625,7 +2784,14 @@ function attachSwipeDeckGestures() {
                     swipeLastTap = 0;
                     return;
                 }
-                if (my > TH) {
+                springLayer(layer);
+                resetLabels();
+                swipeLastTap = 0;
+                return;
+            }
+
+            if (k === "v_down" && s && s.needs_debate) {
+                if (my > TH_DN && adx < 100) {
                     const sid = s.id;
                     if (layer) {
                         layer.style.transition = "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
@@ -2645,14 +2811,14 @@ function attachSwipeDeckGestures() {
                 return;
             }
 
-            if (dominant === "v" && s && !s.needs_debate) {
+            if ((k === "v_up" || k === "v_down") && s && !s.needs_debate) {
                 springLayer(layer);
                 resetLabels();
                 swipeLastTap = 0;
                 return;
             }
 
-            if (dominant === "h") {
+            if (k === "h") {
                 springLayer(layer);
                 resetLabels();
                 swipeLastTap = 0;
@@ -2662,7 +2828,7 @@ function attachSwipeDeckGestures() {
             springLayer(layer);
             resetLabels();
 
-            if (adx > 18 || ady > 18) {
+            if (gestureLocked || adx > 18 || ady > 18) {
                 swipeLastTap = 0;
                 return;
             }

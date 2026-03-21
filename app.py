@@ -56,9 +56,15 @@ _LOGIN_MAX_ATTEMPTS = 5
 
 # Rate limiting par IP (anti-spam / flood)
 _ip_rate_buckets: dict[str, list[float]] = {}
+_vote_burst_buckets: dict[str, list[float]] = {}
+_vote_sid_locks: dict[int, threading.Lock] = {}
+_vote_locks_guard = threading.Lock()
 _IP_SUBMIT_PER_HOUR = 24
 _IP_UNDERSTAND_PER_HOUR = 48
 _IP_VOTE_PER_MINUTE = 72
+# Rafales sur la même suggestion + même session (anti double-envoi / spam gestuel)
+_VOTE_BURST_PER_SID_WINDOW_SEC = 12
+_VOTE_BURST_PER_SID_MAX = 8
 _IP_ARG_PER_MINUTE = 36
 _IP_SESSION_RESTORE_PER_MINUTE = 12
 
@@ -242,6 +248,53 @@ def _ip_rate_response():
     return jsonify({
         "error": "Trop de requêtes depuis cette adresse ou ce réseau. Patientez un peu avant de réessayer.",
     }), 429
+
+
+def _lock_for_sid(sid: int) -> threading.Lock:
+    """Verrou process-local par suggestion : sérialise les POST /vote (SQLite + workers multi-threads)."""
+    with _vote_locks_guard:
+        if sid not in _vote_sid_locks:
+            _vote_sid_locks[sid] = threading.Lock()
+        return _vote_sid_locks[sid]
+
+
+def _server_ts_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _vote_burst_exceeded(session_id: str, sid: int) -> bool:
+    """True si trop de requêtes vote sur cette suggestion pour cette session (fenêtre courte)."""
+    key = f"{session_id}\tvote_sid\t{sid}"
+    now = time.time()
+    if key not in _vote_burst_buckets:
+        _vote_burst_buckets[key] = []
+    arr = _vote_burst_buckets[key]
+    arr[:] = [t for t in arr if now - t < _VOTE_BURST_PER_SID_WINDOW_SEC]
+    if len(arr) >= _VOTE_BURST_PER_SID_MAX:
+        return True
+    arr.append(now)
+    return False
+
+
+def _vote_burst_response(sid: int, session_id: str, needs_debate: bool):
+    """429 avec état complet exploitable par le client (réconciliation)."""
+    s = Suggestion.query.get(sid)
+    if not s:
+        return jsonify({"error": "Trop de requêtes. Réessaie plus tard.", "server_ts": _server_ts_ms()}), 429
+    my = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
+    d = {
+        "error": "Trop de requêtes sur cette action. Réessaie dans quelques secondes.",
+        "server_ts": _server_ts_ms(),
+        "vote_count": s.vote_count,
+        "vote_for": getattr(s, "vote_for", 0),
+        "vote_against": getattr(s, "vote_against", 0),
+        "has_voted": my is not None,
+        "my_vote": my.vote_type if my else None,
+    }
+    if needs_debate:
+        d["arguments_for"] = [a.to_dict() for a in s.arguments if a.side == "for" and a.status == "approved"]
+        d["arguments_against"] = [a.to_dict() for a in s.arguments if a.side == "against" and a.status == "approved"]
+    return jsonify(d), 429
 
 
 def get_session_id():
@@ -552,6 +605,7 @@ def list_suggestions():
         d["my_vote"] = my_vote.vote_type if my_vote else None
         imp = float(d.get("importance_score") or 0)
         d["hot"] = imp >= _HOT_IMPORTANCE_THRESHOLD
+        d["server_ts"] = int(s.updated_at.timestamp() * 1000) if s.updated_at else 0
         result.append(d)
 
     return jsonify(result)
@@ -1172,7 +1226,26 @@ def _update_suggestion_vote_counts(sid: int):
         s.vote_against = Vote.query.filter_by(suggestion_id=sid, vote_type="against").count()
     else:
         s.vote_count = Vote.query.filter_by(suggestion_id=sid).count()
+    s.updated_at = datetime.now(timezone.utc)
     db.session.commit()
+
+
+def _pack_vote_json(suggestion: Suggestion, session_id: str, needs_debate: bool, **overrides) -> dict:
+    """État vote complet + server_ts (réconciliation client / désordre des réponses)."""
+    my = Vote.query.filter_by(suggestion_id=suggestion.id, session_id=session_id).first()
+    d = {
+        "server_ts": _server_ts_ms(),
+        "vote_count": suggestion.vote_count,
+        "vote_for": getattr(suggestion, "vote_for", 0),
+        "vote_against": getattr(suggestion, "vote_against", 0),
+        "has_voted": my is not None,
+        "my_vote": my.vote_type if my else None,
+    }
+    d.update(overrides)
+    if needs_debate:
+        d["arguments_for"] = [a.to_dict() for a in suggestion.arguments if a.side == "for" and a.status == "approved"]
+        d["arguments_against"] = [a.to_dict() for a in suggestion.arguments if a.side == "against" and a.status == "approved"]
+    return d
 
 
 @app.route("/api/suggestions/<int:sid>/vote", methods=["POST"])
@@ -1180,13 +1253,21 @@ def vote_suggestion(sid):
     ip = _client_ip()
     if _ip_rate_exceeded(ip, "vote", _IP_VOTE_PER_MINUTE, 60):
         return _ip_rate_response()
+    with _lock_for_sid(sid):
+        return _vote_suggestion_locked(sid)
+
+
+def _vote_suggestion_locked(sid: int):
     suggestion = Suggestion.query.get_or_404(sid)
     session_id = get_session_id()
+    needs_debate = getattr(suggestion, "needs_debate", False)
+    if _vote_burst_exceeded(session_id, sid):
+        return _vote_burst_response(sid, session_id, needs_debate)
+
     data = request.get_json() or {}
     vote_type = data.get("vote_type", "for")
     argument_text = (data.get("argument") or "").strip()
     remove_vote = bool(data.get("remove_vote"))
-    needs_debate = getattr(suggestion, "needs_debate", False)
 
     if needs_debate and vote_type not in ("for", "against"):
         vote_type = "for"
@@ -1200,28 +1281,13 @@ def vote_suggestion(sid):
                 db.session.commit()
                 _update_suggestion_vote_counts(sid)
                 suggestion = Suggestion.query.get(sid)
-                return jsonify({
-                    "vote_count": suggestion.vote_count,
-                    "has_voted": False,
-                    "my_vote": None,
-                })
+                return jsonify(_pack_vote_json(suggestion, session_id, False, has_voted=False, my_vote=None))
             # Déjà soutenu : idempotent (pas de double comptage)
             _update_suggestion_vote_counts(sid)
-            return jsonify({
-                "vote_count": suggestion.vote_count,
-                "has_voted": True,
-                "my_vote": existing_vote.vote_type,
-            })
+            suggestion = Suggestion.query.get(sid)
+            return jsonify(_pack_vote_json(suggestion, session_id, False, my_vote=existing_vote.vote_type, has_voted=True))
         if existing_vote.vote_type == vote_type and not argument_text:
-            return jsonify({
-                "vote_count": suggestion.vote_count,
-                "vote_for": getattr(suggestion, "vote_for", 0),
-                "vote_against": getattr(suggestion, "vote_against", 0),
-                "has_voted": True,
-                "my_vote": vote_type,
-                "arguments_for": [a.to_dict() for a in suggestion.arguments if a.side == "for" and a.status == "approved"],
-                "arguments_against": [a.to_dict() for a in suggestion.arguments if a.side == "against" and a.status == "approved"],
-            })
+            return jsonify(_pack_vote_json(suggestion, session_id, True, my_vote=vote_type, has_voted=True))
         if existing_vote.vote_type == vote_type and argument_text:
             ok, msg = filter_content_quick(argument_text)
             if not ok:
@@ -1235,15 +1301,8 @@ def vote_suggestion(sid):
             db.session.commit()
             for aid in pending_arg_ids:
                 _process_suggestion_argument_background(aid)
-            return jsonify({
-                "vote_count": suggestion.vote_count,
-                "vote_for": getattr(suggestion, "vote_for", 0),
-                "vote_against": getattr(suggestion, "vote_against", 0),
-                "has_voted": True,
-                "my_vote": vote_type,
-                "arguments_for": [a.to_dict() for a in suggestion.arguments if a.side == "for" and a.status == "approved"],
-                "arguments_against": [a.to_dict() for a in suggestion.arguments if a.side == "against" and a.status == "approved"],
-            })
+            suggestion = Suggestion.query.get(sid)
+            return jsonify(_pack_vote_json(suggestion, session_id, True, my_vote=vote_type, has_voted=True))
         old_type = existing_vote.vote_type
         existing_vote.vote_type = vote_type
         if old_type == "for":
@@ -1254,7 +1313,6 @@ def vote_suggestion(sid):
         vote = Vote(suggestion_id=sid, session_id=session_id, vote_type=vote_type)
         db.session.add(vote)
 
-    # Compteurs Pour/Contre uniquement pour les fiches débat (sinon vote_for gonflait à tort sur votes simples)
     if needs_debate:
         if vote_type == "for":
             suggestion.vote_for = (getattr(suggestion, "vote_for", 0) or 0) + 1
@@ -1281,33 +1339,24 @@ def vote_suggestion(sid):
         db.session.rollback()
         _update_suggestion_vote_counts(sid)
         suggestion = Suggestion.query.get(sid)
+        if not suggestion:
+            return jsonify({"error": "Synchronisation impossible.", "server_ts": _server_ts_ms()}), 500
         ev = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
-        resp = {
-            "vote_count": suggestion.vote_count,
-            "vote_for": getattr(suggestion, "vote_for", 0),
-            "vote_against": getattr(suggestion, "vote_against", 0),
-            "has_voted": True,
-            "my_vote": ev.vote_type if ev else vote_type,
-        }
-        if needs_debate:
-            resp["arguments_for"] = [a.to_dict() for a in suggestion.arguments if a.side == "for" and a.status == "approved"]
-            resp["arguments_against"] = [a.to_dict() for a in suggestion.arguments if a.side == "against" and a.status == "approved"]
+        resp = _pack_vote_json(
+            suggestion,
+            session_id,
+            needs_debate,
+            has_voted=True,
+            my_vote=ev.vote_type if ev else vote_type,
+        )
         return jsonify(resp)
 
     _update_suggestion_vote_counts(sid)
+    suggestion = Suggestion.query.get(sid)
     for aid in pending_arg_ids:
         _process_suggestion_argument_background(aid)
 
-    resp = {
-        "vote_count": suggestion.vote_count,
-        "vote_for": getattr(suggestion, "vote_for", 0),
-        "vote_against": getattr(suggestion, "vote_against", 0),
-        "has_voted": True,
-        "my_vote": vote_type,
-    }
-    if needs_debate:
-        resp["arguments_for"] = [a.to_dict() for a in suggestion.arguments if a.side == "for" and a.status == "approved"]
-        resp["arguments_against"] = [a.to_dict() for a in suggestion.arguments if a.side == "against" and a.status == "approved"]
+    resp = _pack_vote_json(suggestion, session_id, needs_debate, my_vote=vote_type, has_voted=True)
     if not needs_debate and vote_type == "for":
         try:
             _increment_daily_activity(session_id, "like")
