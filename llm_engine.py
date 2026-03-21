@@ -651,9 +651,16 @@ def process_argument(proposal_text: str, argument_text: str, side: str, existing
         return False, (payload[:500] if payload else "Argument non pertinent")
     if ul.startswith("VALIDE"):
         payload = raw[len("VALIDE") :].lstrip(" :").strip().strip('"').strip("'")
-        if payload and len(payload) < 500:
+        if payload:
+            if len(payload) > 500:
+                payload = payload[:497] + "…"
             return True, payload
-    return False, "Réponse IA illisible ou non conforme (réessaie avec un argument plus clair)"
+    # Réponse LLM hors format : repli sur texte nettoyé (évite rejet brutal si le modèle bavarde ou tronque)
+    cleaned = " ".join(argument_text.split())
+    if len(cleaned) >= 8:
+        summary = cleaned[:400] + ("…" if len(cleaned) > 400 else "")
+        return True, summary
+    return False, "Texte trop court ou illisible."
 
 
 NEWS_SUMMARY_PROMPT = """Résume cet article d'actualité de lycée en 2 à 3 phrases courtes et claires. Ton informatif, pas de formules de politesse.

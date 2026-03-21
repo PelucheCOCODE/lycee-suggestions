@@ -1274,6 +1274,13 @@ def _vote_suggestion_locked(sid: int):
 
     existing_vote = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
 
+    # Retrait demandé alors qu’aucun vote en base : idempotent (évite d’ajouter un vote par erreur
+    # si le client était désynchronisé, ex. cache localStorage vs session).
+    if not existing_vote and remove_vote:
+        _update_suggestion_vote_counts(sid)
+        suggestion = Suggestion.query.get(sid)
+        return jsonify(_pack_vote_json(suggestion, session_id, needs_debate, has_voted=False, my_vote=None))
+
     if existing_vote:
         if not needs_debate:
             if remove_vote:

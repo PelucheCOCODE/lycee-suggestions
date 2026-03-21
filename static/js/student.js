@@ -258,7 +258,9 @@ function patchSwipeVoteUiForCurrentCard() {
     if (!item || item.kind !== "suggestion") return;
     const s = allSuggestions.find((x) => x.id === item.id);
     if (!s) return;
-    if (voteLockOrClaimActive(s.id)) return;
+    // Ne pas bloquer sur voteLockOrClaimActive : allSuggestions est déjà la vérité après vote / merge poll.
+    // Bloquer ici empêchait toute MAJ swipe pendant le lock + la fenêtre optimiste (~14s).
+    if (swipeDragging) return;
     const card = swipeDeckInner.querySelector(`#swipe-active-layer .swipe-card[data-id="${s.id}"]`);
     if (!card) return;
     if (!s.needs_debate) {
@@ -1449,6 +1451,7 @@ async function submitSuggestionVoteWithArgument(btn) {
         if (ok) panel?.classList.add("hidden");
     } catch (err) {
         console.warn("submitSuggestionVoteWithArgument", err);
+        showFeedback("Erreur de connexion.", "error");
     }
     btn.disabled = false;
 }
@@ -1805,6 +1808,20 @@ function triggerHeartBurst(card) {
 
 // --------------- Vote — couche unique ----------------
 
+/** Après réponse vote : patch ciblé (liste simple) ou re-render débat si la structure des panneaux change. */
+function refreshVoteDomAfterSuggestionAction(s) {
+    if (isTouchDevice() && phoneUiMode === "swipe") {
+        patchSwipeVoteUiForCurrentCard();
+        return;
+    }
+    if (!s.needs_debate) {
+        updateSuggestionsInPlace();
+        reorderSuggestionCards();
+    } else {
+        renderSuggestionsSilent();
+    }
+}
+
 /**
  * Toutes les actions vote / soutien sur une suggestion passent par ici (liste, swipe, débat, feuille).
  * @param {object} p
@@ -1875,8 +1892,7 @@ async function submitSuggestionVoteAction(p) {
             if (data.arguments_against) s.arguments_against = data.arguments_against;
             if (data.server_ts) lastVoteServerTs[id] = Math.max(lastVoteServerTs[id] || 0, data.server_ts);
             syncVoteCacheFromServer(allSuggestions, officialProposal);
-            if (isTouchDevice() && phoneUiMode === "swipe") patchSwipeVoteUiForCurrentCard();
-            else renderSuggestionsSilent();
+            refreshVoteDomAfterSuggestionAction(s);
             showFeedback((data && data.error) || "Trop de requêtes. Réessaie dans quelques secondes.", "warning");
             return false;
         }
@@ -1897,11 +1913,7 @@ async function submitSuggestionVoteAction(p) {
             voteOptimisticUntil[id] = Date.now() + 14000;
             if (simple) suggestionVoteCooldownUntil[id] = Date.now() + 720;
             syncVoteCacheFromServer(allSuggestions, officialProposal);
-            if (isTouchDevice() && phoneUiMode === "swipe") {
-                patchSwipeVoteUiForCurrentCard();
-            } else {
-                renderSuggestionsSilent();
-            }
+            refreshVoteDomAfterSuggestionAction(s);
             const addedSupport = simple && data.has_voted && !removeVote;
             if (addedSupport) {
                 requestAnimationFrame(() => {
@@ -1926,8 +1938,15 @@ async function submitSuggestionVoteAction(p) {
             }
             return true;
         }
+        const errMsg = data && data.error;
+        if (typeof errMsg === "string" && errMsg.trim()) {
+            showFeedback(errMsg, "error");
+        } else if (status >= 400) {
+            showFeedback("Impossible de mettre à jour le vote. Réessaie.", "error");
+        }
     } catch (err) {
         console.warn("submitSuggestionVoteAction", err);
+        showFeedback("Erreur de connexion au serveur.", "error");
     } finally {
         releaseVoteLock(id, lockToken);
         const s2 = allSuggestions.find((x) => x.id === id);
