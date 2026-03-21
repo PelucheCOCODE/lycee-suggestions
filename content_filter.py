@@ -236,6 +236,22 @@ def filter_content_quick(text: str) -> tuple[bool, str]:
     return True, ""
 
 
+def filter_community_message_quick(text: str) -> tuple[bool, str]:
+    """
+    Filtre messages libres (pseudo + texte) : pas de détection de noms de personnes
+    (les pseudos courts sont autorisés). Spam + grossièretés bloqués.
+    """
+    if not text or not text.strip():
+        return False, "Le message est vide."
+    if check_spam(text):
+        return False, "Ce message a été détecté comme spam."
+    if check_profanity(text):
+        return False, "Ce message contient du contenu inapproprié."
+    if check_dynamic_profanity(text):
+        return False, "Ce message contient du contenu inapproprié."
+    return True, ""
+
+
 def filter_content(text: str) -> tuple[bool, str]:
     """
     Full filter including LLM relevance check.

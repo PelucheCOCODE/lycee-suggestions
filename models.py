@@ -27,6 +27,7 @@ class Suggestion(db.Model):
     completed_at = db.Column(db.DateTime, nullable=True)
     calibrated_at = db.Column(db.DateTime, nullable=True)
     reject_reason = db.Column(db.Text, default="")  # motif refus (IA ou admin)
+    importance_score = db.Column(db.Float, default=0.0)  # 0–100, agrégat des notes importance
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
                            onupdate=lambda: datetime.now(timezone.utc))
@@ -68,6 +69,7 @@ class Suggestion(db.Model):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "reject_reason": getattr(self, "reject_reason", None) or "",
+            "importance_score": float(getattr(self, "importance_score", 0) or 0),
         }
         if self.status == "Terminée" and self.completed_at:
             ca = self.completed_at
@@ -735,3 +737,106 @@ class Announcement(db.Model):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
         }
+
+
+class SuggestionImportance(db.Model):
+    """Note d'importance (1–4) par session sur une suggestion."""
+    __tablename__ = "suggestion_importance"
+
+    id = db.Column(db.Integer, primary_key=True)
+    suggestion_id = db.Column(db.Integer, db.ForeignKey("suggestions.id"), nullable=False)
+    session_id = db.Column(db.String(100), nullable=False)
+    level = db.Column(db.Integer, nullable=False)  # 1 = pas important … 4 = très important
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("suggestion_id", "session_id", name="unique_importance_per_session"),
+    )
+
+
+class DailySessionActivity(db.Model):
+    """Activité quotidienne (swipes, likes) pour stats et percentile."""
+    __tablename__ = "daily_session_activity"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String(100), nullable=False)
+    day = db.Column(db.String(10), nullable=False)  # YYYY-MM-DD (Europe/Paris)
+    swipe_count = db.Column(db.Integer, default=0)
+    like_count = db.Column(db.Integer, default=0)
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("session_id", "day", name="unique_activity_per_day"),
+    )
+
+
+class DailyPresence(db.Model):
+    """Présence « connecté aujourd'hui » (une ligne par session et par jour)."""
+    __tablename__ = "daily_presence"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String(100), nullable=False)
+    day = db.Column(db.String(10), nullable=False)
+    first_seen_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("session_id", "day", name="unique_presence_per_day"),
+    )
+
+
+class EngagementCardDone(db.Model):
+    """Carte engagement déjà vue / complétée aujourd'hui (max une fois par type)."""
+    __tablename__ = "engagement_card_done"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String(100), nullable=False)
+    day = db.Column(db.String(10), nullable=False)
+    card_type = db.Column(db.String(32), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("session_id", "day", "card_type", name="unique_engagement_card_day"),
+    )
+
+
+class EngagementGuess(db.Model):
+    """Réponse au jeu « devine l'avis »."""
+    __tablename__ = "engagement_guess"
+
+    id = db.Column(db.Integer, primary_key=True)
+    suggestion_id = db.Column(db.Integer, db.ForeignKey("suggestions.id"), nullable=False)
+    session_id = db.Column(db.String(100), nullable=False)
+    bucket = db.Column(db.String(16), nullable=False)  # lt30 | mid | gt60
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("suggestion_id", "session_id", name="unique_guess_per_suggestion"),
+    )
+
+
+class CommunityMessage(db.Model):
+    """Message libre modéré (pseudo + texte)."""
+    __tablename__ = "community_messages"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String(100), nullable=False)
+    display_name = db.Column(db.String(80), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), default="approved")  # approved | rejected
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class DailyMood(db.Model):
+    """Humeur du jour (une par session et par jour)."""
+    __tablename__ = "daily_mood"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String(100), nullable=False)
+    day = db.Column(db.String(10), nullable=False)
+    mood = db.Column(db.String(20), nullable=False)  # bien | bof | fatigue | stresse
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("session_id", "day", name="unique_mood_per_day"),
+    )

@@ -130,7 +130,8 @@ const filtersMobileToggle = $("#filters-mobile-toggle");
 const filtersPanelWrap = $("#filters-panel-wrap");
 const phoneSwipeContent = $("#phone-swipe-content");
 const phoneNavDock = $("#phone-nav-dock");
-const swipeSearchInput = $("#swipe-search");
+const phoneListSearchWrap = $("#phone-list-search-wrap");
+const listSearchInput = $("#list-search");
 const btnPhoneModeSwipe = $("#btn-phone-mode-swipe");
 const btnPhoneModeList = $("#btn-phone-mode-list");
 const btnPhoneModeLiked = $("#btn-phone-mode-liked");
@@ -143,11 +144,19 @@ const swipeCounterTotal = $("#swipe-counter-total");
 let phoneUiMode = "swipe";
 let phoneListLikedOnly = false;
 let swipeIndex = 0;
-let swipeSearchQuery = "";
+/** Recherche (modes Liste / Soutenus uniquement, téléphone) */
+let phoneListSearchQuery = "";
 let swipeTouchStartX = 0;
 let swipeTouchStartY = 0;
 let swipeDragging = false;
 let swipeLastTap = 0;
+/** Anti double tap / spam like en swipe */
+const swipeSimpleLikeCooldownUntil = {};
+let debateArgSheetEl = null;
+/** Deck swipe (suggestions mélangées + cartes engagement), uniquement tactile */
+let engagementBootstrap = null;
+let swipeDeckItems = [];
+const swipeGuessReveal = {};
 
 const isTouchDevice = () => {
     const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
@@ -171,6 +180,7 @@ async function init() {
         }
         syncPhoneUiChrome();
         setupPhoneSwipe();
+        engagementPingPresence();
     }
     loadCategories();
     loadSuggestions();
@@ -368,6 +378,10 @@ async function loadSuggestions() {
 
         allSuggestions = suggestions;
         officialProposal = proposal;
+        if (isTouchDevice()) {
+            await refreshEngagementBootstrap();
+            buildSwipeDeck();
+        }
         renderCvlOfficialInfo(cvlInfo || []);
 
         const doDiscrete = async () => {
@@ -646,10 +660,18 @@ function renderSuggestionsSilent() {
 }
 
 function getListSourceForRender() {
+    let base = allSuggestions;
     if (isTouchDevice() && phoneUiMode === "list" && phoneListLikedOnly) {
-        return allSuggestions.filter((s) => s.has_voted);
+        base = base.filter((s) => s.has_voted);
     }
-    return allSuggestions;
+    const q = (phoneListSearchQuery || "").trim().toLowerCase();
+    if (isTouchDevice() && phoneUiMode === "list" && q) {
+        base = base.filter((s) => {
+            const hay = `${s.title || ""} ${s.subtitle || ""} ${s.category || ""}`.toLowerCase();
+            return hay.includes(q);
+        });
+    }
+    return base;
 }
 
 function renderSuggestions(withAnimation = true) {
@@ -1025,6 +1047,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
     const listLen = totalListCount != null ? totalListCount : allSuggestions.length;
     const isFading = withAnimation && !expanded && index === INITIAL_SHOW - 1 && totalVisible === INITIAL_SHOW && listLen > INITIAL_SHOW;
     const fadeClass = isFading ? " suggestion-card-fade" : "";
+    const hotClass = s.hot ? " suggestion-card-hot" : "";
     const delay = withAnimation ? index * 60 : 0;
 
     const subtitle = s.subtitle ? `<p class="suggestion-subtitle">${escapeHtml(s.subtitle)}</p>` : "";
@@ -1089,7 +1112,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
     ` : "";
 
     return `
-        <div class="suggestion-card${fadeClass}${needsDebate ? " suggestion-card-debate" : ""}" style="animation-delay:${delay}ms" data-id="${s.id}">
+        <div class="suggestion-card${fadeClass}${needsDebate ? " suggestion-card-debate" : ""}${hotClass}" style="animation-delay:${delay}ms" data-id="${s.id}">
             <div class="suggestion-card-header">
                 <div class="suggestion-title-block">
                     <span class="suggestion-title">${icon} ${escapeHtml(s.title)}</span>
@@ -1271,13 +1294,21 @@ function triggerHeartBurst(card) {
 async function voteSuggestion(id, voteType, argument, opts = {}) {
     const removeVote = opts.removeVote === true;
     const s = allSuggestions.find((x) => x.id === id);
-    if (!s) return;
+    if (!s) return false;
     if (!s.needs_debate) {
         if (removeVote) {
-            if (!s.has_voted) return;
-        } else if (s.has_voted) return;
+            if (!s.has_voted) return false;
+        } else if (s.has_voted) return false;
+        if (
+            !removeVote &&
+            isTouchDevice() &&
+            phoneUiMode === "swipe" &&
+            Date.now() < (swipeSimpleLikeCooldownUntil[id] || 0)
+        ) {
+            return false;
+        }
     }
-    if (pendingSuggestionVoteIds.has(id)) return;
+    if (pendingSuggestionVoteIds.has(id)) return false;
 
     pendingSuggestionVoteIds.add(id);
     const debateVoteBtns = () =>
@@ -1304,7 +1335,7 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
         const { data, status } = await API.post(`/api/suggestions/${id}/vote`, body);
         if (status === 429) {
             showFeedback((data && data.error) || "Trop de requêtes. Réessayez plus tard.", "error");
-            return;
+            return false;
         }
         if (status === 200) {
             const simpleSupport = !s.needs_debate;
@@ -1317,14 +1348,31 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             s.arguments_against = data.arguments_against || [];
             syncVoteCacheFromServer(allSuggestions, officialProposal);
             renderSuggestionsSilent();
-            if (simpleSupport && data.has_voted && isTouchDevice()) {
+            if (simpleSupport && data.has_voted) {
+                if (!removeVote && isTouchDevice() && phoneUiMode === "swipe") {
+                    swipeSimpleLikeCooldownUntil[id] = Date.now() + 900;
+                }
                 requestAnimationFrame(() => {
                     const card =
                         suggestionsContainer.querySelector(`.suggestion-card[data-id="${id}"]`) ||
                         (swipeDeckInner && swipeDeckInner.querySelector(`.swipe-card[data-id="${id}"]`));
-                    if (card) triggerHeartBurst(card);
+                    if (isTouchDevice()) {
+                        const bx = opts.igBurstAt?.x;
+                        const by = opts.igBurstAt?.y;
+                        if (bx != null && by != null) {
+                            triggerIgLikeBurst(bx, by);
+                        } else if (card) {
+                            const r = card.getBoundingClientRect();
+                            triggerIgLikeBurst(r.left + r.width / 2, r.top + r.height / 2);
+                        } else {
+                            triggerIgLikeBurst(window.innerWidth / 2, window.innerHeight / 2);
+                        }
+                    } else if (card) {
+                        triggerHeartBurst(card);
+                    }
                 });
             }
+            return true;
         }
     } catch (err) {
         console.error(err);
@@ -1340,6 +1388,87 @@ async function voteSuggestion(id, voteType, argument, opts = {}) {
             b.removeAttribute("aria-busy");
         });
     }
+    return false;
+}
+
+/** Cœur plein écran façon Instagram (double tap / like). */
+function triggerIgLikeBurst(clientX, clientY) {
+    const el = document.createElement("div");
+    el.className = "ig-like-burst";
+    el.setAttribute("aria-hidden", "true");
+    el.textContent = "♥";
+    el.style.left = `${clientX}px`;
+    el.style.top = `${clientY}px`;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => el.classList.add("ig-like-burst--pop"));
+    setTimeout(() => el.remove(), 900);
+}
+
+function toggleSwipeModeHints(isDebate, listEmpty) {
+    const hintNon = document.querySelector(".swipe-hint-nondebate");
+    const hintDeb = document.querySelector(".swipe-hint-debate");
+    const vdeb = document.getElementById("swipe-vdebate-labels");
+    if (listEmpty) {
+        if (hintNon) hintNon.hidden = false;
+        if (hintDeb) hintDeb.hidden = true;
+        if (vdeb) vdeb.style.display = "none";
+        return;
+    }
+    if (hintNon) hintNon.hidden = isDebate;
+    if (hintDeb) hintDeb.hidden = !isDebate;
+    if (vdeb) vdeb.style.display = isDebate ? "" : "none";
+}
+
+function closeDebateArgSheet() {
+    if (!debateArgSheetEl) return;
+    debateArgSheetEl.classList.remove("debate-arg-sheet--open");
+    const node = debateArgSheetEl;
+    setTimeout(() => {
+        if (node.parentNode) node.remove();
+        if (debateArgSheetEl === node) debateArgSheetEl = null;
+    }, 320);
+}
+
+function openDebateVoteSheet(suggestionId, voteType) {
+    closeDebateArgSheet();
+    const s = allSuggestions.find((x) => x.id === suggestionId);
+    const title = voteType === "for" ? "Pour" : "Contre";
+    const wrap = document.createElement("div");
+    wrap.className = "debate-arg-sheet";
+    wrap.innerHTML = `
+        <div class="debate-arg-sheet-backdrop" data-dismiss="1"></div>
+        <div class="debate-arg-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="debate-arg-sheet-title">
+            <div class="debate-arg-sheet-handle" aria-hidden="true"></div>
+            <h3 id="debate-arg-sheet-title" class="debate-arg-sheet-title">${title}</h3>
+            <p class="debate-arg-sheet-sub">Ton argument sera modéré avant publication.</p>
+            <textarea class="debate-arg-sheet-input" rows="4" maxlength="500" placeholder="Écris ton argument…" required></textarea>
+            <div class="debate-arg-sheet-actions">
+                <button type="button" class="btn btn-ghost debate-arg-cancel" data-dismiss="1">Annuler</button>
+                <button type="button" class="btn btn-primary debate-arg-submit">Envoyer</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(wrap);
+    debateArgSheetEl = wrap;
+    const ta = wrap.querySelector(".debate-arg-sheet-input");
+    const onDismiss = () => {
+        closeDebateArgSheet();
+        renderSwipeView();
+    };
+    wrap.querySelectorAll("[data-dismiss]").forEach((b) => b.addEventListener("click", onDismiss));
+    wrap.querySelector(".debate-arg-submit").addEventListener("click", async () => {
+        const text = (ta.value || "").trim();
+        if (!text) {
+            showFeedback("Écris un argument avant d’envoyer.", "error");
+            return;
+        }
+        const ok = await voteSuggestion(suggestionId, voteType, text, {});
+        if (!ok) return;
+        closeDebateArgSheet();
+        swipeGoNext();
+    });
+    requestAnimationFrame(() => wrap.classList.add("debate-arg-sheet--open"));
+    setTimeout(() => ta.focus(), 350);
 }
 
 // --------------- Téléphone — swipe (une fiche) ---------------
@@ -1364,30 +1493,201 @@ function syncPhoneUiChrome() {
 }
 
 function getSwipeCandidates() {
-    const q = (swipeSearchQuery || "").trim().toLowerCase();
-    return allSuggestions.filter((s) => {
-        if (s.needs_debate) return false;
-        if (!q) return true;
-        const hay = `${s.title || ""} ${s.subtitle || ""} ${s.category || ""}`.toLowerCase();
-        return hay.includes(q);
-    });
+    return allSuggestions.slice();
+}
+
+function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+}
+
+async function refreshEngagementBootstrap() {
+    try {
+        engagementBootstrap = await API.get("/api/engagement/bootstrap");
+    } catch (e) {
+        engagementBootstrap = null;
+    }
+}
+
+function buildSwipeDeck() {
+    if (!isTouchDevice()) return;
+    const base = shuffle(allSuggestions.map((s) => ({ kind: "suggestion", id: s.id })));
+    const done = engagementBootstrap?.cards_done_today || [];
+    const specials = [];
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    const ids = allSuggestions.map((s) => s.id);
+    const guessEl = engagementBootstrap?.guess_eligible_ids || [];
+
+    if (!done.includes("importance") && ids.length) specials.push({ kind: "special", type: "importance", refId: pick(ids) });
+    if (!done.includes("activity")) specials.push({ kind: "special", type: "activity" });
+    if (!done.includes("guess") && guessEl.length) specials.push({ kind: "special", type: "guess", refId: pick(guessEl) });
+    if (!done.includes("message")) specials.push({ kind: "special", type: "message" });
+    if (!done.includes("mood")) specials.push({ kind: "special", type: "mood" });
+
+    const merged = shuffle([...base, ...specials]);
+    swipeDeckItems = merged.length ? merged : base;
+    clampSwipeIndex();
+}
+
+async function engagementPingSwipe() {
+    try {
+        await API.post("/api/engagement/ping", { type: "swipe" });
+    } catch (e) {
+        /* ignore */
+    }
+}
+
+async function engagementPingPresence() {
+    try {
+        await API.post("/api/engagement/ping", { type: "presence" });
+    } catch (e) {
+        /* ignore */
+    }
 }
 
 function clampSwipeIndex() {
-    const list = getSwipeCandidates();
-    if (list.length === 0) {
+    if (swipeDeckItems.length === 0) {
         swipeIndex = 0;
         return;
     }
-    if (swipeIndex >= list.length) swipeIndex = list.length - 1;
+    if (swipeIndex >= swipeDeckItems.length) swipeIndex = swipeDeckItems.length - 1;
     if (swipeIndex < 0) swipeIndex = 0;
+}
+
+function createSpecialCardHtml(item) {
+    const b = engagementBootstrap || {};
+    const connected = b.connected_today ?? 0;
+    const pct = b.percentile_most_active ?? 50;
+    const myScore = b.my_activity_score ?? 0;
+
+    if (item.type === "importance") {
+        const s = allSuggestions.find((x) => x.id === item.refId);
+        if (!s) return `<div class="swipe-card swipe-card--special"><div class="swipe-card-inner"><p>—</p></div></div>`;
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--special" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Engagement</span>
+                <p class="swipe-eng-title">Cette suggestion était-elle importante ?</p>
+                <p class="swipe-eng-ref">${escapeHtml(s.title)}</p>
+                <div class="swipe-eng-grid4">
+                    <button type="button" class="swipe-eng-btn" data-eng="imp" data-sid="${s.id}" data-level="4">🔥 Très importante</button>
+                    <button type="button" class="swipe-eng-btn" data-eng="imp" data-sid="${s.id}" data-level="3">👍 Importante</button>
+                    <button type="button" class="swipe-eng-btn" data-eng="imp" data-sid="${s.id}" data-level="2">😐 Bof</button>
+                    <button type="button" class="swipe-eng-btn" data-eng="imp" data-sid="${s.id}" data-level="1">👎 Pas importante</button>
+                </div>
+                <p class="swipe-card-hint">Glisse pour passer · ou choisis une option</p>
+            </div>
+        </div>`;
+    }
+    if (item.type === "activity") {
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--special" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Aujourd’hui</span>
+                <p class="swipe-eng-title">Il y a <strong>${connected}</strong> personne${connected > 1 ? "s" : ""} connectée${connected > 1 ? "s" : ""} depuis ce matin.</p>
+                <p class="swipe-eng-sub">Tu es plus actif que <strong>${pct}%</strong> des élèves aujourd’hui (score = 2× likes + swipes, chiffres réels).</p>
+                <p class="swipe-eng-metric">Ton score d’activité : <strong>${myScore.toFixed(1)}</strong> <span class="swipe-eng-hint">(2× likes + swipes)</span></p>
+                <button type="button" class="btn btn-primary swipe-eng-continue" data-eng="act-dismiss">Continuer</button>
+            </div>
+        </div>`;
+    }
+    if (item.type === "guess") {
+        const s = allSuggestions.find((x) => x.id === item.refId);
+        const gr = s ? swipeGuessReveal[s.id] : null;
+        if (!s) return `<div class="swipe-card swipe-card--special"><div class="swipe-card-inner"><p>—</p></div></div>`;
+        if (gr) {
+            const ok = gr.correct;
+            return `
+            <div class="swipe-card swipe-card--dating swipe-card--special" data-special="1">
+                <div class="swipe-card-inner">
+                    <span class="swipe-eng-badge">Résultat</span>
+                    <p class="swipe-eng-title">Réponse réelle : <strong>${gr.actual_pct}%</strong></p>
+                    <p class="swipe-eng-ref">${escapeHtml(s.title)}</p>
+                    <p class="swipe-eng-guess-feedback">${ok ? "🎯 Bravo !" : "😮 Tu t’es trompé"}</p>
+                    <button type="button" class="btn btn-primary swipe-eng-continue" data-eng="guess-next">Continuer</button>
+                </div>
+            </div>`;
+        }
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--special" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Devine</span>
+                <p class="swipe-eng-title">Selon toi, cette idée plaît à combien d’élèves ?</p>
+                <p class="swipe-eng-ref">${escapeHtml(s.title)}</p>
+                <div class="swipe-eng-guess-row">
+                    <button type="button" class="swipe-eng-btn" data-eng="guess" data-sid="${s.id}" data-bucket="lt30">&lt; 30%</button>
+                    <button type="button" class="swipe-eng-btn" data-eng="guess" data-sid="${s.id}" data-bucket="mid">30–60%</button>
+                    <button type="button" class="swipe-eng-btn" data-eng="guess" data-sid="${s.id}" data-bucket="gt60">&gt; 60%</button>
+                </div>
+            </div>
+        </div>`;
+    }
+    if (item.type === "message") {
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--special" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Message</span>
+                <p class="swipe-eng-title">Un message aux autres ?</p>
+                <input type="text" class="swipe-eng-input" id="swipe-eng-pseudo" maxlength="80" placeholder="Ton pseudo" />
+                <textarea class="swipe-eng-textarea" id="swipe-eng-msg" maxlength="500" rows="4" placeholder="Ton message (modéré par l’IA, pas réécrit)…"></textarea>
+                <button type="button" class="btn btn-primary" data-eng="msg-send">Envoyer</button>
+            </div>
+        </div>`;
+    }
+    if (item.type === "mood") {
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--special" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Humeur</span>
+                <p class="swipe-eng-title">Ton humeur aujourd’hui</p>
+                <p class="swipe-eng-sub">Aujourd’hui tu te sens :</p>
+                <div class="swipe-eng-grid4">
+                    <button type="button" class="swipe-eng-btn" data-eng="mood" data-mood="bien">😄 Bien</button>
+                    <button type="button" class="swipe-eng-btn" data-eng="mood" data-mood="bof">😐 Bof</button>
+                    <button type="button" class="swipe-eng-btn" data-eng="mood" data-mood="fatigue">😴 Fatigué</button>
+                    <button type="button" class="swipe-eng-btn" data-eng="mood" data-mood="stresse">😤 Stressé</button>
+                </div>
+            </div>
+        </div>`;
+    }
+    return `<div class="swipe-card swipe-card--special"><div class="swipe-card-inner"></div></div>`;
 }
 
 function createSwipeCardHtml(s) {
     const icon = CATEGORY_ICONS[s.category] || "📌";
     const liked = !!s.has_voted;
+    const debate = !!s.needs_debate;
+    const vf = s.vote_for ?? 0;
+    const va = s.vote_against ?? 0;
+    const hotClass = s.hot ? " swipe-card--hot" : "";
+    if (debate) {
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--debate${hotClass}" data-id="${s.id}" data-debate="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-debate-pill">Débat</span>
+                <div class="suggestion-title-block">
+                    <span class="swipe-card-emoji" aria-hidden="true">${icon}</span>
+                    <span class="suggestion-title swipe-card-title">${escapeHtml(s.title)}</span>
+                    ${s.subtitle ? `<p class="suggestion-subtitle">${escapeHtml(s.subtitle)}</p>` : ""}
+                </div>
+                <div class="swipe-card-meta">
+                    <span class="badge badge-category">${escapeHtml(s.category)}</span>
+                    <span class="badge badge-status" data-status="${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
+                </div>
+                <div class="swipe-debate-scores">
+                    <span class="swipe-debate-score swipe-debate-score--for">Pour ${vf}</span>
+                    <span class="swipe-debate-score swipe-debate-score--against">Contre ${va}</span>
+                </div>
+                <p class="swipe-card-hint swipe-card-hint-debate-inner">↑ Glisse vers le haut : POUR · ↓ vers le bas : CONTRE</p>
+            </div>
+        </div>`;
+    }
     return `
-        <div class="swipe-card swipe-card--dating" data-id="${s.id}">
+        <div class="swipe-card swipe-card--dating${hotClass}" data-id="${s.id}">
             <div class="swipe-card-inner">
                 <div class="suggestion-title-block">
                     <span class="swipe-card-emoji" aria-hidden="true">${icon}</span>
@@ -1461,31 +1761,49 @@ function renderSwipeView() {
     }
 
     clampSwipeIndex();
-    const list = getSwipeCandidates();
+    const list = swipeDeckItems;
     if (swipeCounter) swipeCounter.textContent = list.length ? String(swipeIndex + 1) : "0";
     if (swipeCounterTotal) swipeCounterTotal.textContent = list.length ? String(list.length) : "0";
-    document.querySelectorAll(".swipe-nope, .swipe-yep").forEach((el) => {
+    document.querySelectorAll(".swipe-nope, .swipe-yep, .swipe-label-up, .swipe-label-down").forEach((el) => {
         el.style.opacity = "0";
     });
     if (!list.length) {
-        swipeDeckInner.innerHTML = `<div class="swipe-deck-empty"><p>Aucune suggestion${(swipeSearchQuery || "").trim() ? " pour cette recherche" : ""}.</p><p class="swipe-deck-empty-sub">Les sujets en mode débat sont dans la liste.</p></div>`;
+        swipeDeckInner.innerHTML = `<div class="swipe-deck-empty"><p>Aucune suggestion pour le moment.</p></div>`;
+        toggleSwipeModeHints(false, true);
         return;
     }
-    const s = list[swipeIndex];
+    const item = list[swipeIndex];
+    if (item.kind === "special") {
+        document.querySelectorAll(".swipe-hint-nondebate, .swipe-hint-debate").forEach((el) => {
+            el.hidden = true;
+        });
+        const vdeb = document.getElementById("swipe-vdebate-labels");
+        if (vdeb) vdeb.style.display = "none";
+        swipeDeckInner.innerHTML = `<div class="swipe-card-layer" id="swipe-active-layer">${createSpecialCardHtml(item)}</div>`;
+        return;
+    }
+    const s = allSuggestions.find((x) => x.id === item.id);
+    if (!s) {
+        swipeDeckInner.innerHTML = `<div class="swipe-deck-empty"><p>—</p></div>`;
+        return;
+    }
+    toggleSwipeModeHints(!!s.needs_debate, false);
     swipeDeckInner.innerHTML = `<div class="swipe-card-layer" id="swipe-active-layer">${createSwipeCardHtml(s)}</div>`;
 }
 
 function swipeGoNext() {
-    const list = getSwipeCandidates();
+    const list = swipeDeckItems;
     if (list.length === 0) return;
     swipeIndex = (swipeIndex + 1) % list.length;
+    engagementPingSwipe();
     renderSwipeView();
 }
 
 function swipeGoPrev() {
-    const list = getSwipeCandidates();
+    const list = swipeDeckItems;
     if (list.length === 0) return;
     swipeIndex = (swipeIndex - 1 + list.length) % list.length;
+    engagementPingSwipe();
     renderSwipeView();
 }
 
@@ -1496,8 +1814,8 @@ function attachSwipeDeckGestures() {
     let startX = 0;
     let startY = 0;
     let tracking = false;
-    let dx = 0;
-    let gestureMoved = false;
+    /** @type {null | 'h' | 'v'} */
+    let dominant = null;
 
     function getLayer() {
         return swipeDeckInner.querySelector(".swipe-card-layer");
@@ -1508,13 +1826,23 @@ function attachSwipeDeckGestures() {
         return {
             nope: wrap?.querySelector(".swipe-nope"),
             yep: wrap?.querySelector(".swipe-yep"),
+            up: wrap?.querySelector(".swipe-label-up"),
+            down: wrap?.querySelector(".swipe-label-down"),
         };
     }
 
     function resetLabels() {
-        const { nope, yep } = labelEls();
+        const { nope, yep, up, down } = labelEls();
         if (nope) nope.style.opacity = "0";
         if (yep) yep.style.opacity = "0";
+        if (up) up.style.opacity = "0";
+        if (down) down.style.opacity = "0";
+    }
+
+    function springLayer(layer) {
+        if (!layer) return;
+        layer.style.transition = "transform 0.35s cubic-bezier(0.34, 1.4, 0.64, 1)";
+        layer.style.transform = "translate(0, 0) rotate(0deg)";
     }
 
     swipeDeckInner.addEventListener(
@@ -1526,9 +1854,8 @@ function attachSwipeDeckGestures() {
             const t = e.touches[0];
             startX = t.clientX;
             startY = t.clientY;
+            dominant = null;
             tracking = true;
-            gestureMoved = false;
-            dx = 0;
             layer.style.transition = "none";
             resetLabels();
         },
@@ -1542,20 +1869,44 @@ function attachSwipeDeckGestures() {
             const layer = getLayer();
             if (!layer) return;
             const t = e.touches[0];
-            dx = t.clientX - startX;
-            const ady = Math.abs(t.clientY - startY);
-            if (Math.abs(dx) > 12 && ady < 110) gestureMoved = true;
-            const rot = dx * 0.035;
-            layer.style.transform = `translateX(${dx}px) translateZ(0) rotate(${rot}deg)`;
-            const { nope, yep } = labelEls();
-            const p = Math.min(1, Math.abs(dx) / 100);
-            if (nope && yep) {
-                if (dx < 0) {
-                    nope.style.opacity = String(p);
-                    yep.style.opacity = "0";
-                } else if (dx > 0) {
-                    yep.style.opacity = String(p);
-                    nope.style.opacity = "0";
+            const mx = t.clientX - startX;
+            const my = t.clientY - startY;
+            if (!dominant && (Math.abs(mx) > 14 || Math.abs(my) > 14)) {
+                dominant = Math.abs(mx) >= Math.abs(my) ? "h" : "v";
+            }
+            const item = swipeDeckItems[swipeIndex];
+            const cur = item && item.kind === "suggestion" ? allSuggestions.find((x) => x.id === item.id) : null;
+            const isDeb = cur && cur.needs_debate;
+            const { nope, yep, up, down } = labelEls();
+
+            if (dominant === "h") {
+                const rot = mx * 0.035;
+                layer.style.transform = `translateX(${mx}px) translateZ(0) rotate(${rot}deg)`;
+                const p = Math.min(1, Math.abs(mx) / 100);
+                if (nope && yep) {
+                    if (mx < 0) {
+                        nope.style.opacity = String(p);
+                        yep.style.opacity = "0";
+                    } else if (mx > 0) {
+                        yep.style.opacity = String(p);
+                        nope.style.opacity = "0";
+                    }
+                }
+                if (up) up.style.opacity = "0";
+                if (down) down.style.opacity = "0";
+            } else if (dominant === "v") {
+                if (isDeb) {
+                    layer.style.transform = `translateY(${my}px) translateZ(0) rotate(${my * 0.02}deg)`;
+                    const pu = my < 0 ? Math.min(1, Math.abs(my) / 90) : 0;
+                    const pd = my > 0 ? Math.min(1, Math.abs(my) / 90) : 0;
+                    if (up) up.style.opacity = String(pu);
+                    if (down) down.style.opacity = String(pd);
+                    if (nope) nope.style.opacity = "0";
+                    if (yep) yep.style.opacity = "0";
+                } else {
+                    layer.style.transform = `translateY(${my * 0.28}px) translateZ(0)`;
+                    if (nope) nope.style.opacity = "0";
+                    if (yep) yep.style.opacity = "0";
                 }
             }
         },
@@ -1569,45 +1920,106 @@ function attachSwipeDeckGestures() {
             tracking = false;
             const layer = getLayer();
             const t = e.changedTouches[0];
-            dx = t.clientX - startX;
-            const ady = Math.abs(t.clientY - startY);
-            const adx = Math.abs(dx);
+            const mx = t.clientX - startX;
+            const my = t.clientY - startY;
+            const adx = Math.abs(mx);
+            const ady = Math.abs(my);
+            const item = swipeDeckItems[swipeIndex];
+            const s = item && item.kind === "suggestion" ? allSuggestions.find((x) => x.id === item.id) : null;
 
-            if (gestureMoved && adx > 70 && ady < 130) {
+            const commitHorizontal = () => {
                 const w = window.innerWidth;
-                const exitX = dx < 0 ? -w * 1.1 : w * 1.1;
+                const exitX = mx < 0 ? -w * 1.1 : w * 1.1;
                 if (layer) {
                     layer.style.transition = "transform 0.32s cubic-bezier(0.4, 0, 0.2, 1)";
-                    layer.style.transform = `translateX(${exitX}px) rotate(${dx * 0.06}deg)`;
+                    layer.style.transform = `translateX(${exitX}px) rotate(${mx * 0.06}deg)`;
                 }
                 resetLabels();
-                const goNext = dx < 0;
+                const goNext = mx < 0;
                 setTimeout(() => {
                     if (goNext) swipeGoNext();
                     else swipeGoPrev();
                 }, 300);
                 swipeLastTap = 0;
+            };
+
+            if (dominant === "h" && adx > 70 && ady < 130) {
+                commitHorizontal();
                 return;
             }
-            if (layer) {
-                layer.style.transition = "transform 0.35s cubic-bezier(0.34, 1.4, 0.64, 1)";
-                layer.style.transform = "translateX(0) rotate(0deg)";
-            }
-            resetLabels();
-            if (gestureMoved) {
+
+            if (dominant === "v" && s && s.needs_debate) {
+                const TH = 78;
+                if (my < -TH) {
+                    const sid = s.id;
+                    if (layer) {
+                        layer.style.transition = "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
+                        layer.style.transform = `translateY(${-window.innerHeight * 1.15}px) rotate(-6deg)`;
+                    }
+                    resetLabels();
+                    setTimeout(() => {
+                        if (swipeDeckInner) swipeDeckInner.innerHTML = "";
+                        openDebateVoteSheet(sid, "for");
+                    }, 280);
+                    swipeLastTap = 0;
+                    return;
+                }
+                if (my > TH) {
+                    const sid = s.id;
+                    if (layer) {
+                        layer.style.transition = "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
+                        layer.style.transform = `translateY(${window.innerHeight * 1.15}px) rotate(6deg)`;
+                    }
+                    resetLabels();
+                    setTimeout(() => {
+                        if (swipeDeckInner) swipeDeckInner.innerHTML = "";
+                        openDebateVoteSheet(sid, "against");
+                    }, 280);
+                    swipeLastTap = 0;
+                    return;
+                }
+                springLayer(layer);
+                resetLabels();
                 swipeLastTap = 0;
                 return;
             }
+
+            if (dominant === "v" && s && !s.needs_debate) {
+                springLayer(layer);
+                resetLabels();
+                swipeLastTap = 0;
+                return;
+            }
+
+            if (dominant === "h") {
+                springLayer(layer);
+                resetLabels();
+                swipeLastTap = 0;
+                return;
+            }
+
+            springLayer(layer);
+            resetLabels();
+
+            if (adx > 18 || ady > 18) {
+                swipeLastTap = 0;
+                return;
+            }
+
             const card = e.target.closest(".swipe-card");
             if (!card || e.target.closest("button")) return;
+            const curItem = swipeDeckItems[swipeIndex];
+            if (!curItem || curItem.kind !== "suggestion") return;
             const now = Date.now();
-            if (now - swipeLastTap < 320) {
+            if (now - swipeLastTap < 340) {
                 swipeLastTap = 0;
                 const id = parseInt(card.dataset.id, 10);
-                const s = allSuggestions.find((x) => x.id === id);
-                if (!s || s.needs_debate) return;
-                if (s.has_voted) voteSuggestion(id, undefined, undefined, { removeVote: true });
-                else voteSuggestion(id, undefined, undefined, {});
+                const sug = allSuggestions.find((x) => x.id === id);
+                if (!sug || sug.needs_debate) return;
+                const cx = t.clientX;
+                const cy = t.clientY;
+                if (sug.has_voted) voteSuggestion(id, undefined, undefined, { removeVote: true });
+                else voteSuggestion(id, undefined, undefined, { igBurstAt: { x: cx, y: cy } });
             } else {
                 swipeLastTap = now;
             }
@@ -1616,13 +2028,83 @@ function attachSwipeDeckGestures() {
     );
 }
 
+async function handleEngagementClick(ev) {
+    const t = ev.target.closest("[data-eng]");
+    if (!t) return;
+    const eng = t.dataset.eng;
+    if (eng === "imp") {
+        const sid = parseInt(t.dataset.sid, 10);
+        const level = parseInt(t.dataset.level, 10);
+        const { data, status } = await API.post("/api/engagement/importance", { suggestion_id: sid, level });
+        if (status === 200 && data.ok) {
+            const s = allSuggestions.find((x) => x.id === sid);
+            if (s) {
+                s.importance_score = data.importance_score;
+                s.hot = (data.importance_score || 0) >= 70;
+            }
+            await refreshEngagementBootstrap();
+            swipeGoNext();
+        } else showFeedback((data && data.error) || "Erreur", "error");
+        return;
+    }
+    if (eng === "act-dismiss") {
+        await API.post("/api/engagement/activity-card-dismiss", {});
+        await refreshEngagementBootstrap();
+        swipeGoNext();
+        return;
+    }
+    if (eng === "guess") {
+        const sid = parseInt(t.dataset.sid, 10);
+        const bucket = t.dataset.bucket;
+        const { data, status } = await API.post("/api/engagement/guess", { suggestion_id: sid, bucket });
+        if (status === 200) {
+            swipeGuessReveal[sid] = {
+                actual_pct: data.actual_pct,
+                correct: data.correct,
+            };
+            renderSwipeView();
+        } else showFeedback((data && data.error) || "Erreur", "error");
+        return;
+    }
+    if (eng === "guess-next") {
+        swipeGoNext();
+        return;
+    }
+    if (eng === "msg-send") {
+        const pseudo = (document.getElementById("swipe-eng-pseudo")?.value || "").trim();
+        const msg = (document.getElementById("swipe-eng-msg")?.value || "").trim();
+        const { data, status } = await API.post("/api/engagement/message", {
+            display_name: pseudo,
+            message: msg,
+        });
+        if (status === 200 && data.ok) {
+            await refreshEngagementBootstrap();
+            swipeGoNext();
+        } else showFeedback((data && data.error) || "Erreur", "error");
+        return;
+    }
+    if (eng === "mood") {
+        const mood = t.dataset.mood;
+        const { data, status } = await API.post("/api/engagement/mood", { mood });
+        if (status === 200 && data.ok) {
+            await refreshEngagementBootstrap();
+            swipeGoNext();
+        } else showFeedback((data && data.error) || "Erreur", "error");
+    }
+}
+
 function setupPhoneSwipe() {
     if (!isTouchDevice()) return;
-    if (swipeSearchInput) {
-        swipeSearchInput.addEventListener("input", () => {
-            swipeSearchQuery = swipeSearchInput.value || "";
+    const swipeDeckWrap = document.getElementById("swipe-deck-wrap");
+    if (swipeDeckWrap && !swipeDeckWrap.dataset.engListener) {
+        swipeDeckWrap.dataset.engListener = "1";
+        swipeDeckWrap.addEventListener("click", (e) => handleEngagementClick(e));
+    }
+    if (listSearchInput) {
+        listSearchInput.addEventListener("input", () => {
+            phoneListSearchQuery = listSearchInput.value || "";
             swipeIndex = 0;
-            renderSwipeView();
+            if (phoneUiMode === "list") renderSuggestions(true);
         });
     }
     if (btnPhoneModeSwipe) {
@@ -1636,6 +2118,8 @@ function setupPhoneSwipe() {
                 /* ignore */
             }
             syncPhoneUiChrome();
+            buildSwipeDeck();
+            engagementPingPresence();
             renderSwipeView();
         });
     }

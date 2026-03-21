@@ -7,7 +7,11 @@ import hmac
 import time
 import uuid
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore
 from functools import wraps
 
 from sqlalchemy.exc import IntegrityError
@@ -17,10 +21,13 @@ from flask import (
     send_from_directory, send_file, Response, has_request_context,
 )
 
+from sqlalchemy import func
+
 from models import (
     db, Suggestion, Vote, SuggestionArgument, Location, Placement, CalibrationExample, CalibrationDebat, CalibrationDetails, CalibrationRapport, CalibrationVerification, Announcement,
     OfficialProposal, ProposalVote, ProposalArgument, CvlOfficialInfo, SchoolContext, SiteSettings, Presentation, Slide, DisplayPage, MediaFile, ScrapedNews,
     ActivityLog, TraceFeedback, Backup, SuggestionArchive,
+    SuggestionImportance, DailySessionActivity, DailyPresence, EngagementCardDone, EngagementGuess, CommunityMessage, DailyMood,
 )
 from ai_engine import AIEngine
 from content_filter import filter_content, filter_content_quick
@@ -241,6 +248,106 @@ def get_session_id():
     return session["visitor_id"]
 
 
+try:
+    PARIS_TZ = ZoneInfo("Europe/Paris") if ZoneInfo else None
+except Exception:
+    PARIS_TZ = None
+_HOT_IMPORTANCE_THRESHOLD = 70.0
+
+
+def _paris_today_str() -> str:
+    """Jour calendaire (Paris si tzdata dispo, sinon date locale du serveur)."""
+    if PARIS_TZ is not None:
+        try:
+            return datetime.now(PARIS_TZ).date().isoformat()
+        except Exception:
+            pass
+    return datetime.now().date().isoformat()
+
+
+def _engagement_activity_points(row: DailySessionActivity) -> float:
+    return float((row.like_count or 0) * 2 + (row.swipe_count or 0))
+
+
+def _ensure_daily_presence(session_id: str) -> None:
+    day = _paris_today_str()
+    if not DailyPresence.query.filter_by(session_id=session_id, day=day).first():
+        db.session.add(DailyPresence(session_id=session_id, day=day))
+        db.session.commit()
+
+
+def _get_or_create_activity(session_id: str, day: str) -> DailySessionActivity:
+    row = DailySessionActivity.query.filter_by(session_id=session_id, day=day).first()
+    if not row:
+        row = DailySessionActivity(session_id=session_id, day=day)
+        db.session.add(row)
+        db.session.commit()
+    return row
+
+
+def _increment_daily_activity(session_id: str, kind: str) -> None:
+    """kind: swipe | like"""
+    day = _paris_today_str()
+    _ensure_daily_presence(session_id)
+    row = _get_or_create_activity(session_id, day)
+    if kind == "swipe":
+        row.swipe_count = (row.swipe_count or 0) + 1
+    elif kind == "like":
+        row.like_count = (row.like_count or 0) + 1
+    db.session.commit()
+
+
+def _recompute_suggestion_importance(suggestion_id: int) -> None:
+    s = Suggestion.query.get(suggestion_id)
+    if not s:
+        return
+    rows = SuggestionImportance.query.filter_by(suggestion_id=suggestion_id).all()
+    if not rows:
+        s.importance_score = 0.0
+    else:
+        avg = sum(r.level for r in rows) / len(rows)
+        s.importance_score = (avg - 1.0) / 3.0 * 100.0
+    db.session.commit()
+
+
+def _suggestion_popularity_pct(sug: Suggestion) -> float:
+    """Pourcentage réel pour le jeu « devine » : simple = likes / électeurs uniques ; débat = % pour."""
+    if getattr(sug, "needs_debate", False):
+        vf = sug.vote_for or 0
+        va = sug.vote_against or 0
+        tot = vf + va
+        if tot <= 0:
+            return 0.0
+        return round(100.0 * vf / tot, 1)
+    total_voters = db.session.query(func.count(func.distinct(Vote.session_id))).scalar() or 1
+    vc = sug.vote_count or 0
+    return round(min(100.0, 100.0 * vc / max(total_voters, 1)), 1)
+
+
+def _popularity_bucket(pct: float) -> str:
+    if pct < 30:
+        return "lt30"
+    if pct <= 60:
+        return "mid"
+    return "gt60"
+
+
+def _percentile_rank_today(session_id: str) -> tuple[int, int, float]:
+    """(percentile 0-100, connected_today, my_score) — score = 2*likes + swipes."""
+    day = _paris_today_str()
+    connected = DailyPresence.query.filter_by(day=day).count()
+    rows = DailySessionActivity.query.filter_by(day=day).all()
+    if not rows:
+        return 50, connected, 0.0
+    row_me = DailySessionActivity.query.filter_by(session_id=session_id, day=day).first()
+    my = _engagement_activity_points(row_me) if row_me else 0.0
+    scores = sorted(_engagement_activity_points(r) for r in rows)
+    n = len(scores)
+    below = sum(1 for sc in scores if sc < my)
+    pct = int(round(100.0 * below / max(n, 1)))
+    return pct, connected, my
+
+
 def _check_csrf_safe() -> bool:
     """Vérifie que la requête provient de notre origine (anti-CSRF)."""
     if request.method in ("GET", "HEAD", "OPTIONS"):
@@ -411,9 +518,198 @@ def list_suggestions():
         my_vote = Vote.query.filter_by(suggestion_id=s.id, session_id=session_id).first()
         d["has_voted"] = my_vote is not None
         d["my_vote"] = my_vote.vote_type if my_vote else None
+        imp = float(d.get("importance_score") or 0)
+        d["hot"] = imp >= _HOT_IMPORTANCE_THRESHOLD
         result.append(d)
 
     return jsonify(result)
+
+
+@app.route("/api/engagement/bootstrap", methods=["GET"])
+def engagement_bootstrap():
+    session_id = get_session_id()
+    day = _paris_today_str()
+    _ensure_daily_presence(session_id)
+    pct, connected, my_score = _percentile_rank_today(session_id)
+    row = DailySessionActivity.query.filter_by(session_id=session_id, day=day).first()
+    done = [x.card_type for x in EngagementCardDone.query.filter_by(session_id=session_id, day=day).all()]
+    guessed_sids = {g.suggestion_id for g in EngagementGuess.query.filter_by(session_id=session_id).all()}
+    query = Suggestion.query.filter(
+        Suggestion.status != "En attente",
+        Suggestion.status != "Refusée",
+    )
+    guess_eligible_ids = [s.id for s in query.all() if _terminée_still_visible(s) and s.id not in guessed_sids]
+    return jsonify({
+        "day": day,
+        "connected_today": connected,
+        "percentile_most_active": pct,
+        "my_activity_score": my_score,
+        "swipes_today": row.swipe_count if row else 0,
+        "likes_today": row.like_count if row else 0,
+        "cards_done_today": done,
+        "guess_eligible_ids": guess_eligible_ids,
+    })
+
+
+@app.route("/api/engagement/ping", methods=["POST"])
+def engagement_ping():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    ip = _client_ip()
+    if _ip_rate_exceeded(ip, "engagement_ping", 120, 60):
+        return _ip_rate_response()
+    data = request.get_json() or {}
+    kind = (data.get("type") or "").strip()
+    session_id = get_session_id()
+    if kind == "presence":
+        _ensure_daily_presence(session_id)
+    elif kind == "swipe":
+        _increment_daily_activity(session_id, "swipe")
+    elif kind == "like":
+        _increment_daily_activity(session_id, "like")
+    else:
+        return jsonify({"error": "type invalide"}), 400
+    pct, connected, my_score = _percentile_rank_today(session_id)
+    return jsonify({"ok": True, "connected_today": connected, "percentile_most_active": pct, "my_activity_score": my_score})
+
+
+@app.route("/api/engagement/importance", methods=["POST"])
+def engagement_importance():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    ip = _client_ip()
+    if _ip_rate_exceeded(ip, "engagement_importance", 40, 60):
+        return _ip_rate_response()
+    data = request.get_json() or {}
+    sid = int(data.get("suggestion_id") or 0)
+    level = int(data.get("level") or 0)
+    if sid <= 0 or level < 1 or level > 4:
+        return jsonify({"error": "Paramètres invalides"}), 400
+    s = Suggestion.query.get(sid)
+    if not s:
+        return jsonify({"error": "Suggestion introuvable"}), 404
+    session_id = get_session_id()
+    ex = SuggestionImportance.query.filter_by(suggestion_id=sid, session_id=session_id).first()
+    if ex:
+        ex.level = level
+    else:
+        db.session.add(SuggestionImportance(suggestion_id=sid, session_id=session_id, level=level))
+    db.session.commit()
+    _recompute_suggestion_importance(sid)
+    day = _paris_today_str()
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="importance").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="importance"))
+        db.session.commit()
+    s2 = Suggestion.query.get(sid)
+    return jsonify({"ok": True, "importance_score": float(s2.importance_score or 0)})
+
+
+@app.route("/api/engagement/guess", methods=["POST"])
+def engagement_guess():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    ip = _client_ip()
+    if _ip_rate_exceeded(ip, "engagement_guess", 30, 60):
+        return _ip_rate_response()
+    data = request.get_json() or {}
+    sid = int(data.get("suggestion_id") or 0)
+    bucket = (data.get("bucket") or "").strip()
+    if sid <= 0 or bucket not in ("lt30", "mid", "gt60"):
+        return jsonify({"error": "Paramètres invalides"}), 400
+    s = Suggestion.query.get(sid)
+    if not s:
+        return jsonify({"error": "Suggestion introuvable"}), 404
+    session_id = get_session_id()
+    if EngagementGuess.query.filter_by(suggestion_id=sid, session_id=session_id).first():
+        return jsonify({"error": "Tu as déjà répondu pour cette idée"}), 409
+    _update_suggestion_vote_counts(sid)
+    s = Suggestion.query.get(sid)
+    actual_pct = _suggestion_popularity_pct(s)
+    actual_bucket = _popularity_bucket(actual_pct)
+    correct = actual_bucket == bucket
+    g = EngagementGuess(suggestion_id=sid, session_id=session_id, bucket=bucket)
+    db.session.add(g)
+    db.session.commit()
+    day = _paris_today_str()
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="guess").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="guess"))
+        db.session.commit()
+    return jsonify({
+        "actual_pct": actual_pct,
+        "actual_bucket": actual_bucket,
+        "correct": correct,
+        "your_bucket": bucket,
+    })
+
+
+@app.route("/api/engagement/mood", methods=["POST"])
+def engagement_mood():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    data = request.get_json() or {}
+    mood = (data.get("mood") or "").strip()
+    if mood not in ("bien", "bof", "fatigue", "stresse"):
+        return jsonify({"error": "Humeur invalide"}), 400
+    session_id = get_session_id()
+    day = _paris_today_str()
+    ex = DailyMood.query.filter_by(session_id=session_id, day=day).first()
+    if ex:
+        ex.mood = mood
+    else:
+        db.session.add(DailyMood(session_id=session_id, day=day, mood=mood))
+    db.session.commit()
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="mood").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="mood"))
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/engagement/message", methods=["POST"])
+def engagement_message():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    ip = _client_ip()
+    if _ip_rate_exceeded(ip, "engagement_msg", 12, 60):
+        return _ip_rate_response()
+    data = request.get_json() or {}
+    display_name = (data.get("display_name") or "").strip()[:80]
+    body = (data.get("message") or "").strip()[:500]
+    if len(display_name) < 1 or len(body) < 3:
+        return jsonify({"error": "Pseudo et message requis (3 caractères min. pour le message)."}), 400
+    from content_filter import filter_community_message_quick
+    ok, msg = filter_community_message_quick(body)
+    if not ok:
+        return jsonify({"error": msg}), 400
+    ok2, msg2 = filter_community_message_quick(display_name)
+    if not ok2:
+        return jsonify({"error": "Pseudo inapproprié."}), 400
+    try:
+        from llm_engine import moderate_community_message_llm
+        ok_llm, reason = moderate_community_message_llm(body)
+        if not ok_llm:
+            return jsonify({"error": reason or "Message refusé par la modération."}), 400
+    except Exception:
+        pass
+    session_id = get_session_id()
+    db.session.add(CommunityMessage(session_id=session_id, display_name=display_name, body=body, status="approved"))
+    db.session.commit()
+    day = _paris_today_str()
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="message").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="message"))
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/engagement/activity-card-dismiss", methods=["POST"])
+def engagement_activity_card_dismiss():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    session_id = get_session_id()
+    day = _paris_today_str()
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="activity").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="activity"))
+        db.session.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/session/me", methods=["GET"])
@@ -924,6 +1220,11 @@ def vote_suggestion(sid):
     if needs_debate:
         resp["arguments_for"] = [a.to_dict() for a in suggestion.arguments if a.side == "for" and a.status == "approved"]
         resp["arguments_against"] = [a.to_dict() for a in suggestion.arguments if a.side == "against" and a.status == "approved"]
+    if not needs_debate and vote_type == "for":
+        try:
+            _increment_daily_activity(session_id, "like")
+        except Exception:
+            pass
     return jsonify(resp)
 
 
@@ -1758,6 +2059,81 @@ def admin_stats():
         "by_status": by_status,
         "top_voted": [s.to_dict() for s in top_suggestions],
         "recent": [s.to_dict() for s in recent],
+    })
+
+
+@app.route("/api/admin/engagement-stats", methods=["GET"])
+@admin_required
+def admin_engagement_stats():
+    """Statistiques engagement (cartes spéciales, humeur, devinettes, importance)."""
+    day = _paris_today_str()
+    mood_rows = db.session.query(DailyMood.mood, func.count(DailyMood.id)).filter(DailyMood.day == day).group_by(DailyMood.mood).all()
+    moods_today = {m: c for m, c in mood_rows}
+
+    presence_by_day = []
+    base_day = datetime.now(PARIS_TZ).date() if PARIS_TZ else date.today()
+    for i in range(14):
+        d = (base_day - timedelta(days=i)).isoformat()
+        presence_by_day.append({"day": d, "count": DailyPresence.query.filter_by(day=d).count()})
+
+    imp_total = SuggestionImportance.query.count()
+    guess_total = EngagementGuess.query.count()
+    guess_correct = 0
+    for g in EngagementGuess.query.all():
+        s = Suggestion.query.get(g.suggestion_id)
+        if not s:
+            continue
+        actual = _popularity_bucket(_suggestion_popularity_pct(s))
+        if actual == g.bucket:
+            guess_correct += 1
+
+    msg_7d = CommunityMessage.query.filter(
+        CommunityMessage.created_at >= datetime.now(timezone.utc) - timedelta(days=7)
+    ).count()
+
+    cards_done_today = db.session.query(EngagementCardDone.card_type, func.count(EngagementCardDone.id)).filter(
+        EngagementCardDone.day == day
+    ).group_by(EngagementCardDone.card_type).all()
+    cards_done_by_type = {t: c for t, c in cards_done_today}
+
+    top_hot = (
+        Suggestion.query.filter(Suggestion.importance_score > 0)
+        .order_by(Suggestion.importance_score.desc())
+        .limit(12)
+        .all()
+    )
+
+    avg_swipes = db.session.query(func.avg(DailySessionActivity.swipe_count)).filter(
+        DailySessionActivity.day == day
+    ).scalar()
+    avg_likes = db.session.query(func.avg(DailySessionActivity.like_count)).filter(
+        DailySessionActivity.day == day
+    ).scalar()
+
+    return jsonify({
+        "reference": {
+            "timezone": "Europe/Paris",
+            "day_today": day,
+            "hot_threshold": _HOT_IMPORTANCE_THRESHOLD,
+            "activity_score_formula": "2 * likes_jour + swipes_jour",
+            "popularity_pct_simple": "100 * vote_count / max(distinct_voters_total, 1), plafonné à 100",
+            "popularity_pct_debate": "100 * vote_for / (vote_for + vote_against)",
+            "percentile": "% d'élèves avec un score d'activité strictement inférieur au tien (jour calendaire Paris si tzdata, sinon serveur).",
+        },
+        "moods_today": moods_today,
+        "presence_by_day": list(reversed(presence_by_day)),
+        "importance_votes_total": imp_total,
+        "guess_total": guess_total,
+        "guess_correct": guess_correct,
+        "guess_accuracy_pct": round(100.0 * guess_correct / guess_total, 1) if guess_total else None,
+        "community_messages_last_7d": msg_7d,
+        "cards_done_today_by_type": cards_done_by_type,
+        "avg_swipes_today": round(float(avg_swipes or 0), 2),
+        "avg_likes_today": round(float(avg_likes or 0), 2),
+        "top_by_importance": [
+            {"id": s.id, "title": s.title, "importance_score": float(s.importance_score or 0), "vote_count": s.vote_count}
+            for s in top_hot
+        ],
     })
 
 

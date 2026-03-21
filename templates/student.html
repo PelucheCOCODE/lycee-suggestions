@@ -105,18 +105,16 @@
             </button>
         </nav>
 
-        <!-- Mode téléphone : swipe + recherche (masqué en mode liste) -->
+        <!-- Mode téléphone : swipe (pas de recherche ici — recherche en Liste / Soutenus) -->
         <section id="phone-swipe-content" class="phone-swipe-content" aria-label="Découvrir les suggestions">
-            <div class="phone-swipe-toolbar">
-                <label class="phone-swipe-search-label">
-                    <span class="visually-hidden">Rechercher</span>
-                    <input type="search" id="swipe-search" class="phone-swipe-search" placeholder="Rechercher une suggestion…" autocomplete="off" enterkeyhint="search" />
-                </label>
-            </div>
             <div id="swipe-cvl-slot" class="swipe-cvl-slot"></div>
             <div id="swipe-deck-wrap" class="swipe-deck-wrap">
                 <div class="swipe-floating-labels" aria-hidden="true">
                     <span class="swipe-label swipe-nope">SUIVANT</span>
+                    <span class="swipe-floating-vdebate" id="swipe-vdebate-labels">
+                        <span class="swipe-label swipe-label-up">POUR</span>
+                        <span class="swipe-label swipe-label-down">CONTRE</span>
+                    </span>
                     <span class="swipe-label swipe-yep">PRÉCÉDENT</span>
                 </div>
                 <div class="swipe-stack" id="swipe-stack">
@@ -129,12 +127,17 @@
                     <span id="swipe-counter-total" class="swipe-counter-total">0</span>
                 </div>
             </div>
-            <p class="swipe-hint">Double tap · Glissez comme une carte</p>
+            <p class="swipe-hint swipe-hint-nondebate">Double tap · Glissez la carte</p>
+            <p class="swipe-hint swipe-hint-debate hidden">Gauche / droite · navigation · Haut / bas · vote débat</p>
         </section>
 
         <!-- Suggestions list -->
         <section class="suggestions-section">
             <div id="suggestions-desktop-wrap" class="suggestions-desktop-wrap">
+            <div class="phone-list-search-wrap" id="phone-list-search-wrap">
+                <label class="visually-hidden" for="list-search">Rechercher une suggestion</label>
+                <input type="search" id="list-search" class="phone-list-search" placeholder="Rechercher une suggestion…" autocomplete="off" enterkeyhint="search" />
+            </div>
             <div id="suggestions-list" class="suggestions-grid">
                 <!-- Skeleton loader -->
                 <div class="skeleton-card"></div>

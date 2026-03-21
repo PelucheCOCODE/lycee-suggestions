@@ -700,6 +700,33 @@ def suggest_detail_hint(text: str, calibration_details: list[dict] | None = None
     return result[0].upper() + result[1:]
 
 
+MODERATE_COMMUNITY_PROMPT = """Tu modères un court message public entre élèves. Tu ne réécris pas le message.
+Réponds UNIQUEMENT par OUI ou NON.
+
+OUI = le message est acceptable (ton léger, humeur, encouragement, sujets variés ; pas besoin d'avoir un rapport avec le lycée).
+NON = menace, incitation à la violence, contenu sexuel explicite, harcèlement ciblé, drogue, autodestruction, contenu clairement illégal ou dangereux.
+
+Message :
+"{text}"
+
+Réponds UNIQUEMENT par OUI ou NON."""
+
+
+def moderate_community_message_llm(text: str) -> tuple[bool, str]:
+    """(ok, raison). Si le modèle est indisponible, retourne (True, '') pour ne pas bloquer après filtre règles."""
+    safe = (text or "").replace('"', "'")[:600]
+    prompt = MODERATE_COMMUNITY_PROMPT.format(text=safe)
+    result = _call_ollama(prompt, temperature=0.05, num_predict=8, timeout=12)
+    if not result:
+        return True, ""
+    answer = result.strip().upper().replace(".", "")
+    if answer.startswith("OUI"):
+        return True, ""
+    if answer.startswith("NON"):
+        return False, "Ce message ne peut pas être publié (modération)."
+    return True, ""
+
+
 def generate_subtitle(title: str, original_texts: list[str]) -> str | None:
     """Generate a subtitle with more detail about the problem, using school context."""
     ctx = f"\nContexte de l'établissement : {_school_context}\n" if _school_context else ""

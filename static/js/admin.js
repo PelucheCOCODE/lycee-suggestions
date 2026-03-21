@@ -85,6 +85,7 @@ function setupNavigation() {
             if (section === "logs") loadLogs();
             if (section === "locations") loadLocations();
             if (section === "dashboard") loadDashboard();
+            if (section === "engagement") loadEngagement();
             if (section === "calibration") loadCalibration();
             if (section === "trace") setupTrace();
             if (section === "calibration-verify") loadCalibrationVerify();
@@ -166,6 +167,112 @@ function renderTopVoted(s) {
     const c = document.getElementById("top-voted-list");
     if (!s.length) { c.innerHTML = '<p class="empty-msg">Aucune suggestion</p>'; return; }
     c.innerHTML = s.map((x) => `<div class="mini-suggestion-item"><span class="mini-suggestion-title">${esc(x.title)}</span><span class="mini-suggestion-votes">♥ ${x.vote_count}</span></div>`).join("");
+}
+
+let chartEngMood = null;
+let chartEngPresence = null;
+let chartEngCards = null;
+let chartEngActivity = null;
+
+async function loadEngagement() {
+    try {
+        const stats = await API.get("/api/admin/engagement-stats");
+        renderEngagement(stats);
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function renderEngagement(s) {
+    const ref = s.reference || {};
+    const refEl = document.getElementById("engagement-reference");
+    if (refEl) {
+        refEl.innerHTML = `
+            <dl class="eng-ref-dl">
+                <dt>Fuseau horaire</dt><dd>${esc(String(ref.timezone || ""))}</dd>
+                <dt>Jour (agrégation)</dt><dd>${esc(String(ref.day_today || ""))}</dd>
+                <dt>Seuil « enflammé » (outline)</dt><dd>${ref.hot_threshold ?? 70} / 100</dd>
+                <dt>Score activité</dt><dd>${esc(String(ref.activity_score_formula || ""))}</dd>
+                <dt>% popularité (idée simple)</dt><dd>${esc(String(ref.popularity_pct_simple || ""))}</dd>
+                <dt>% popularité (débat)</dt><dd>${esc(String(ref.popularity_pct_debate || ""))}</dd>
+                <dt>Percentile « plus actifs »</dt><dd>${esc(String(ref.percentile || ""))}</dd>
+            </dl>`;
+    }
+    const elImp = document.getElementById("eng-stat-imp");
+    const elGuess = document.getElementById("eng-stat-guess");
+    const elAcc = document.getElementById("eng-stat-guess-acc");
+    const elMsg = document.getElementById("eng-stat-msg");
+    if (elImp) elImp.textContent = s.importance_votes_total ?? "—";
+    if (elGuess) elGuess.textContent = s.guess_total ?? "—";
+    if (elAcc) elAcc.textContent = s.guess_accuracy_pct != null ? `${s.guess_accuracy_pct}%` : "—";
+    if (elMsg) elMsg.textContent = s.community_messages_last_7d ?? "—";
+
+    const moods = s.moods_today || {};
+    const moodLabels = Object.keys(moods);
+    const moodCv = document.getElementById("chart-eng-mood");
+    if (moodCv && typeof Chart !== "undefined") {
+        if (chartEngMood) chartEngMood.destroy();
+        chartEngMood = new Chart(moodCv, {
+            type: "bar",
+            data: {
+                labels: moodLabels.length ? moodLabels : ["—"],
+                datasets: [{ label: "Réponses", data: moodLabels.length ? moodLabels.map((k) => moods[k]) : [0], backgroundColor: "#6366f1", borderRadius: 6 }],
+            },
+            options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } },
+        });
+    }
+
+    const pres = s.presence_by_day || [];
+    const presCv = document.getElementById("chart-eng-presence");
+    if (presCv && typeof Chart !== "undefined") {
+        if (chartEngPresence) chartEngPresence.destroy();
+        chartEngPresence = new Chart(presCv, {
+            type: "line",
+            data: {
+                labels: pres.map((p) => p.day),
+                datasets: [{ label: "Sessions uniques / jour", data: pres.map((p) => p.count), borderColor: "#f97316", backgroundColor: "rgba(249,115,22,0.15)", fill: true, tension: 0.25 }],
+            },
+            options: { responsive: true, plugins: { legend: { display: true } }, scales: { y: { beginAtZero: true } } },
+        });
+    }
+
+    const cards = s.cards_done_today_by_type || {};
+    const cKeys = Object.keys(cards);
+    const cardsCv = document.getElementById("chart-eng-cards");
+    if (cardsCv && typeof Chart !== "undefined") {
+        if (chartEngCards) chartEngCards.destroy();
+        const colors = ["#22c55e", "#3b82f6", "#f59e0b", "#a855f7", "#ec4899", "#14b8a6"];
+        chartEngCards = new Chart(cardsCv, {
+            type: "doughnut",
+            data: {
+                labels: cKeys.length ? cKeys : ["—"],
+                datasets: [{ data: cKeys.length ? cKeys.map((k) => cards[k]) : [0], backgroundColor: cKeys.map((_, i) => colors[i % colors.length]), borderWidth: 0 }],
+            },
+            options: { responsive: true, plugins: { legend: { position: "bottom" } } },
+        });
+    }
+
+    const actCv = document.getElementById("chart-eng-activity");
+    if (actCv && typeof Chart !== "undefined") {
+        if (chartEngActivity) chartEngActivity.destroy();
+        chartEngActivity = new Chart(actCv, {
+            type: "bar",
+            data: {
+                labels: ["Swipes moy. / pers.", "Likes moy. / pers."],
+                datasets: [{ data: [s.avg_swipes_today || 0, s.avg_likes_today || 0], backgroundColor: ["#0ea5e9", "#e11d48"], borderRadius: 8 }],
+            },
+            options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
+        });
+    }
+
+    const top = document.getElementById("engagement-top-importance");
+    const topList = s.top_by_importance || [];
+    if (top) {
+        if (!topList.length) top.innerHTML = '<p class="empty-msg">Aucune donnée d’importance</p>';
+        else {
+            top.innerHTML = topList.map((x) => `<div class="mini-suggestion-item"><span class="mini-suggestion-title">${esc(x.title)}</span><span class="mini-suggestion-votes">🔥 ${Number(x.importance_score || 0).toFixed(1)} · ♥ ${x.vote_count}</span></div>`).join("");
+        }
+    }
 }
 
 // ==================== Logs ====================

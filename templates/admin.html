@@ -21,6 +21,7 @@
         </div>
         <nav class="sidebar-nav">
             <button class="nav-item active" data-section="dashboard">Tableau de bord</button>
+            <button class="nav-item" data-section="engagement">Engagement</button>
 
             <div class="nav-group-label">Gestion</div>
             <button class="nav-item" data-section="logs">Logs</button>
@@ -124,6 +125,28 @@
             <div class="dashboard-section">
                 <h3>Top 10 — Suggestions les plus votées</h3>
                 <div id="top-voted-list" class="mini-suggestion-list"></div>
+            </div>
+        </section>
+
+        <section id="section-engagement" class="admin-section">
+            <h1>Engagement — cartes spéciales</h1>
+            <p class="context-hint">Statistiques issues des votes d’importance, devinettes, humeurs, présences et messages (référence méthodo ci-dessous).</p>
+            <div id="engagement-reference" class="admin-engagement-ref"></div>
+            <div class="stats-grid engagement-mini-stats">
+                <div class="stat-card"><div class="stat-info"><span id="eng-stat-imp" class="stat-value">—</span><span class="stat-label">Votes importance</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="eng-stat-guess" class="stat-value">—</span><span class="stat-label">Devinettes</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="eng-stat-guess-acc" class="stat-value">—</span><span class="stat-label">Précision devinettes</span></div></div>
+                <div class="stat-card"><div class="stat-info"><span id="eng-stat-msg" class="stat-value">—</span><span class="stat-label">Messages (7 j)</span></div></div>
+            </div>
+            <div class="charts-grid">
+                <div class="chart-card"><h3>Humeur aujourd’hui</h3><canvas id="chart-eng-mood"></canvas></div>
+                <div class="chart-card"><h3>Connexions par jour (14 j)</h3><canvas id="chart-eng-presence"></canvas></div>
+                <div class="chart-card"><h3>Cartes complétées aujourd’hui</h3><canvas id="chart-eng-cards"></canvas></div>
+                <div class="chart-card"><h3>Activité moyenne (swipes / likes)</h3><canvas id="chart-eng-activity"></canvas></div>
+            </div>
+            <div class="dashboard-section">
+                <h3>Top suggestions par score d’importance</h3>
+                <div id="engagement-top-importance" class="mini-suggestion-list"></div>
             </div>
         </section>
 

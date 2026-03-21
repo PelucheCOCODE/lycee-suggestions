@@ -178,6 +178,12 @@ def migrate():
         """)
         print("+ table suggestion_arguments")
 
+    cur.execute("PRAGMA table_info(suggestions)")
+    cols = [r[1] for r in cur.fetchall()]
+    if cols and "importance_score" not in cols:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN importance_score REAL DEFAULT 0")
+        print("+ suggestions.importance_score")
+
     conn.commit()
     conn.close()
     print("Migration terminée.")
