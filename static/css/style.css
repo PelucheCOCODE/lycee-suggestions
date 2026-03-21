@@ -1015,6 +1015,180 @@ body.student-phone-ui .phone-swipe-content {
 .swipe-eng-textarea { resize: vertical; min-height: 90px; }
 .swipe-eng-continue { width: 100%; margin-top: 10px; }
 
+/* Dilemme + morpion (swipe) */
+.swipe-card--dilemma .dilemma-vote-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-top: 10px;
+}
+.swipe-card--dilemma .dilemma-btn-a {
+    border-color: rgba(13, 71, 161, 0.35);
+    background: linear-gradient(135deg, #e3f2fd 0%, #fff 100%);
+}
+.swipe-card--dilemma .dilemma-btn-b {
+    border-color: rgba(225, 29, 72, 0.35);
+    background: linear-gradient(135deg, #fce7f3 0%, #fff 100%);
+}
+.swipe-card--dilemma .dilemma-skip {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px;
+    border-radius: 12px;
+    font-weight: 600;
+}
+.dilemma-results { margin: 12px 0; }
+.dilemma-bar-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 0.82rem;
+    margin-top: 8px;
+}
+.dilemma-bar-row:first-child { margin-top: 0; }
+.dilemma-opt { color: var(--text-secondary); flex: 1; min-width: 0; }
+.dilemma-pct { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--primary); }
+.dilemma-bar {
+    height: 10px;
+    border-radius: 999px;
+    background: var(--border-light);
+    overflow: hidden;
+    margin-top: 4px;
+}
+.dilemma-bar span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    min-width: 4px;
+    transition: width 0.35s var(--bounce);
+}
+.dilemma-bar--a span { background: linear-gradient(90deg, #1565c0, #42a5f5); }
+.dilemma-bar--b span { background: linear-gradient(90deg, #ad1457, #f06292); }
+.dilemma-votes-total {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin: 10px 0 0;
+    text-align: center;
+}
+.dilemma-you {
+    font-size: 0.88rem;
+    margin: 12px 0 0;
+    text-align: center;
+    color: var(--text-secondary);
+}
+.dilemma-you strong { color: var(--text); }
+
+.swipe-card--ttt .ttt-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    max-width: 220px;
+    margin: 14px auto 10px;
+    touch-action: manipulation;
+}
+.ttt-cell {
+    aspect-ratio: 1;
+    border-radius: 12px;
+    border: 2px solid var(--border);
+    background: var(--surface);
+    font-size: 1.45rem;
+    font-weight: 800;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    color: var(--primary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+.ttt-cell:active { transform: scale(0.96); }
+.ttt-status {
+    min-height: 1.4em;
+    text-align: center;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    margin: 4px 0 0;
+}
+
+/* Admin — dilemmes */
+.admin-dilemma-hero {
+    margin-bottom: 24px;
+    padding: 20px 22px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, #e8eaf6 0%, #f3e5f5 50%, #fce4ec 100%);
+    border: 1px solid rgba(13, 71, 161, 0.12);
+    box-shadow: var(--shadow-md);
+}
+.admin-dilemma-hero h1 { margin: 0 0 8px; font-size: 1.35rem; }
+.admin-dilemma-h2 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin: 24px 0 14px;
+    color: var(--text);
+}
+.admin-dilemma-create {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 22px;
+    box-shadow: var(--shadow);
+}
+.admin-dilemma-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px 16px;
+}
+.admin-dilemma-span-full { grid-column: 1 / -1; }
+.admin-dilemma-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+}
+.admin-dilemma-list {
+    display: grid;
+    gap: 16px;
+    margin-top: 8px;
+}
+.admin-dilemma-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px 20px;
+    box-shadow: var(--shadow);
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.admin-dilemma-card:hover {
+    border-color: rgba(13, 71, 161, 0.22);
+    box-shadow: var(--shadow-md);
+}
+.admin-dilemma-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-light);
+}
+.admin-dilemma-day-pill {
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--primary);
+    background: var(--primary-light);
+    padding: 6px 12px;
+    border-radius: 999px;
+}
+@media (max-width: 720px) {
+    .admin-dilemma-form-grid { grid-template-columns: 1fr; }
+    .admin-dilemma-span-full { grid-column: auto; }
+}
+
 .suggestion-card-hot {
     border-color: rgba(251, 146, 60, 0.85) !important;
     animation: suggestion-flame-outline 2.2s ease-in-out infinite;

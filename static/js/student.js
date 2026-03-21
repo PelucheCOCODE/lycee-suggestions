@@ -157,6 +157,9 @@ let debateArgSheetEl = null;
 let engagementBootstrap = null;
 let swipeDeckItems = [];
 const swipeGuessReveal = {};
+/** Morpion (carte spéciale) */
+let tttBoard = null;
+let tttGameOver = false;
 
 const isTouchDevice = () => {
     const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
@@ -1515,21 +1518,38 @@ async function refreshEngagementBootstrap() {
 
 function buildSwipeDeck() {
     if (!isTouchDevice()) return;
-    const base = shuffle(allSuggestions.map((s) => ({ kind: "suggestion", id: s.id })));
+    if (!allSuggestions.length) {
+        swipeDeckItems = [];
+        clampSwipeIndex();
+        return;
+    }
+    const shuffled = shuffle(allSuggestions.map((s) => ({ kind: "suggestion", id: s.id })));
     const done = engagementBootstrap?.cards_done_today || [];
-    const specials = [];
+    const pool = [];
     const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
     const ids = allSuggestions.map((s) => s.id);
     const guessEl = engagementBootstrap?.guess_eligible_ids || [];
+    const dlm = engagementBootstrap?.dilemma;
 
-    if (!done.includes("importance") && ids.length) specials.push({ kind: "special", type: "importance", refId: pick(ids) });
-    if (!done.includes("activity")) specials.push({ kind: "special", type: "activity" });
-    if (!done.includes("guess") && guessEl.length) specials.push({ kind: "special", type: "guess", refId: pick(guessEl) });
-    if (!done.includes("message")) specials.push({ kind: "special", type: "message" });
-    if (!done.includes("mood")) specials.push({ kind: "special", type: "mood" });
+    if (!done.includes("importance") && ids.length) pool.push({ kind: "special", type: "importance", refId: pick(ids) });
+    if (!done.includes("activity")) pool.push({ kind: "special", type: "activity" });
+    if (!done.includes("guess") && guessEl.length) pool.push({ kind: "special", type: "guess", refId: pick(guessEl) });
+    if (!done.includes("message")) pool.push({ kind: "special", type: "message" });
+    if (!done.includes("mood")) pool.push({ kind: "special", type: "mood" });
+    if (!done.includes("dilemma") && dlm && dlm.id) pool.push({ kind: "special", type: "dilemma" });
+    if (!done.includes("ttt")) pool.push({ kind: "special", type: "ttt" });
 
-    const merged = shuffle([...base, ...specials]);
-    swipeDeckItems = merged.length ? merged : base;
+    const maxSlots = Math.floor(shuffled.length / 4);
+    const specialsToUse = shuffle(pool).slice(0, maxSlots);
+    const deck = [];
+    let sIdx = 0;
+    let spIdx = 0;
+    while (sIdx < shuffled.length) {
+        const chunk = Math.min(4, shuffled.length - sIdx);
+        for (let j = 0; j < chunk; j++) deck.push(shuffled[sIdx++]);
+        if (chunk === 4 && spIdx < specialsToUse.length) deck.push(specialsToUse[spIdx++]);
+    }
+    swipeDeckItems = deck;
     clampSwipeIndex();
 }
 
@@ -1556,6 +1576,121 @@ function clampSwipeIndex() {
     }
     if (swipeIndex >= swipeDeckItems.length) swipeIndex = swipeDeckItems.length - 1;
     if (swipeIndex < 0) swipeIndex = 0;
+}
+
+const TTT_LINES = [
+    [0, 1, 2],
+    [3, 4, 5],
+    [6, 7, 8],
+    [0, 3, 6],
+    [1, 4, 7],
+    [2, 5, 8],
+    [0, 4, 8],
+    [2, 4, 6],
+];
+
+function tttWinner(cells) {
+    for (const [a, b, c] of TTT_LINES) {
+        if (cells[a] && cells[a] === cells[b] && cells[a] === cells[c]) return cells[a];
+    }
+    return cells.every(Boolean) ? "draw" : null;
+}
+
+function tttEmptyIndices(cells) {
+    const r = [];
+    for (let i = 0; i < 9; i++) if (!cells[i]) r.push(i);
+    return r;
+}
+
+function tttMinimax(cells, maxTurn) {
+    const w = tttWinner(cells);
+    if (w === "O") return 1;
+    if (w === "X") return -1;
+    if (w === "draw") return 0;
+    const moves = tttEmptyIndices(cells);
+    if (maxTurn) {
+        let best = -2;
+        for (const m of moves) {
+            const next = [...cells];
+            next[m] = "O";
+            best = Math.max(best, tttMinimax(next, false));
+        }
+        return best;
+    }
+    let best = 2;
+    for (const m of moves) {
+        const next = [...cells];
+        next[m] = "X";
+        best = Math.min(best, tttMinimax(next, true));
+    }
+    return best;
+}
+
+function tttBestMoveO(cells) {
+    let bestScore = -2;
+    let bestM = -1;
+    for (const m of tttEmptyIndices(cells)) {
+        const next = [...cells];
+        next[m] = "O";
+        const sc = tttMinimax(next, false);
+        if (sc > bestScore) {
+            bestScore = sc;
+            bestM = m;
+        }
+    }
+    return bestM;
+}
+
+function tttRedrawGrid() {
+    const cells = document.querySelectorAll(".ttt-cell");
+    if (!cells.length || !tttBoard) return;
+    cells.forEach((el, i) => {
+        el.textContent = tttBoard[i] || "";
+    });
+}
+
+function tttFinish(msg) {
+    tttGameOver = true;
+    const st = document.getElementById("swipe-ttt-status");
+    if (st) st.textContent = msg;
+    const btn = document.getElementById("swipe-ttt-done");
+    if (btn) btn.classList.remove("hidden");
+}
+
+function handleTttCellClick(idx) {
+    const item = swipeDeckItems[swipeIndex];
+    if (!item || item.kind !== "special" || item.type !== "ttt") return;
+    if (tttGameOver || !tttBoard) return;
+    if (tttBoard[idx]) return;
+    tttBoard[idx] = "X";
+    tttRedrawGrid();
+    const w = tttWinner(tttBoard);
+    if (w === "X") return tttFinish("Tu as gagné !");
+    if (w === "draw") return tttFinish("Match nul.");
+    const ai = tttBestMoveO(tttBoard);
+    if (ai >= 0) tttBoard[ai] = "O";
+    tttRedrawGrid();
+    const w2 = tttWinner(tttBoard);
+    if (w2 === "O") tttFinish("L’IA gagne.");
+    else if (w2 === "draw") tttFinish("Match nul.");
+}
+
+function initTttUi() {
+    const grid = document.getElementById("swipe-ttt-grid");
+    if (!grid) return;
+    tttBoard = Array(9).fill(null);
+    tttGameOver = false;
+    tttRedrawGrid();
+    const st = document.getElementById("swipe-ttt-status");
+    if (st) st.textContent = "";
+    const btn = document.getElementById("swipe-ttt-done");
+    if (btn) btn.classList.add("hidden");
+    if (!grid.dataset.tttStopProp) {
+        grid.dataset.tttStopProp = "1";
+        ["touchstart", "touchmove", "touchend"].forEach((ev) => {
+            grid.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
+        });
+    }
 }
 
 function createSpecialCardHtml(item) {
@@ -1651,6 +1786,61 @@ function createSpecialCardHtml(item) {
                     <button type="button" class="swipe-eng-btn" data-eng="mood" data-mood="fatigue">😴 Fatigué</button>
                     <button type="button" class="swipe-eng-btn" data-eng="mood" data-mood="stresse">😤 Stressé</button>
                 </div>
+            </div>
+        </div>`;
+    }
+    if (item.type === "dilemma") {
+        const d = b.dilemma;
+        if (!d || !d.id) {
+            return `<div class="swipe-card swipe-card--special swipe-card--dilemma"><div class="swipe-card-inner"><p>—</p></div></div>`;
+        }
+        const pctA = d.pct_a ?? 0;
+        const pctB = d.pct_b ?? 0;
+        const my = d.my_side;
+        if (my) {
+            const labelA = escapeHtml(d.option_a);
+            const labelB = escapeHtml(d.option_b);
+            return `
+        <div class="swipe-card swipe-card--dating swipe-card--special swipe-card--dilemma" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Dilemme du jour</span>
+                <p class="swipe-eng-title">${escapeHtml(d.title)}</p>
+                <div class="dilemma-results" aria-live="polite">
+                    <div class="dilemma-bar-row"><span class="dilemma-opt">${labelA}</span><span class="dilemma-pct">${pctA}%</span></div>
+                    <div class="dilemma-bar dilemma-bar--a" role="presentation"><span style="width:${pctA}%"></span></div>
+                    <div class="dilemma-bar-row"><span class="dilemma-opt">${labelB}</span><span class="dilemma-pct">${pctB}%</span></div>
+                    <div class="dilemma-bar dilemma-bar--b" role="presentation"><span style="width:${pctB}%"></span></div>
+                    <p class="dilemma-votes-total">${d.votes_total ?? 0} vote(s)</p>
+                </div>
+                <p class="dilemma-you">Ton choix : <strong>${my === "a" ? labelA : labelB}</strong></p>
+                <button type="button" class="btn btn-primary swipe-eng-continue" data-eng="dilemma-next">Continuer</button>
+            </div>
+        </div>`;
+        }
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--special swipe-card--dilemma" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Dilemme du jour</span>
+                <p class="swipe-eng-title">${escapeHtml(d.title)}</p>
+                <div class="dilemma-vote-grid">
+                    <button type="button" class="swipe-eng-btn dilemma-btn-a" data-eng="dilemma-vote" data-did="${d.id}" data-side="a">${escapeHtml(d.option_a)}</button>
+                    <button type="button" class="swipe-eng-btn dilemma-btn-b" data-eng="dilemma-vote" data-did="${d.id}" data-side="b">${escapeHtml(d.option_b)}</button>
+                </div>
+                <button type="button" class="btn btn-ghost dilemma-skip" data-eng="dilemma-skip">Passer</button>
+            </div>
+        </div>`;
+    }
+    if (item.type === "ttt") {
+        const cells = Array.from({ length: 9 }, (_, i) => `<button type="button" class="ttt-cell" data-idx="${i}" aria-label="Case ${i + 1}"></button>`).join("");
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--special swipe-card--ttt" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Mini-jeu</span>
+                <p class="swipe-eng-title">Morpion</p>
+                <p class="swipe-eng-sub">Tu joues les <strong>X</strong>, l’IA les <strong>O</strong> (niveau difficile).</p>
+                <div class="ttt-grid" id="swipe-ttt-grid">${cells}</div>
+                <p class="ttt-status" id="swipe-ttt-status" aria-live="polite"></p>
+                <button type="button" class="btn btn-primary swipe-eng-continue hidden" id="swipe-ttt-done" data-eng="ttt-dismiss">Continuer</button>
             </div>
         </div>`;
     }
@@ -1780,6 +1970,9 @@ function renderSwipeView() {
         const vdeb = document.getElementById("swipe-vdebate-labels");
         if (vdeb) vdeb.style.display = "none";
         swipeDeckInner.innerHTML = `<div class="swipe-card-layer" id="swipe-active-layer">${createSpecialCardHtml(item)}</div>`;
+        if (item.type === "ttt") {
+            requestAnimationFrame(() => initTttUi());
+        }
         return;
     }
     const s = allSuggestions.find((x) => x.id === item.id);
@@ -2090,6 +2283,44 @@ async function handleEngagementClick(ev) {
             await refreshEngagementBootstrap();
             swipeGoNext();
         } else showFeedback((data && data.error) || "Erreur", "error");
+        return;
+    }
+    if (eng === "dilemma-vote") {
+        const did = parseInt(t.dataset.did, 10);
+        const side = (t.dataset.side || "").toLowerCase();
+        const { data, status } = await API.post("/api/engagement/dilemma-vote", { dilemma_id: did, side });
+        if (status === 200) {
+            engagementBootstrap = engagementBootstrap || {};
+            engagementBootstrap.dilemma = data;
+            renderSwipeView();
+        } else if (status === 409) {
+            await refreshEngagementBootstrap();
+            renderSwipeView();
+        } else showFeedback((data && data.error) || "Erreur", "error");
+        return;
+    }
+    if (eng === "dilemma-skip") {
+        const { data, status } = await API.post("/api/engagement/dilemma-skip", {});
+        if (status === 200) {
+            await refreshEngagementBootstrap();
+            buildSwipeDeck();
+            clampSwipeIndex();
+            renderSwipeView();
+        } else showFeedback((data && data.error) || "Erreur", "error");
+        return;
+    }
+    if (eng === "dilemma-next") {
+        swipeGoNext();
+        return;
+    }
+    if (eng === "ttt-dismiss") {
+        const { data, status } = await API.post("/api/engagement/ttt-dismiss", {});
+        if (status === 200) {
+            await refreshEngagementBootstrap();
+            buildSwipeDeck();
+            clampSwipeIndex();
+            renderSwipeView();
+        } else showFeedback((data && data.error) || "Erreur", "error");
     }
 }
 
@@ -2098,7 +2329,14 @@ function setupPhoneSwipe() {
     const swipeDeckWrap = document.getElementById("swipe-deck-wrap");
     if (swipeDeckWrap && !swipeDeckWrap.dataset.engListener) {
         swipeDeckWrap.dataset.engListener = "1";
-        swipeDeckWrap.addEventListener("click", (e) => handleEngagementClick(e));
+        swipeDeckWrap.addEventListener("click", (e) => {
+            const cell = e.target.closest(".ttt-cell");
+            if (cell && cell.closest("#swipe-ttt-grid")) {
+                handleTttCellClick(parseInt(cell.dataset.idx, 10));
+                return;
+            }
+            handleEngagementClick(e);
+        });
     }
     if (listSearchInput) {
         listSearchInput.addEventListener("input", () => {

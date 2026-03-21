@@ -22,6 +22,7 @@
         <nav class="sidebar-nav">
             <button class="nav-item active" data-section="dashboard">Tableau de bord</button>
             <button class="nav-item" data-section="engagement">Engagement</button>
+            <button class="nav-item" data-section="dilemmas">Dilemmes</button>
 
             <div class="nav-group-label">Gestion</div>
             <button class="nav-item" data-section="logs">Logs</button>
@@ -148,6 +149,42 @@
                 <h3>Top suggestions par score d’importance</h3>
                 <div id="engagement-top-importance" class="mini-suggestion-list"></div>
             </div>
+        </section>
+
+        <section id="section-dilemmas" class="admin-section">
+            <div class="admin-dilemma-hero">
+                <h1>Dilemmes (swipe)</h1>
+                <p class="context-hint">Une question par jour calendaire. Tous les élèves voient la même carte, votent A ou B, et voient les pourcentages réels après leur choix.</p>
+            </div>
+            <div class="admin-dilemma-create">
+                <h2 class="admin-dilemma-h2">Nouveau dilemme</h2>
+                <form id="dilemma-form" class="admin-dilemma-form">
+                    <div class="admin-dilemma-form-grid">
+                        <div class="form-group">
+                            <label for="dilemma-day">Date affichée</label>
+                            <input type="date" id="dilemma-day" required>
+                        </div>
+                        <div class="form-group admin-dilemma-span-full">
+                            <label for="dilemma-title">Question</label>
+                            <input type="text" id="dilemma-title" maxlength="220" placeholder="Ex. Tu préfères…" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="dilemma-opt-a">Option A</label>
+                            <input type="text" id="dilemma-opt-a" maxlength="500" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="dilemma-opt-b">Option B</label>
+                            <input type="text" id="dilemma-opt-b" maxlength="500" required>
+                        </div>
+                    </div>
+                    <div class="admin-dilemma-actions">
+                        <button type="submit" class="btn btn-primary">Créer</button>
+                        <span id="dilemma-form-status" class="save-status"></span>
+                    </div>
+                </form>
+            </div>
+            <h2 class="admin-dilemma-h2">Dilemmes planifiés</h2>
+            <div id="dilemma-list" class="admin-dilemma-list"></div>
         </section>
 
         <!-- Logs -->

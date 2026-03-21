@@ -56,6 +56,7 @@ async function init() {
     setupBackup();
     setupHistoryModal();
     setupLogsSection();
+    setupDilemmas();
     await Promise.all([loadDashboard(), loadSettings()]);
     loadPriorityBanner();
     setInterval(() => {
@@ -86,6 +87,7 @@ function setupNavigation() {
             if (section === "locations") loadLocations();
             if (section === "dashboard") loadDashboard();
             if (section === "engagement") loadEngagement();
+            if (section === "dilemmas") loadDilemmas();
             if (section === "calibration") loadCalibration();
             if (section === "trace") setupTrace();
             if (section === "calibration-verify") loadCalibrationVerify();
@@ -273,6 +275,107 @@ function renderEngagement(s) {
             top.innerHTML = topList.map((x) => `<div class="mini-suggestion-item"><span class="mini-suggestion-title">${esc(x.title)}</span><span class="mini-suggestion-votes">🔥 ${Number(x.importance_score || 0).toFixed(1)} · ♥ ${x.vote_count}</span></div>`).join("");
         }
     }
+}
+
+function setupDilemmas() {
+    const form = document.getElementById("dilemma-form");
+    if (!form || form.dataset.bound) return;
+    form.dataset.bound = "1";
+    const statusEl = document.getElementById("dilemma-form-status");
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const title = document.getElementById("dilemma-title").value.trim();
+        const option_a = document.getElementById("dilemma-opt-a").value.trim();
+        const option_b = document.getElementById("dilemma-opt-b").value.trim();
+        const scheduled_day = document.getElementById("dilemma-day").value;
+        if (!scheduled_day) {
+            if (statusEl) statusEl.textContent = "Choisis une date.";
+            return;
+        }
+        const { data, status } = await API.post("/api/admin/dilemmas", { title, option_a, option_b, scheduled_day });
+        if (status === 201) {
+            if (statusEl) statusEl.textContent = "Créé.";
+            form.reset();
+            setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 2800);
+            loadDilemmas();
+        } else if (statusEl) statusEl.textContent = (data && data.error) || "Erreur";
+    });
+    const list = document.getElementById("dilemma-list");
+    if (list && !list.dataset.dilemmaBound) {
+        list.dataset.dilemmaBound = "1";
+        list.addEventListener("click", async (e) => {
+            const del = e.target.closest("[data-action='delete']");
+            const save = e.target.closest("[data-action='save']");
+            if (del) {
+                const id = parseInt(del.dataset.id, 10);
+                if (!confirm("Supprimer ce dilemme ? Les votes associés seront aussi supprimés.")) return;
+                const { status } = await API.delete(`/api/admin/dilemmas/${id}`);
+                if (status === 200) loadDilemmas();
+                return;
+            }
+            if (save) {
+                const id = parseInt(save.dataset.id, 10);
+                const card = save.closest(".admin-dilemma-card");
+                if (!card) return;
+                const title = card.querySelector(".admin-dilemma-edit-title").value.trim();
+                const option_a = card.querySelector(".admin-dilemma-edit-a").value.trim();
+                const option_b = card.querySelector(".admin-dilemma-edit-b").value.trim();
+                const scheduled_day = card.querySelector(".admin-dilemma-edit-day").value;
+                const { data, status } = await API.put(`/api/admin/dilemmas/${id}`, { title, option_a, option_b, scheduled_day });
+                if (status === 200) loadDilemmas();
+                else alert((data && data.error) || "Erreur");
+            }
+        });
+    }
+}
+
+async function loadDilemmas() {
+    const container = document.getElementById("dilemma-list");
+    if (!container) return;
+    try {
+        const rows = await API.get("/api/admin/dilemmas");
+        renderDilemmaList(rows);
+    } catch (e) {
+        console.error(e);
+        container.innerHTML = '<p class="empty-msg">Erreur de chargement</p>';
+    }
+}
+
+function renderDilemmaList(rows) {
+    const el = document.getElementById("dilemma-list");
+    if (!el) return;
+    if (!rows.length) {
+        el.innerHTML = '<p class="empty-msg">Aucun dilemme planifié.</p>';
+        return;
+    }
+    const v = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    el.innerHTML = rows.map((d) => `
+        <article class="admin-dilemma-card" data-id="${d.id}">
+            <header class="admin-dilemma-card-head">
+                <span class="admin-dilemma-day-pill">${esc(d.scheduled_day)}</span>
+                <button type="button" class="btn btn-sm btn-secondary" data-action="delete" data-id="${d.id}">Supprimer</button>
+            </header>
+            <div class="admin-dilemma-form-grid">
+                <div class="form-group admin-dilemma-span-full">
+                    <label>Question</label>
+                    <input type="text" class="admin-dilemma-edit-title" value="${v(d.title)}" maxlength="220">
+                </div>
+                <div class="form-group">
+                    <label>Option A</label>
+                    <input type="text" class="admin-dilemma-edit-a" value="${v(d.option_a)}" maxlength="500">
+                </div>
+                <div class="form-group">
+                    <label>Option B</label>
+                    <input type="text" class="admin-dilemma-edit-b" value="${v(d.option_b)}" maxlength="500">
+                </div>
+                <div class="form-group">
+                    <label>Date</label>
+                    <input type="date" class="admin-dilemma-edit-day" value="${v(d.scheduled_day)}">
+                </div>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" data-action="save" data-id="${d.id}">Enregistrer</button>
+        </article>
+    `).join("");
 }
 
 // ==================== Logs ====================

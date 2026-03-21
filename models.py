@@ -840,3 +840,44 @@ class DailyMood(db.Model):
     __table_args__ = (
         db.UniqueConstraint("session_id", "day", name="unique_mood_per_day"),
     )
+
+
+class Dilemma(db.Model):
+    """Dilemme planifié pour un jour (tous les élèves voient le même)."""
+    __tablename__ = "dilemmas"
+
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(220), nullable=False)
+    option_a = db.Column(db.String(500), nullable=False)
+    option_b = db.Column(db.String(500), nullable=False)
+    scheduled_day = db.Column(db.String(10), nullable=False, index=True)  # YYYY-MM-DD (Paris ou serveur)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("scheduled_day", name="unique_dilemma_per_day"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "option_a": self.option_a,
+            "option_b": self.option_b,
+            "scheduled_day": self.scheduled_day,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class DilemmaVote(db.Model):
+    """Vote A ou B pour un dilemme (une fois par session par dilemme)."""
+    __tablename__ = "dilemma_votes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    dilemma_id = db.Column(db.Integer, db.ForeignKey("dilemmas.id"), nullable=False)
+    session_id = db.Column(db.String(100), nullable=False)
+    side = db.Column(db.String(1), nullable=False)  # a | b
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("dilemma_id", "session_id", name="unique_dilemma_vote_per_session"),
+    )

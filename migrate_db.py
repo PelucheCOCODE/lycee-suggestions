@@ -184,6 +184,34 @@ def migrate():
         cur.execute("ALTER TABLE suggestions ADD COLUMN importance_score REAL DEFAULT 0")
         print("+ suggestions.importance_score")
 
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dilemmas'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE dilemmas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title VARCHAR(220) NOT NULL,
+                option_a VARCHAR(500) NOT NULL,
+                option_b VARCHAR(500) NOT NULL,
+                scheduled_day VARCHAR(10) NOT NULL,
+                created_at DATETIME,
+                UNIQUE (scheduled_day)
+            )
+        """)
+        print("+ table dilemmas")
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dilemma_votes'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE dilemma_votes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dilemma_id INTEGER NOT NULL REFERENCES dilemmas(id),
+                session_id VARCHAR(100) NOT NULL,
+                side VARCHAR(1) NOT NULL,
+                created_at DATETIME,
+                UNIQUE (dilemma_id, session_id)
+            )
+        """)
+        print("+ table dilemma_votes")
+
     conn.commit()
     conn.close()
     print("Migration terminée.")

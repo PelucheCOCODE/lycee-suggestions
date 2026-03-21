@@ -28,6 +28,7 @@ from models import (
     OfficialProposal, ProposalVote, ProposalArgument, CvlOfficialInfo, SchoolContext, SiteSettings, Presentation, Slide, DisplayPage, MediaFile, ScrapedNews,
     ActivityLog, TraceFeedback, Backup, SuggestionArchive,
     SuggestionImportance, DailySessionActivity, DailyPresence, EngagementCardDone, EngagementGuess, CommunityMessage, DailyMood,
+    Dilemma, DilemmaVote,
 )
 from ai_engine import AIEngine
 from content_filter import filter_content, filter_content_quick
@@ -45,6 +46,8 @@ app.config["SESSION_COOKIE_NAME"] = "lycee_session"
 app.config["MINIFY"] = os.environ.get("MINIFY", "true").lower() in ("1", "true", "yes")
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "cvl2026")
+# « true » = accès admin sans mot de passe (réactiver : ADMIN_PASSWORD_DISABLED=false)
+ADMIN_PASSWORD_DISABLED = os.environ.get("ADMIN_PASSWORD_DISABLED", "true").lower() in ("1", "true", "yes")
 
 # Rate limiting login (IP -> list of timestamps)
 _login_attempts: dict[str, list[float]] = {}
@@ -332,6 +335,28 @@ def _popularity_bucket(pct: float) -> str:
     return "gt60"
 
 
+def _dilemma_payload_for_session(session_id: str, day: str) -> dict | None:
+    d = Dilemma.query.filter_by(scheduled_day=day).first()
+    if not d:
+        return None
+    my = DilemmaVote.query.filter_by(dilemma_id=d.id, session_id=session_id).first()
+    total_a = DilemmaVote.query.filter_by(dilemma_id=d.id, side="a").count()
+    total_b = DilemmaVote.query.filter_by(dilemma_id=d.id, side="b").count()
+    tot = total_a + total_b
+    pct_a = round(100.0 * total_a / tot, 1) if tot else 0.0
+    pct_b = round(100.0 * total_b / tot, 1) if tot else 0.0
+    return {
+        "id": d.id,
+        "title": d.title,
+        "option_a": d.option_a,
+        "option_b": d.option_b,
+        "my_side": my.side if my else None,
+        "pct_a": pct_a,
+        "pct_b": pct_b,
+        "votes_total": tot,
+    }
+
+
 def _percentile_rank_today(session_id: str) -> tuple[int, int, float]:
     """(percentile 0-100, connected_today, my_score) — score = 2*likes + swipes."""
     day = _paris_today_str()
@@ -362,6 +387,8 @@ def _check_csrf_safe() -> bool:
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        if ADMIN_PASSWORD_DISABLED:
+            session["is_admin"] = True
         if not session.get("is_admin"):
             return jsonify({"error": "Non autorisé"}), 401
         if not _check_csrf_safe():
@@ -459,6 +486,8 @@ def display_page():
 
 @app.route("/admin")
 def admin_page():
+    if ADMIN_PASSWORD_DISABLED:
+        session["is_admin"] = True
     if not session.get("is_admin"):
         return render_template("admin_login.html")
     return render_template("admin.html")
@@ -466,6 +495,9 @@ def admin_page():
 
 @app.route("/admin/login", methods=["POST"])
 def admin_login():
+    if ADMIN_PASSWORD_DISABLED:
+        session["is_admin"] = True
+        return redirect(url_for("admin_page"))
     if _login_rate_limit():
         return render_template("admin_login.html", error="Trop de tentatives. Réessayez dans 5 minutes."), 429
     if request.is_json or request.content_type and "application/json" in (request.content_type or ""):
@@ -548,7 +580,61 @@ def engagement_bootstrap():
         "likes_today": row.like_count if row else 0,
         "cards_done_today": done,
         "guess_eligible_ids": guess_eligible_ids,
+        "dilemma": _dilemma_payload_for_session(session_id, day),
     })
+
+
+@app.route("/api/engagement/dilemma-vote", methods=["POST"])
+def engagement_dilemma_vote():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    ip = _client_ip()
+    if _ip_rate_exceeded(ip, "dilemma_vote", 40, 60):
+        return _ip_rate_response()
+    data = request.get_json() or {}
+    did = int(data.get("dilemma_id") or 0)
+    side = (data.get("side") or "").strip().lower()
+    if did <= 0 or side not in ("a", "b"):
+        return jsonify({"error": "Paramètres invalides"}), 400
+    day = _paris_today_str()
+    d = Dilemma.query.get(did)
+    if not d or d.scheduled_day != day:
+        return jsonify({"error": "Dilemme introuvable pour aujourd'hui"}), 404
+    session_id = get_session_id()
+    if DilemmaVote.query.filter_by(dilemma_id=did, session_id=session_id).first():
+        return jsonify({"error": "Tu as déjà voté"}), 409
+    db.session.add(DilemmaVote(dilemma_id=did, session_id=session_id, side=side))
+    db.session.commit()
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="dilemma").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="dilemma"))
+        db.session.commit()
+    return jsonify(_dilemma_payload_for_session(session_id, day))
+
+
+@app.route("/api/engagement/dilemma-skip", methods=["POST"])
+def engagement_dilemma_skip():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    session_id = get_session_id()
+    day = _paris_today_str()
+    if not Dilemma.query.filter_by(scheduled_day=day).first():
+        return jsonify({"error": "Pas de dilemme aujourd'hui"}), 404
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="dilemma").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="dilemma"))
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/engagement/ttt-dismiss", methods=["POST"])
+def engagement_ttt_dismiss():
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    session_id = get_session_id()
+    day = _paris_today_str()
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="ttt").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="ttt"))
+        db.session.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/engagement/ping", methods=["POST"])
@@ -2135,6 +2221,71 @@ def admin_engagement_stats():
             for s in top_hot
         ],
     })
+
+
+@app.route("/api/admin/dilemmas", methods=["GET"])
+@admin_required
+def admin_list_dilemmas():
+    rows = Dilemma.query.order_by(Dilemma.scheduled_day.desc()).all()
+    return jsonify([d.to_dict() for d in rows])
+
+
+@app.route("/api/admin/dilemmas", methods=["POST"])
+@admin_required
+def admin_create_dilemma():
+    data = request.get_json() or {}
+    title = (data.get("title") or "").strip()
+    option_a = (data.get("option_a") or "").strip()
+    option_b = (data.get("option_b") or "").strip()
+    scheduled_day = (data.get("scheduled_day") or "").strip()
+    if len(title) < 3:
+        return jsonify({"error": "Titre trop court"}), 400
+    if len(option_a) < 2 or len(option_b) < 2:
+        return jsonify({"error": "Les deux options sont requises"}), 400
+    if len(scheduled_day) != 10:
+        return jsonify({"error": "Date invalide (AAAA-MM-JJ)"}), 400
+    if Dilemma.query.filter_by(scheduled_day=scheduled_day).first():
+        return jsonify({"error": "Un dilemme existe déjà pour ce jour"}), 409
+    d = Dilemma(title=title[:220], option_a=option_a[:500], option_b=option_b[:500], scheduled_day=scheduled_day)
+    db.session.add(d)
+    db.session.commit()
+    return jsonify(d.to_dict()), 201
+
+
+@app.route("/api/admin/dilemmas/<int:did>", methods=["PUT"])
+@admin_required
+def admin_update_dilemma(did):
+    d = Dilemma.query.get_or_404(did)
+    data = request.get_json() or {}
+    if "title" in data:
+        t = (data.get("title") or "").strip()
+        if len(t) < 3:
+            return jsonify({"error": "Titre trop court"}), 400
+        d.title = t[:220]
+    if "option_a" in data:
+        d.option_a = (data.get("option_a") or "").strip()[:500]
+    if "option_b" in data:
+        d.option_b = (data.get("option_b") or "").strip()[:500]
+    if "scheduled_day" in data:
+        nd = (data.get("scheduled_day") or "").strip()
+        if len(nd) != 10:
+            return jsonify({"error": "Date invalide"}), 400
+        other = Dilemma.query.filter(Dilemma.scheduled_day == nd, Dilemma.id != did).first()
+        if other:
+            return jsonify({"error": "Ce jour est déjà pris"}), 409
+        d.scheduled_day = nd
+    db.session.commit()
+    return jsonify(d.to_dict())
+
+
+@app.route("/api/admin/dilemmas/<int:did>", methods=["DELETE"])
+@admin_required
+def admin_delete_dilemma(did):
+    d = Dilemma.query.get_or_404(did)
+    DilemmaVote.query.filter_by(dilemma_id=did).delete()
+    db.session.delete(d)
+    db.session.commit()
+    return jsonify({"ok": True})
 
 
 # --------------- API Lieux ---------------
