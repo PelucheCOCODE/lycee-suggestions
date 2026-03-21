@@ -43,7 +43,15 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = os.environ.get("HTTPS", "").lower() in ("1", "true", "yes")
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=400)
 app.config["SESSION_COOKIE_NAME"] = "lycee_session"
+# Session anonyme persistante (cookie) — aligné avec get_session_id() qui pose session.permanent = True
+app.config["SESSION_PERMANENT"] = True
 app.config["MINIFY"] = os.environ.get("MINIFY", "true").lower() in ("1", "true", "yes")
+
+
+@app.before_request
+def _ensure_anonymous_session_permanent():
+    """Toute requête : cookie de session prolongé (même avant le premier accès à visitor_id)."""
+    session.permanent = True
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "cvl2026")
 # « true » = accès admin sans mot de passe (réactiver : ADMIN_PASSWORD_DISABLED=false)
@@ -1230,6 +1238,63 @@ def _update_suggestion_vote_counts(sid: int):
     db.session.commit()
 
 
+def _vote_simple_suggestion_locked(sid: int, suggestion: Suggestion, session_id: str, data: dict):
+    """
+    Suggestion sans débat : intention explicite remove_vote true/false (idempotent).
+    - remove_vote True  → supprimer le vote s'il existe, sinon no-op
+    - remove_vote False → ajouter un vote « for » s'il n'existe pas, sinon no-op (déjà soutenu)
+    """
+    vote_type = data.get("vote_type") or "for"
+    if vote_type not in ("for", "against"):
+        vote_type = "for"
+    remove_vote = bool(data.get("remove_vote"))
+
+    existing_vote = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
+
+    if remove_vote:
+        if existing_vote:
+            db.session.delete(existing_vote)
+            db.session.commit()
+        _update_suggestion_vote_counts(sid)
+        suggestion = Suggestion.query.get(sid)
+        return jsonify(_pack_vote_json(suggestion, session_id, False, has_voted=False, my_vote=None))
+
+    if existing_vote:
+        _update_suggestion_vote_counts(sid)
+        suggestion = Suggestion.query.get(sid)
+        return jsonify(_pack_vote_json(suggestion, session_id, False, my_vote=existing_vote.vote_type, has_voted=True))
+
+    vote = Vote(suggestion_id=sid, session_id=session_id, vote_type=vote_type)
+    db.session.add(vote)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        _update_suggestion_vote_counts(sid)
+        suggestion = Suggestion.query.get(sid)
+        if not suggestion:
+            return jsonify({"error": "Synchronisation impossible.", "server_ts": _server_ts_ms()}), 500
+        ev = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
+        return jsonify(
+            _pack_vote_json(
+                suggestion,
+                session_id,
+                False,
+                has_voted=ev is not None,
+                my_vote=ev.vote_type if ev else None,
+            )
+        )
+
+    _update_suggestion_vote_counts(sid)
+    suggestion = Suggestion.query.get(sid)
+    if vote_type == "for":
+        try:
+            _increment_daily_activity(session_id, "like")
+        except Exception:
+            pass
+    return jsonify(_pack_vote_json(suggestion, session_id, False, my_vote=vote_type, has_voted=True))
+
+
 def _pack_vote_json(suggestion: Suggestion, session_id: str, needs_debate: bool, **overrides) -> dict:
     """État vote complet + server_ts (réconciliation client / désordre des réponses)."""
     my = Vote.query.filter_by(suggestion_id=suggestion.id, session_id=session_id).first()
@@ -1265,34 +1330,24 @@ def _vote_suggestion_locked(sid: int):
         return _vote_burst_response(sid, session_id, needs_debate)
 
     data = request.get_json() or {}
+    if not needs_debate:
+        return _vote_simple_suggestion_locked(sid, suggestion, session_id, data)
+
     vote_type = data.get("vote_type", "for")
     argument_text = (data.get("argument") or "").strip()
     remove_vote = bool(data.get("remove_vote"))
 
-    if needs_debate and vote_type not in ("for", "against"):
+    if vote_type not in ("for", "against"):
         vote_type = "for"
 
     existing_vote = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
 
-    # Retrait demandé alors qu’aucun vote en base : idempotent (évite d’ajouter un vote par erreur
-    # si le client était désynchronisé, ex. cache localStorage vs session).
     if not existing_vote and remove_vote:
         _update_suggestion_vote_counts(sid)
         suggestion = Suggestion.query.get(sid)
         return jsonify(_pack_vote_json(suggestion, session_id, needs_debate, has_voted=False, my_vote=None))
 
     if existing_vote:
-        if not needs_debate:
-            if remove_vote:
-                db.session.delete(existing_vote)
-                db.session.commit()
-                _update_suggestion_vote_counts(sid)
-                suggestion = Suggestion.query.get(sid)
-                return jsonify(_pack_vote_json(suggestion, session_id, False, has_voted=False, my_vote=None))
-            # Déjà soutenu : idempotent (pas de double comptage)
-            _update_suggestion_vote_counts(sid)
-            suggestion = Suggestion.query.get(sid)
-            return jsonify(_pack_vote_json(suggestion, session_id, False, my_vote=existing_vote.vote_type, has_voted=True))
         if existing_vote.vote_type == vote_type and not argument_text:
             return jsonify(_pack_vote_json(suggestion, session_id, True, my_vote=vote_type, has_voted=True))
         if existing_vote.vote_type == vote_type and argument_text:
@@ -1320,14 +1375,13 @@ def _vote_suggestion_locked(sid: int):
         vote = Vote(suggestion_id=sid, session_id=session_id, vote_type=vote_type)
         db.session.add(vote)
 
-    if needs_debate:
-        if vote_type == "for":
-            suggestion.vote_for = (getattr(suggestion, "vote_for", 0) or 0) + 1
-        else:
-            suggestion.vote_against = (getattr(suggestion, "vote_against", 0) or 0) + 1
+    if vote_type == "for":
+        suggestion.vote_for = (getattr(suggestion, "vote_for", 0) or 0) + 1
+    else:
+        suggestion.vote_against = (getattr(suggestion, "vote_against", 0) or 0) + 1
 
     pending_arg_ids = []
-    if argument_text and needs_debate:
+    if argument_text:
         ok, msg = filter_content_quick(argument_text)
         if not ok:
             return jsonify({"error": msg}), 400
@@ -1364,11 +1418,6 @@ def _vote_suggestion_locked(sid: int):
         _process_suggestion_argument_background(aid)
 
     resp = _pack_vote_json(suggestion, session_id, needs_debate, my_vote=vote_type, has_voted=True)
-    if not needs_debate and vote_type == "for":
-        try:
-            _increment_daily_activity(session_id, "like")
-        except Exception:
-            pass
     return jsonify(resp)
 
 

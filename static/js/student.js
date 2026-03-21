@@ -271,6 +271,7 @@ function patchSwipeVoteUiForCurrentCard() {
     if (swipeDragging) return;
     const card = swipeDeckInner.querySelector(`#swipe-active-layer .swipe-card[data-id="${s.id}"]`);
     if (!card) return;
+    card.dataset.hasVoted = s.has_voted ? "true" : "false";
     if (!s.needs_debate) {
         card.classList.toggle("swipe-card--liked", s.has_voted === true);
         const big = card.querySelector(".swipe-card-votes-big");
@@ -441,6 +442,17 @@ function voteLockOrClaimActive(suggestionId) {
 
 /** Si le poll arrive avec un server_ts plus ancien qu’un vote déjà appliqué, on garde les champs vote côté client. */
 function applyPollVoteMerge(prev, incoming) {
+    // Requête POST /vote en cours pour cette suggestion : ne pas écraser l’état vote avec un poll concurrent
+    if (voteLocksBySuggestionId.has(incoming.id)) {
+        return {
+            ...incoming,
+            vote_count: prev.vote_count,
+            has_voted: prev.has_voted,
+            my_vote: prev.my_vote,
+            vote_for: prev.vote_for,
+            vote_against: prev.vote_against,
+        };
+    }
     const incTs = incoming.server_ts ?? 0;
     const gate = lastVoteServerTs[incoming.id] ?? 0;
     const claim = voteLockOrClaimActive(incoming.id);
@@ -1026,7 +1038,8 @@ function syncOfficialProposalArgumentLists(card, p) {
     if (againstUl) againstUl.innerHTML = againstList || "<li class=\"none\">Aucun</li>";
 }
 
-function updateSuggestionsInPlace() {
+function updateSuggestionsInPlace(opts = {}) {
+    const forceVoteUi = opts.forceVoteUi === true;
     const showCount = expanded ? allSuggestions.length : INITIAL_SHOW;
     const visible = allSuggestions.slice(0, showCount);
     visible.forEach((s) => {
@@ -1059,7 +1072,13 @@ function updateSuggestionsInPlace() {
             stBadge.textContent = s.status;
             stBadge.setAttribute("data-status", s.status);
         }
-        if (!s.needs_debate) card.classList.toggle("suggestion-card--user-voted", s.has_voted === true);
+        const voteLocked = voteLocksBySuggestionId.has(s.id) && !forceVoteUi;
+        if (!voteLocked) {
+            card.dataset.hasVoted = s.has_voted ? "true" : "false";
+        }
+        if (!s.needs_debate && !voteLocked) {
+            card.classList.toggle("suggestion-card--user-voted", s.has_voted === true);
+        }
         const meta = card.querySelector(".suggestion-meta");
         let locBadge = card.querySelector(".badge-location");
         if (s.location_name) {
@@ -1075,27 +1094,28 @@ function updateSuggestionsInPlace() {
         const voteAgainst = card.querySelector(".cvl-vote-against[data-id]");
         const voteBtn = card.querySelector(".suggestion-vote-btn");
         const voteCount = card.querySelector(".suggestion-vote-count");
-        if (voteFor) {
+        if (voteFor && !voteLocked) {
             const t = `Pour ${s.vote_for || 0}`;
             if (voteFor.textContent !== t) tickLiveField(voteFor);
             voteFor.textContent = t;
             voteFor.classList.toggle("active", s.my_vote === "for");
         }
-        if (voteAgainst) {
+        if (voteAgainst && !voteLocked) {
             const t = `Contre ${s.vote_against || 0}`;
             if (voteAgainst.textContent !== t) tickLiveField(voteAgainst);
             voteAgainst.textContent = t;
             voteAgainst.classList.toggle("active", s.my_vote === "against");
         }
-        if (voteBtn) {
+        if (voteBtn && !voteLocked) {
             const t = (s.has_voted ? "✓ Soutenu" : "♥ Soutenir") + " · " + s.vote_count;
             if (voteBtn.textContent !== t) tickLiveField(voteBtn);
             voteBtn.textContent = t;
             voteBtn.classList.toggle("voted", s.has_voted);
             voteBtn.disabled = false;
             voteBtn.setAttribute("aria-pressed", s.has_voted ? "true" : "false");
+            voteBtn.dataset.hasVoted = s.has_voted ? "true" : "false";
         }
-        if (voteCount) {
+        if (voteCount && !voteLocked) {
             const t = `${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}${s.has_voted ? " · Soutenu" : ""}`;
             if (voteCount.textContent !== t) tickLiveField(voteCount);
             voteCount.textContent = t;
@@ -1581,6 +1601,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
     const fadeClass = isFading ? " suggestion-card-fade" : "";
     const hotClass = s.hot ? " suggestion-card-hot" : "";
     const userVotedBand = !needsDebate && s.has_voted === true ? " suggestion-card--user-voted" : "";
+    const hvAttr = s.has_voted ? "true" : "false";
     const delay = withAnimation ? index * 60 : 0;
 
     const subtitle = s.subtitle ? `<p class="suggestion-subtitle">${escapeHtml(s.subtitle)}</p>` : "";
@@ -1604,7 +1625,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
             </div>
         `;
     } else {
-        voteBtn = `<button type="button" class="suggestion-vote-btn${votedClass}" data-id="${s.id}" aria-pressed="${s.has_voted ? "true" : "false"}">${voteLabel} · ${s.vote_count}</button>`;
+        voteBtn = `<button type="button" class="suggestion-vote-btn${votedClass}" data-id="${s.id}" data-has-voted="${hvAttr}" aria-pressed="${s.has_voted ? "true" : "false"}">${voteLabel} · ${s.vote_count}</button>`;
     }
 
     let argsHtml = "";
@@ -1644,7 +1665,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
     ` : "";
 
     return `
-        <div class="suggestion-card${fadeClass}${needsDebate ? " suggestion-card-debate" : ""}${hotClass}${userVotedBand}" style="animation-delay:${delay}ms" data-id="${s.id}">
+        <div class="suggestion-card${fadeClass}${needsDebate ? " suggestion-card-debate" : ""}${hotClass}${userVotedBand}" style="animation-delay:${delay}ms" data-id="${s.id}" data-has-voted="${hvAttr}">
             <div class="suggestion-card-header">
                 <div class="suggestion-title-block">
                     <span class="suggestion-title">${icon} ${escapeHtml(s.title)}</span>
@@ -1823,6 +1844,28 @@ function triggerHeartBurst(card) {
 
 // --------------- Vote — couche unique ----------------
 
+/** Lit l’intention « déjà soutenu » depuis le DOM (prioritaire au clic). */
+function readDomHasVotedForSuggestion(suggestionId) {
+    const listCard = suggestionsContainer.querySelector(`.suggestion-card[data-id="${suggestionId}"]`);
+    const swipeC = swipeDeckInner && swipeDeckInner.querySelector(`.swipe-card[data-id="${suggestionId}"]`);
+    const btn = suggestionsContainer.querySelector(`.suggestion-vote-btn[data-id="${suggestionId}"]`);
+    const el = listCard || swipeC;
+    if (el && el.dataset.hasVoted !== undefined) {
+        return el.dataset.hasVoted === "true";
+    }
+    if (btn && btn.dataset.hasVoted !== undefined) {
+        return btn.dataset.hasVoted === "true";
+    }
+    return null;
+}
+
+function rollbackVoteDomForSuggestion(suggestionId) {
+    const s = allSuggestions.find((x) => x.id === suggestionId);
+    if (!s) return;
+    if (isTouchDevice() && phoneUiMode === "swipe") patchSwipeVoteUiForCurrentCard();
+    else updateSuggestionsInPlace({ forceVoteUi: true });
+}
+
 /** Normalise has_voted / my_vote après fetch ou merge poll (évite undefined, chaînes, etc.). */
 function normalizeSuggestionVoteState(s) {
     if (!s) return;
@@ -1838,7 +1881,7 @@ function refreshVoteDomAfterSuggestionAction(s) {
         return;
     }
     if (!s.needs_debate) {
-        updateSuggestionsInPlace();
+        updateSuggestionsInPlace({ forceVoteUi: true });
         reorderSuggestionCards();
     } else {
         renderSuggestionsSilent();
@@ -1864,11 +1907,24 @@ async function submitSuggestionVoteAction(p) {
     const s = allSuggestions.find((x) => x.id === id);
     if (!s) return false;
 
+    const prevSnapshot = {
+        has_voted: s.has_voted === true,
+        my_vote: s.my_vote,
+        vote_count: s.vote_count,
+        vote_for: s.vote_for,
+        vote_against: s.vote_against,
+    };
+
+    let domHasVoted = null;
+    if (!s.needs_debate && mode === "simple_toggle") {
+        domHasVoted = readDomHasVotedForSuggestion(id);
+    }
+
     let removeVote = false;
     if (s.needs_debate) {
         removeVote = false;
     } else if (mode === "simple_toggle") {
-        removeVote = s.has_voted === true;
+        removeVote = domHasVoted !== null ? domHasVoted === true : s.has_voted === true;
     } else {
         if (opts.removeVote === true) removeVote = true;
         else removeVote = s.has_voted === true;
@@ -1902,8 +1958,8 @@ async function submitSuggestionVoteAction(p) {
         if (s.needs_debate) {
             body.vote_type = voteType || "for";
             if (argument) body.argument = argument;
-        } else if (removeVote) {
-            body.remove_vote = true;
+        } else {
+            body.remove_vote = removeVote === true;
         }
         const { data, status } = await API.post(`/api/suggestions/${id}/vote`, body);
         if (status === 429 && data && typeof data.vote_count === "number") {
@@ -1922,6 +1978,9 @@ async function submitSuggestionVoteAction(p) {
         }
         if (status === 429) {
             showFeedback((data && data.error) || "Trop de requêtes. Réessayez plus tard.", "error");
+            Object.assign(s, prevSnapshot);
+            normalizeSuggestionVoteState(s);
+            rollbackVoteDomForSuggestion(id);
             return false;
         }
         if (status === 200) {
@@ -1971,8 +2030,14 @@ async function submitSuggestionVoteAction(p) {
         } else if (status >= 400) {
             showFeedback("Impossible de mettre à jour le vote. Réessaie.", "error");
         }
+        Object.assign(s, prevSnapshot);
+        normalizeSuggestionVoteState(s);
+        rollbackVoteDomForSuggestion(id);
     } catch (err) {
         console.warn("submitSuggestionVoteAction", err);
+        Object.assign(s, prevSnapshot);
+        normalizeSuggestionVoteState(s);
+        rollbackVoteDomForSuggestion(id);
         showFeedback("Erreur de connexion au serveur.", "error");
     } finally {
         releaseVoteLock(id, lockToken);
@@ -1980,8 +2045,17 @@ async function submitSuggestionVoteAction(p) {
         suggestionsContainer.querySelectorAll(`.suggestion-vote-btn[data-id="${id}"]`).forEach((b) => {
             b.disabled = false;
             b.removeAttribute("aria-busy");
-            if (s2 && !s2.needs_debate) b.setAttribute("aria-pressed", s2.has_voted ? "true" : "false");
+            if (s2 && !s2.needs_debate) {
+                b.setAttribute("aria-pressed", s2.has_voted ? "true" : "false");
+                b.dataset.hasVoted = s2.has_voted ? "true" : "false";
+            }
         });
+        const listCardDone = suggestionsContainer.querySelector(`.suggestion-card[data-id="${id}"]`);
+        if (listCardDone && s2) listCardDone.dataset.hasVoted = s2.has_voted ? "true" : "false";
+        if (swipeDeckInner && s2) {
+            const scDone = swipeDeckInner.querySelector(`.swipe-card[data-id="${id}"]`);
+            if (scDone) scDone.dataset.hasVoted = s2.has_voted ? "true" : "false";
+        }
         debateVoteBtns().forEach((b) => {
             b.disabled = false;
             b.removeAttribute("aria-busy");
@@ -2464,7 +2538,7 @@ function createSwipeCardHtml(s) {
     const hotClass = s.hot ? " swipe-card--hot" : "";
     if (debate) {
         return `
-        <div class="swipe-card swipe-card--dating swipe-card--debate${hotClass}" data-id="${s.id}" data-debate="1">
+        <div class="swipe-card swipe-card--dating swipe-card--debate${hotClass}" data-id="${s.id}" data-debate="1" data-has-voted="${s.has_voted ? "true" : "false"}">
             <div class="swipe-card-inner">
                 <span class="swipe-debate-pill">Débat</span>
                 <div class="suggestion-title-block">
@@ -2485,7 +2559,7 @@ function createSwipeCardHtml(s) {
         </div>`;
     }
     return `
-        <div class="swipe-card swipe-card--dating${hotClass}${liked ? " swipe-card--liked" : ""}" data-id="${s.id}">
+        <div class="swipe-card swipe-card--dating${hotClass}${liked ? " swipe-card--liked" : ""}" data-id="${s.id}" data-has-voted="${liked ? "true" : "false"}">
             <div class="swipe-card-inner">
                 <div class="suggestion-title-block">
                     <span class="swipe-card-emoji" aria-hidden="true">${icon}</span>
