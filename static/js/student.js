@@ -134,6 +134,8 @@ const voteLocksBySuggestionId = new Map();
 const lastVoteServerTs = {};
 /** Cooldown par suggestion après une action vote simple réussie (toggle add/remove). */
 const suggestionVoteCooldownUntil = {};
+/** Entre deux double-tap vote sur la même suggestion (mode découvrir) — anti-spam gestuel. */
+const swipeDoubleTapVoteCooldownUntil = {};
 let pendingOfficialProposalVote = false;
 
 // --------------- DOM ---------------
@@ -1844,17 +1846,81 @@ function triggerHeartBurst(card) {
 
 // --------------- Vote — couche unique ----------------
 
-/** Lit l’intention « déjà soutenu » depuis le DOM (prioritaire au clic). */
-function readDomHasVotedForSuggestion(suggestionId) {
-    const listCard = suggestionsContainer.querySelector(`.suggestion-card[data-id="${suggestionId}"]`);
-    const swipeC = swipeDeckInner && swipeDeckInner.querySelector(`.swipe-card[data-id="${suggestionId}"]`);
-    const btn = suggestionsContainer.querySelector(`.suggestion-vote-btn[data-id="${suggestionId}"]`);
-    const el = listCard || swipeC;
-    if (el && el.dataset.hasVoted !== undefined) {
-        return el.dataset.hasVoted === "true";
+/** Carte swipe active (layer courant) — même cible que patchSwipeVoteUiForCurrentCard. */
+function getSwipeActiveCardForSuggestion(suggestionId) {
+    if (!swipeDeckInner) return null;
+    return (
+        swipeDeckInner.querySelector(`#swipe-active-layer .swipe-card[data-id="${suggestionId}"]`) ||
+        swipeDeckInner.querySelector(`.swipe-card[data-id="${suggestionId}"]`)
+    );
+}
+
+/** Rose / cœur actif (swipe) : prioritaire sur data-has-voted obsolète. */
+function swipeCardVisuallyLiked(card) {
+    if (!card) return false;
+    if (card.classList.contains("swipe-card--liked")) return true;
+    if (card.querySelector(".swipe-card-votes-big--liked")) return true;
+    return false;
+}
+
+/** Bande « déjà voté » sur la carte liste. */
+function listCardVisuallyLiked(card) {
+    return !!(card && card.classList.contains("suggestion-card--user-voted"));
+}
+
+/** État visuel « liké » pour la suggestion (swipe actif ou carte liste). */
+function domVisuallyLikedForSuggestion(suggestionId) {
+    return (
+        swipeCardVisuallyLiked(getSwipeActiveCardForSuggestion(suggestionId)) ||
+        listCardVisuallyLiked(suggestionsContainer.querySelector(`.suggestion-card[data-id="${suggestionId}"]`))
+    );
+}
+
+/** Infère true / false / inconnu depuis un bouton vote ou une carte (priorité visuel > data-*). */
+function inferVoteStateFromElement(node) {
+    if (!node) return null;
+    if (node.classList.contains("suggestion-vote-btn")) {
+        if (node.dataset.hasVoted === "true") return true;
+        if (node.dataset.hasVoted === "false") return false;
+        if (node.classList.contains("voted")) return true;
+        if (node.getAttribute("aria-pressed") === "true") return true;
+        return null;
     }
-    if (btn && btn.dataset.hasVoted !== undefined) {
-        return btn.dataset.hasVoted === "true";
+    if (swipeCardVisuallyLiked(node)) return true;
+    if (listCardVisuallyLiked(node)) return true;
+    if (node.dataset.hasVoted === "true") return true;
+    if (node.dataset.hasVoted === "false") return false;
+    return null;
+}
+
+/** Lit l’intention « déjà soutenu » depuis le DOM (prioritaire au clic). En mode swipe, la carte liste est souvent absente ou obsolète → priorité à la carte swipe + état visuel (rose).
+ * @param {number} suggestionId
+ * @param {Element} [hintEl] — ex. carte `.swipe-card` du double-tap (même nœud que le geste) */
+function readDomHasVotedForSuggestion(suggestionId, hintEl) {
+    if (hintEl) {
+        const hid = hintEl.dataset?.id != null ? parseInt(hintEl.dataset.id, 10) : NaN;
+        if (hid === suggestionId) {
+            const hv = inferVoteStateFromElement(hintEl);
+            if (hv !== null) return hv;
+        }
+    }
+    const listCard = suggestionsContainer.querySelector(`.suggestion-card[data-id="${suggestionId}"]`);
+    const swipeC = getSwipeActiveCardForSuggestion(suggestionId);
+    const btn = suggestionsContainer.querySelector(`.suggestion-vote-btn[data-id="${suggestionId}"]`);
+    const swipeMode = isTouchDevice() && phoneUiMode === "swipe";
+
+    function inferFromNode(node) {
+        return inferVoteStateFromElement(node);
+    }
+
+    const primary = swipeMode ? swipeC || listCard : listCard || swipeC;
+    let v = inferFromNode(primary);
+    if (v !== null) return v;
+    v = inferFromNode(swipeMode ? listCard : swipeC);
+    if (v !== null) return v;
+    if (btn) {
+        const bv = inferVoteStateFromElement(btn);
+        if (bv !== null) return bv;
     }
     return null;
 }
@@ -1917,22 +1983,29 @@ async function submitSuggestionVoteAction(p) {
 
     let domHasVoted = null;
     if (!s.needs_debate && mode === "simple_toggle") {
-        domHasVoted = readDomHasVotedForSuggestion(id);
+        domHasVoted = readDomHasVotedForSuggestion(id, opts.voteDomCard || null);
     }
 
     let removeVote = false;
     if (s.needs_debate) {
         removeVote = false;
     } else if (mode === "simple_toggle") {
-        removeVote = domHasVoted !== null ? domHasVoted === true : s.has_voted === true;
+        const memLiked = s.has_voted === true;
+        const visualLiked = domVisuallyLikedForSuggestion(id);
+        if (domHasVoted === true) removeVote = true;
+        else if (domHasVoted === false) removeVote = visualLiked || memLiked;
+        else removeVote = memLiked;
     } else {
         if (opts.removeVote === true) removeVote = true;
         else removeVote = s.has_voted === true;
     }
 
     if (!s.needs_debate) {
-        if (removeVote && s.has_voted !== true) return false;
-        if (!removeVote && s.has_voted === true) return false;
+        // simple_toggle : ne pas bloquer sur s.has_voted (souvent désynchronisé du DOM / poll).
+        if (mode !== "simple_toggle") {
+            if (removeVote && s.has_voted !== true) return false;
+            if (!removeVote && s.has_voted === true) return false;
+        }
         // Cooldown uniquement sur l’ajout (anti-spam) — ne jamais bloquer le retrait (unlike).
         if (!removeVote && Date.now() < (suggestionVoteCooldownUntil[id] || 0)) return false;
     }
@@ -3004,12 +3077,16 @@ function attachSwipeDeckGestures() {
                 const id = parseInt(card.dataset.id, 10);
                 const sug = allSuggestions.find((x) => x.id === id);
                 if (!sug || sug.needs_debate) return;
+                if (Date.now() < (swipeDoubleTapVoteCooldownUntil[id] || 0)) return;
+                swipeDoubleTapVoteCooldownUntil[id] = Date.now() + 520;
                 const cx = t.clientX;
                 const cy = t.clientY;
                 void submitSuggestionVoteAction({
                     suggestionId: id,
                     mode: "simple_toggle",
-                    opts: { igBurstAt: { x: cx, y: cy } },
+                    opts: { igBurstAt: { x: cx, y: cy }, voteDomCard: card },
+                }).then((ok) => {
+                    if (ok) swipeDoubleTapVoteCooldownUntil[id] = Date.now() + 520;
                 });
             } else {
                 swipeLastTap = now;
