@@ -268,26 +268,27 @@ function patchSwipeVoteUiForCurrentCard() {
     if (!item || item.kind !== "suggestion") return;
     const s = allSuggestions.find((x) => x.id === item.id);
     if (!s) return;
-    // Ne pas bloquer sur voteLockOrClaimActive : allSuggestions est déjà la vérité après vote / merge poll.
-    // Bloquer ici empêchait toute MAJ swipe pendant le lock + la fenêtre optimiste (~14s).
     if (swipeDragging) return;
     const card = swipeDeckInner.querySelector(`#swipe-active-layer .swipe-card[data-id="${s.id}"]`);
     if (!card) return;
-    card.dataset.hasVoted = s.has_voted ? "true" : "false";
+    const hasVoted = s.has_voted === true;
+
     if (!s.needs_debate) {
-        card.classList.toggle("swipe-card--liked", s.has_voted === true);
+        card.dataset.hasVoted = hasVoted ? "true" : "false";
+        card.classList.toggle("swipe-card--liked", hasVoted);
         const big = card.querySelector(".swipe-card-votes-big");
         if (big) {
-            big.classList.toggle("swipe-card-votes-big--liked", s.has_voted === true);
+            big.classList.toggle("swipe-card-votes-big--liked", hasVoted);
             const t = `♥ ${s.vote_count}`;
             if (big.textContent !== t) tickLiveField(big);
             big.textContent = t;
         }
         const hint = card.querySelector(".swipe-card-hint:not(.swipe-card-hint-debate-inner)");
         if (hint) {
-            hint.textContent = s.has_voted ? "Double tap · retirer le soutien" : "Double tap · soutenir";
+            hint.textContent = hasVoted ? "Double tap · retirer le soutien" : "Double tap · soutenir";
         }
     } else {
+        card.dataset.hasVoted = hasVoted ? "true" : "false";
         const vf = card.querySelector(".swipe-debate-score--for");
         const va = card.querySelector(".swipe-debate-score--against");
         if (vf) {
@@ -442,7 +443,10 @@ function voteLockOrClaimActive(suggestionId) {
     );
 }
 
-/** Si le poll arrive avec un server_ts plus ancien qu’un vote déjà appliqué, on garde les champs vote côté client. */
+/**
+ * Si le poll arrive avec un server_ts plus ancien qu’un vote déjà appliqué, on garde les champs vote côté client.
+ * Le DOM (data-has-voted, classes) doit suivre l’objet fusionné : voir syncPollVoteDomToMatchSuggestions + updateSuggestionsInPlace.
+ */
 function applyPollVoteMerge(prev, incoming) {
     // Requête POST /vote en cours pour cette suggestion : ne pas écraser l’état vote avec un poll concurrent
     if (voteLocksBySuggestionId.has(incoming.id)) {
@@ -469,6 +473,31 @@ function applyPollVoteMerge(prev, incoming) {
         };
     }
     return incoming;
+}
+
+/** Liste : aligne data-has-voted, bande utilisateur et bouton sur `s` (source = allSuggestions après merge / réponse vote). */
+function syncSimpleVoteListCardDom(s) {
+    if (!s || s.needs_debate) return;
+    const listCard = suggestionsContainer.querySelector(`.suggestion-card[data-id="${s.id}"]`);
+    if (!listCard) return;
+    listCard.dataset.hasVoted = s.has_voted ? "true" : "false";
+    listCard.classList.toggle("suggestion-card--user-voted", s.has_voted === true);
+    const btn = listCard.querySelector(".suggestion-vote-btn");
+    if (!btn) return;
+    const t = `${s.has_voted ? "✓ Soutenu" : "♥ Soutenir"} · ${s.vote_count}`;
+    if (btn.textContent !== t) tickLiveField(btn);
+    btn.textContent = t;
+    btn.classList.toggle("voted", s.has_voted);
+    btn.dataset.hasVoted = s.has_voted ? "true" : "false";
+    btn.setAttribute("aria-pressed", s.has_voted ? "true" : "false");
+}
+
+/** Après poll : le merge mémoire peut préserver has_voted — recopier sur les cartes liste + swipe active. */
+function syncPollVoteDomToMatchSuggestions() {
+    for (const s of allSuggestions) {
+        if (!s.needs_debate) syncSimpleVoteListCardDom(s);
+    }
+    if (isTouchDevice() && phoneUiMode === "swipe") patchSwipeVoteUiForCurrentCard();
 }
 
 let lastIdsSignature = "";
@@ -628,7 +657,7 @@ function scheduleDeferredPollDomApply() {
         try {
             updateSuggestionsInPlace();
             reorderSuggestionCards();
-            if (isTouchDevice() && phoneUiMode === "swipe") patchSwipeVoteUiForCurrentCard();
+            syncPollVoteDomToMatchSuggestions();
         } catch (e) {
             console.warn("deferredPollDomApply", e);
         }
@@ -928,9 +957,10 @@ async function loadSuggestions(opts = {}) {
             }
             if (swipeDeckRebuiltThisLoad) {
                 renderSwipeView();
-            } else {
-                patchSwipeVoteUiForCurrentCard();
             }
+        }
+        if (!skipHeavyDom) {
+            syncPollVoteDomToMatchSuggestions();
         }
         if (pollBoostCycles > 0) pollBoostCycles -= 1;
     } catch (err) {
@@ -1075,11 +1105,11 @@ function updateSuggestionsInPlace(opts = {}) {
             stBadge.setAttribute("data-status", s.status);
         }
         const voteLocked = voteLocksBySuggestionId.has(s.id) && !forceVoteUi;
-        if (!voteLocked) {
+        if (!s.needs_debate) {
             card.dataset.hasVoted = s.has_voted ? "true" : "false";
-        }
-        if (!s.needs_debate && !voteLocked) {
             card.classList.toggle("suggestion-card--user-voted", s.has_voted === true);
+        } else if (!voteLocked) {
+            card.dataset.hasVoted = s.has_voted ? "true" : "false";
         }
         const meta = card.querySelector(".suggestion-meta");
         let locBadge = card.querySelector(".badge-location");
@@ -1108,7 +1138,7 @@ function updateSuggestionsInPlace(opts = {}) {
             voteAgainst.textContent = t;
             voteAgainst.classList.toggle("active", s.my_vote === "against");
         }
-        if (voteBtn && !voteLocked) {
+        if (voteBtn) {
             const t = (s.has_voted ? "✓ Soutenu" : "♥ Soutenir") + " · " + s.vote_count;
             if (voteBtn.textContent !== t) tickLiveField(voteBtn);
             voteBtn.textContent = t;
@@ -1855,74 +1885,34 @@ function getSwipeActiveCardForSuggestion(suggestionId) {
     );
 }
 
-/** Rose / cœur actif (swipe) : prioritaire sur data-has-voted obsolète. */
-function swipeCardVisuallyLiked(card) {
-    if (!card) return false;
-    if (card.classList.contains("swipe-card--liked")) return true;
-    if (card.querySelector(".swipe-card-votes-big--liked")) return true;
-    return false;
-}
-
-/** Bande « déjà voté » sur la carte liste. */
-function listCardVisuallyLiked(card) {
-    return !!(card && card.classList.contains("suggestion-card--user-voted"));
-}
-
-/** État visuel « liké » pour la suggestion (swipe actif ou carte liste). */
-function domVisuallyLikedForSuggestion(suggestionId) {
-    return (
-        swipeCardVisuallyLiked(getSwipeActiveCardForSuggestion(suggestionId)) ||
-        listCardVisuallyLiked(suggestionsContainer.querySelector(`.suggestion-card[data-id="${suggestionId}"]`))
-    );
-}
-
-/** Infère true / false / inconnu depuis un bouton vote ou une carte (priorité visuel > data-*). */
-function inferVoteStateFromElement(node) {
-    if (!node) return null;
-    if (node.classList.contains("suggestion-vote-btn")) {
-        if (node.dataset.hasVoted === "true") return true;
-        if (node.dataset.hasVoted === "false") return false;
-        if (node.classList.contains("voted")) return true;
-        if (node.getAttribute("aria-pressed") === "true") return true;
-        return null;
+/**
+ * Nœud pour lire data-has-voted (toggle) : voteDomCard si fourni, sinon swipe active, sinon carte liste, sinon bouton.
+ */
+function getDomNodeForToggleVote(suggestionId, voteDomCard) {
+    if (voteDomCard) {
+        const hid = voteDomCard.dataset?.id != null ? parseInt(voteDomCard.dataset.id, 10) : NaN;
+        if (hid === suggestionId) return voteDomCard;
     }
-    if (swipeCardVisuallyLiked(node)) return true;
-    if (listCardVisuallyLiked(node)) return true;
-    if (node.dataset.hasVoted === "true") return true;
-    if (node.dataset.hasVoted === "false") return false;
-    return null;
-}
-
-/** Lit l’intention « déjà soutenu » depuis le DOM (prioritaire au clic). En mode swipe, la carte liste est souvent absente ou obsolète → priorité à la carte swipe + état visuel (rose).
- * @param {number} suggestionId
- * @param {Element} [hintEl] — ex. carte `.swipe-card` du double-tap (même nœud que le geste) */
-function readDomHasVotedForSuggestion(suggestionId, hintEl) {
-    if (hintEl) {
-        const hid = hintEl.dataset?.id != null ? parseInt(hintEl.dataset.id, 10) : NaN;
-        if (hid === suggestionId) {
-            const hv = inferVoteStateFromElement(hintEl);
-            if (hv !== null) return hv;
-        }
+    if (isTouchDevice() && phoneUiMode === "swipe") {
+        const c = getSwipeActiveCardForSuggestion(suggestionId);
+        if (c) return c;
     }
     const listCard = suggestionsContainer.querySelector(`.suggestion-card[data-id="${suggestionId}"]`);
-    const swipeC = getSwipeActiveCardForSuggestion(suggestionId);
-    const btn = suggestionsContainer.querySelector(`.suggestion-vote-btn[data-id="${suggestionId}"]`);
-    const swipeMode = isTouchDevice() && phoneUiMode === "swipe";
+    if (listCard) return listCard;
+    return suggestionsContainer.querySelector(`.suggestion-vote-btn[data-id="${suggestionId}"]`);
+}
 
-    function inferFromNode(node) {
-        return inferVoteStateFromElement(node);
-    }
-
-    const primary = swipeMode ? swipeC || listCard : listCard || swipeC;
-    let v = inferFromNode(primary);
-    if (v !== null) return v;
-    v = inferFromNode(swipeMode ? listCard : swipeC);
-    if (v !== null) return v;
-    if (btn) {
-        const bv = inferVoteStateFromElement(btn);
-        if (bv !== null) return bv;
-    }
-    return null;
+/**
+ * removeVote pour POST : true = retirer le soutien. Basé sur data-has-voted du nœud actif uniquement ;
+ * si l’attribut manque, repli sur s.has_voted (jamais seul comme règle principale quand data est présent).
+ */
+function removeVoteFromDataHasVotedAttribute(suggestionId, voteDomCard, s) {
+    const el = getDomNodeForToggleVote(suggestionId, voteDomCard);
+    if (!el) return s.has_voted === true;
+    const raw = el.dataset.hasVoted;
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    return s.has_voted === true;
 }
 
 function rollbackVoteDomForSuggestion(suggestionId) {
@@ -1940,17 +1930,22 @@ function normalizeSuggestionVoteState(s) {
     else if (s.my_vote == null || s.my_vote === "") s.my_vote = "for";
 }
 
-/** Après réponse vote : patch ciblé (liste simple) ou re-render débat si la structure des panneaux change. */
+/** Après réponse vote : allSuggestions est déjà à jour — recopie sur liste + swipe (data-has-voted, classes, compteurs). */
 function refreshVoteDomAfterSuggestionAction(s) {
-    if (isTouchDevice() && phoneUiMode === "swipe") {
-        patchSwipeVoteUiForCurrentCard();
+    if (s.needs_debate) {
+        if (isTouchDevice() && phoneUiMode === "swipe") {
+            patchSwipeVoteUiForCurrentCard();
+        } else {
+            renderSuggestionsSilent();
+        }
         return;
     }
-    if (!s.needs_debate) {
+    syncSimpleVoteListCardDom(s);
+    if (isTouchDevice() && phoneUiMode === "swipe") {
+        patchSwipeVoteUiForCurrentCard();
+    } else {
         updateSuggestionsInPlace({ forceVoteUi: true });
         reorderSuggestionCards();
-    } else {
-        renderSuggestionsSilent();
     }
 }
 
@@ -1981,20 +1976,11 @@ async function submitSuggestionVoteAction(p) {
         vote_against: s.vote_against,
     };
 
-    let domHasVoted = null;
-    if (!s.needs_debate && mode === "simple_toggle") {
-        domHasVoted = readDomHasVotedForSuggestion(id, opts.voteDomCard || null);
-    }
-
     let removeVote = false;
     if (s.needs_debate) {
         removeVote = false;
     } else if (mode === "simple_toggle") {
-        const memLiked = s.has_voted === true;
-        const visualLiked = domVisuallyLikedForSuggestion(id);
-        if (domHasVoted === true) removeVote = true;
-        else if (domHasVoted === false) removeVote = visualLiked || memLiked;
-        else removeVote = memLiked;
+        removeVote = removeVoteFromDataHasVotedAttribute(id, opts.voteDomCard || null, s);
     } else {
         if (opts.removeVote === true) removeVote = true;
         else removeVote = s.has_voted === true;
@@ -2123,12 +2109,8 @@ async function submitSuggestionVoteAction(p) {
                 b.dataset.hasVoted = s2.has_voted ? "true" : "false";
             }
         });
-        const listCardDone = suggestionsContainer.querySelector(`.suggestion-card[data-id="${id}"]`);
-        if (listCardDone && s2) listCardDone.dataset.hasVoted = s2.has_voted ? "true" : "false";
-        if (swipeDeckInner && s2) {
-            const scDone = swipeDeckInner.querySelector(`.swipe-card[data-id="${id}"]`);
-            if (scDone) scDone.dataset.hasVoted = s2.has_voted ? "true" : "false";
-        }
+        if (s2 && !s2.needs_debate) syncSimpleVoteListCardDom(s2);
+        if (s2 && isTouchDevice() && phoneUiMode === "swipe") patchSwipeVoteUiForCurrentCard();
         debateVoteBtns().forEach((b) => {
             b.disabled = false;
             b.removeAttribute("aria-busy");
