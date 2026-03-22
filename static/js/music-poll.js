@@ -95,7 +95,7 @@ function playPreview(previewUrl, trackId) {
         setTrackPlayingUI(trackId, "loading");
 
         const audio = new Audio();
-        audio.crossOrigin = "anonymous";
+        // Pas de crossOrigin : une 302 vers le CDN Deezer exigerait des en-têtes CORS sur l’audio final.
         audio.src = previewUrl;
         audio.volume = 0.8;
         _currentAudio = audio;

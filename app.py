@@ -2623,50 +2623,86 @@ def _music_preview_url_allowed(url: str) -> bool:
     return False
 
 
+def _preview_upstream_headers(target_url: str) -> dict:
+    """En-têtes proches d’un navigateur (les CDN Deezer / Spotify refusent souvent les clients génériques)."""
+    pr = urlparse(target_url)
+    netloc = (pr.netloc or "").lower()
+    h = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    }
+    if netloc.endswith(".dzcdn.net"):
+        h["Referer"] = "https://www.deezer.com/"
+        h["Origin"] = "https://www.deezer.com"
+    elif "scdn.co" in netloc or "spotifycdn.com" in netloc or netloc == "p.scdn.co":
+        h["Referer"] = "https://open.spotify.com/"
+    return h
+
+
 def _spotify_preview_proxy_response():
     """Proxy sécurisé pour les MP3 (CDN Spotify + extraits Deezer). Transmet Range pour compatibilité navigateurs."""
     import requests as req_lib
 
     raw = (request.args.get("url") or "").strip()
-    url = unquote(raw)
+    url = raw if raw.startswith("https://") else unquote(raw)
     if not url.startswith("https://"):
         return jsonify({"error": "URL invalide"}), 400
     if not _music_preview_url_allowed(url):
         return jsonify({"error": "Hôte ou chemin non autorisé pour la préécoute"}), 400
+
+    netloc = urlparse(url).netloc.lower()
+    is_deezer_cdn = netloc.endswith(".dzcdn.net")
+
+    upstream_headers = _preview_upstream_headers(url)
+    rng = request.headers.get("Range")
+    if rng:
+        upstream_headers["Range"] = rng
+
     try:
-        upstream_headers = {"User-Agent": "Mozilla/5.0 (compatible; LyceeSuggestions/1.0)"}
-        rng = request.headers.get("Range")
-        if rng:
-            upstream_headers["Range"] = rng
         r = req_lib.get(
             url,
             stream=True,
             timeout=25,
             headers=upstream_headers,
+            allow_redirects=True,
         )
-        r.raise_for_status()
-
-        def generate():
-            try:
-                for chunk in r.iter_content(chunk_size=16384):
-                    if chunk:
-                        yield chunk
-            finally:
-                r.close()
-
-        ct = r.headers.get("content-type") or "audio/mpeg"
-        out_headers = {"Cache-Control": "private, max-age=300"}
-        if r.headers.get("Accept-Ranges"):
-            out_headers["Accept-Ranges"] = r.headers["Accept-Ranges"]
-        if r.headers.get("Content-Range"):
-            out_headers["Content-Range"] = r.headers["Content-Range"]
-        if r.headers.get("Content-Length"):
-            out_headers["Content-Length"] = r.headers["Content-Length"]
-        status = r.status_code if r.status_code in (200, 206) else 200
-        return Response(generate(), status=status, mimetype=ct, headers=out_headers)
+        if not r.ok:
+            app.logger.warning(
+                "preview-audio upstream HTTP %s for %s",
+                r.status_code,
+                netloc,
+            )
+            if is_deezer_cdn:
+                return redirect(url, code=302)
+            return jsonify({"error": "Lecture impossible", "upstream": r.status_code}), 502
     except Exception as e:
-        app.logger.warning("preview-audio proxy: %s", e)
+        app.logger.warning("preview-audio proxy: %s", e, exc_info=True)
+        if is_deezer_cdn:
+            return redirect(url, code=302)
         return jsonify({"error": "Lecture impossible"}), 502
+
+    def generate():
+        try:
+            for chunk in r.iter_content(chunk_size=16384):
+                if chunk:
+                    yield chunk
+        finally:
+            r.close()
+
+    ct = r.headers.get("content-type") or "audio/mpeg"
+    out_headers = {"Cache-Control": "private, max-age=300"}
+    if r.headers.get("Accept-Ranges"):
+        out_headers["Accept-Ranges"] = r.headers["Accept-Ranges"]
+    if r.headers.get("Content-Range"):
+        out_headers["Content-Range"] = r.headers["Content-Range"]
+    if r.headers.get("Content-Length"):
+        out_headers["Content-Length"] = r.headers["Content-Length"]
+    status = r.status_code if r.status_code in (200, 206) else 200
+    return Response(generate(), status=status, mimetype=ct, headers=out_headers)
 
 
 @app.route("/api/music-poll/preview-audio", methods=["GET"])

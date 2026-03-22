@@ -4634,7 +4634,6 @@ function renderMusicPollTracksAdmin(tracks) {
         if (testBtn && tr && tr.preview_url) {
             testBtn.addEventListener("click", () => {
                 const a = new Audio();
-                a.crossOrigin = "anonymous";
                 a.src = spotifyPreviewSrcForAdmin(tr.preview_url);
                 a.volume = 0.8;
                 a.play().catch(() => {});
