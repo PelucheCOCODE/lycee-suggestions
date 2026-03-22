@@ -1971,6 +1971,26 @@ body.dark-theme .cvl-args-against,
     overflow-x: hidden;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.35) rgba(0, 0, 0, 0.2);
+}
+.sidebar-nav::-webkit-scrollbar {
+    width: 8px;
+}
+.sidebar-nav::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 100px;
+}
+.sidebar-nav::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.28);
+    border-radius: 100px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.sidebar-nav::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.42);
+    background-clip: padding-box;
 }
 
 .admin-nav-block {
@@ -2188,6 +2208,7 @@ details[open] > .nav-group-summary::after {
     justify-content: center;
     padding: 8vh 16px 16px;
     box-sizing: border-box;
+    overscroll-behavior: contain;
 }
 .admin-command-palette.hidden {
     display: none !important;
@@ -2224,6 +2245,27 @@ details[open] > .nav-group-summary::after {
     padding: 6px;
     max-height: min(52vh, 360px);
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(13, 71, 161, 0.45) var(--border-light);
+}
+.admin-command-palette-list::-webkit-scrollbar {
+    width: 8px;
+}
+.admin-command-palette-list::-webkit-scrollbar-track {
+    background: var(--border-light);
+    border-radius: 100px;
+}
+.admin-command-palette-list::-webkit-scrollbar-thumb {
+    background: rgba(13, 71, 161, 0.35);
+    border-radius: 100px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.admin-command-palette-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(13, 71, 161, 0.52);
+    background-clip: padding-box;
 }
 .admin-command-palette-empty {
     padding: 16px 12px;
@@ -6972,6 +7014,7 @@ details[open] > .nav-group-summary::after {
     display: flex;
     align-items: center;
     justify-content: center;
+    overscroll-behavior: contain;
 }
 .admin-modal.hidden {
     display: none !important;
@@ -7051,6 +7094,27 @@ details[open] > .nav-group-summary::after {
     padding: 1rem 1.25rem;
     overflow-y: auto;
     flex: 1;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(13, 71, 161, 0.45) var(--border-light, #eceff1);
+}
+.admin-modal-body::-webkit-scrollbar {
+    width: 8px;
+}
+.admin-modal-body::-webkit-scrollbar-track {
+    background: var(--border-light, #eceff1);
+    border-radius: 100px;
+}
+.admin-modal-body::-webkit-scrollbar-thumb {
+    background: rgba(13, 71, 161, 0.35);
+    border-radius: 100px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.admin-modal-body::-webkit-scrollbar-thumb:hover {
+    background: rgba(13, 71, 161, 0.52);
+    background-clip: padding-box;
 }
 .suggestion-editor-body .suggestion-editor-h3 {
     font-size: 0.95rem;
