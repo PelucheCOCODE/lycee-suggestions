@@ -1891,7 +1891,14 @@ body.dark-theme .cvl-args-against,
    ADMIN LAYOUT
    ========================================= */
 
-.admin-body { display: flex; flex-wrap: wrap; min-height: 100vh; }
+.admin-body {
+    display: flex;
+    flex-wrap: wrap;
+    min-height: 100vh;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
 .admin-body > .admin-priority-banner { width: 100%; order: -1; }
 .admin-body > .admin-sidebar { flex: 0 0 auto; }
 .admin-body > .admin-main { flex: 1; min-width: 0; }
@@ -1930,6 +1937,7 @@ body.dark-theme .cvl-args-against,
     position: fixed;
     top: 0; left: 0; bottom: 0;
     z-index: 200;
+    overflow: hidden;
 }
 
 .sidebar-header {
@@ -1953,7 +1961,17 @@ body.dark-theme .cvl-args-against,
     letter-spacing: 0.05em;
 }
 
-.sidebar-nav { flex: 1; padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+.sidebar-nav {
+    flex: 1;
+    min-height: 0;
+    padding: 12px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
 
 .nav-group {
     border: 1px solid rgba(255, 255, 255, 0.08);

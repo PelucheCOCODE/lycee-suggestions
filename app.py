@@ -2607,21 +2607,24 @@ def admin_spotify_verify_playlist():
 
 
 def _music_preview_url_allowed(url: str) -> bool:
-    """Autorise uniquement les extraits Spotify (p.scdn.co) et Deezer (*.dzcdn.net)."""
+    """
+    Hôtes autorisés pour le proxy d’extraits MP3.
+    Spotify change parfois de chemins sur p.scdn.co ; d’autres sous-domaines *.scdn.co / spotifycdn.com peuvent apparaître.
+    Deezer : *.dzcdn.net
+    """
     pr = urlparse(url)
     if pr.scheme != "https" or not pr.netloc:
         return False
     netloc = pr.netloc.lower()
-    path = pr.path.lower()
-    if netloc == "p.scdn.co":
-        return "mp3-preview" in pr.path or "/mp3/" in pr.path
+    if netloc == "p.scdn.co" or netloc.endswith(".scdn.co") or netloc.endswith(".spotifycdn.com"):
+        return True
     if netloc.endswith(".dzcdn.net"):
-        return ".mp3" in path or "/api/" in path or "/stream/preview" in path
+        return True
     return False
 
 
 def _spotify_preview_proxy_response():
-    """Proxy sécurisé pour les MP3 (Spotify p.scdn.co + extraits Deezer *.dzcdn.net)."""
+    """Proxy sécurisé pour les MP3 (CDN Spotify + extraits Deezer). Transmet Range pour compatibilité navigateurs."""
     import requests as req_lib
 
     raw = (request.args.get("url") or "").strip()
@@ -2631,11 +2634,15 @@ def _spotify_preview_proxy_response():
     if not _music_preview_url_allowed(url):
         return jsonify({"error": "Hôte ou chemin non autorisé pour la préécoute"}), 400
     try:
+        upstream_headers = {"User-Agent": "Mozilla/5.0 (compatible; LyceeSuggestions/1.0)"}
+        rng = request.headers.get("Range")
+        if rng:
+            upstream_headers["Range"] = rng
         r = req_lib.get(
             url,
             stream=True,
             timeout=25,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; LyceeSuggestions/1.0)"},
+            headers=upstream_headers,
         )
         r.raise_for_status()
 
@@ -2648,7 +2655,15 @@ def _spotify_preview_proxy_response():
                 r.close()
 
         ct = r.headers.get("content-type") or "audio/mpeg"
-        return Response(generate(), content_type=ct, headers={"Cache-Control": "private, max-age=300"})
+        out_headers = {"Cache-Control": "private, max-age=300"}
+        if r.headers.get("Accept-Ranges"):
+            out_headers["Accept-Ranges"] = r.headers["Accept-Ranges"]
+        if r.headers.get("Content-Range"):
+            out_headers["Content-Range"] = r.headers["Content-Range"]
+        if r.headers.get("Content-Length"):
+            out_headers["Content-Length"] = r.headers["Content-Length"]
+        status = r.status_code if r.status_code in (200, 206) else 200
+        return Response(generate(), status=status, mimetype=ct, headers=out_headers)
     except Exception as e:
         app.logger.warning("preview-audio proxy: %s", e)
         return jsonify({"error": "Lecture impossible"}), 502

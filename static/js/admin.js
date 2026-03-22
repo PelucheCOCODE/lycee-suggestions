@@ -4135,13 +4135,23 @@ function datetimeLocalToIso(val) {
     return d.toISOString();
 }
 
-/** Préécoute : proxy admin (Spotify p.scdn.co + extraits Deezer *.dzcdn.net). */
+/** Préécoute : proxy admin (CDN Spotify + Deezer), aligné sur music-poll.js. */
 function spotifyPreviewSrcForAdmin(url) {
     if (!url || typeof url !== "string") return "";
     const u = url.trim();
     if (!u.startsWith("https://")) return u;
-    if (u.startsWith("https://p.scdn.co/") || u.includes(".dzcdn.net/")) {
-        return `/api/admin/spotify/preview-audio?url=${encodeURIComponent(u)}`;
+    try {
+        const h = new URL(u).hostname.toLowerCase();
+        if (
+            h === "p.scdn.co" ||
+            h.endsWith(".scdn.co") ||
+            h.endsWith(".spotifycdn.com") ||
+            h.endsWith(".dzcdn.net")
+        ) {
+            return `/api/admin/spotify/preview-audio?url=${encodeURIComponent(u)}`;
+        }
+    } catch (e) {
+        /* ignore */
     }
     return u;
 }
@@ -4623,7 +4633,9 @@ function renderMusicPollTracksAdmin(tracks) {
         const testBtn = card.querySelector(".music-poll-preview-test");
         if (testBtn && tr && tr.preview_url) {
             testBtn.addEventListener("click", () => {
-                const a = new Audio(spotifyPreviewSrcForAdmin(tr.preview_url));
+                const a = new Audio();
+                a.crossOrigin = "anonymous";
+                a.src = spotifyPreviewSrcForAdmin(tr.preview_url);
                 a.volume = 0.8;
                 a.play().catch(() => {});
             });

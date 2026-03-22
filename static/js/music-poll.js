@@ -18,13 +18,23 @@ const MUSIC_PLACEHOLDER =
 /** Durée max d’écoute d’un extrait (Spotify ~30 s). */
 const MUSIC_PREVIEW_MAX_MS = 30000;
 
-/** URL de lecture : proxy same-origin (Spotify p.scdn.co + extraits Deezer *.dzcdn.net). */
+/** URL de lecture : proxy same-origin (CDN Spotify + extraits Deezer). */
 function spotifyPreviewPlayUrl(url) {
     if (!url || typeof url !== "string") return "";
     const u = url.trim();
     if (!u.startsWith("https://")) return u;
-    if (u.startsWith("https://p.scdn.co/") || u.includes(".dzcdn.net/")) {
-        return `/api/music-poll/preview-audio?url=${encodeURIComponent(u)}`;
+    try {
+        const h = new URL(u).hostname.toLowerCase();
+        if (
+            h === "p.scdn.co" ||
+            h.endsWith(".scdn.co") ||
+            h.endsWith(".spotifycdn.com") ||
+            h.endsWith(".dzcdn.net")
+        ) {
+            return `/api/music-poll/preview-audio?url=${encodeURIComponent(u)}`;
+        }
+    } catch (e) {
+        /* ignore */
     }
     return u;
 }
@@ -84,7 +94,9 @@ function playPreview(previewUrl, trackId) {
 
         setTrackPlayingUI(trackId, "loading");
 
-        const audio = new Audio(previewUrl);
+        const audio = new Audio();
+        audio.crossOrigin = "anonymous";
+        audio.src = previewUrl;
         audio.volume = 0.8;
         _currentAudio = audio;
         _currentTrackId = trackId;
