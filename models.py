@@ -11,7 +11,8 @@ class Suggestion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     original_text = db.Column(db.Text, nullable=False)
     title = db.Column(db.String(200), nullable=False)
-    subtitle = db.Column(db.String(300), default="")
+    subtitle = db.Column(db.Text, default="")
+    subtitle_generated_at_support_count = db.Column(db.Integer, default=0)
     keywords = db.Column(db.Text, default="")
     category = db.Column(db.String(50), default="Autre")
     location_id = db.Column(db.Integer, db.ForeignKey("locations.id"), nullable=True)
@@ -322,9 +323,18 @@ class SiteSettings(db.Model):
         "bus_schedule": '[{"start":"07:40","end":"08:10"},{"start":"08:50","end":"09:10"},{"start":"09:50","end":"10:15"},{"start":"11:00","end":"11:10"},{"start":"11:50","end":"12:15"},{"start":"13:15","end":"13:30"},{"start":"14:20","end":"14:35"},{"start":"15:25","end":"15:35"},{"start":"16:25","end":"16:35"},{"start":"17:25","end":"17:40"}]',
         "bus_alternance_enabled": "false",
         "bus_alternance_interval_sec": "60",
+        "bus_tv_show_only_during_schedule": "false",
         "bus_test_mode": "false",
         "bus_test_perturbations": "false",
         "autonews_current_batch": "",
+        "subtitle_like_threshold": "5",
+        "spotify_client_id": "",
+        "spotify_client_secret": "",
+        "feature_music_poll_enabled": "true",
+        "feature_official_proposal_enabled": "true",
+        "feature_cvl_official_info_enabled": "true",
+        "feature_ringtone_banner_enabled": "false",
+        "ringtone_selection_json": "",
     }
 
 
@@ -881,4 +891,59 @@ class DilemmaVote(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint("dilemma_id", "session_id", name="unique_dilemma_vote_per_session"),
+    )
+
+
+class MusicPoll(db.Model):
+    """Sondage musique (Spotify) — au plus un actif à la fois (mur + swipe)."""
+    __tablename__ = "music_poll"
+
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    is_active = db.Column(db.Boolean, default=False)
+    max_votes = db.Column(db.Integer, default=1)
+    end_date = db.Column(db.DateTime, nullable=True)
+    spotify_playlist_url = db.Column(db.String(500), nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
+
+    tracks = db.relationship(
+        "MusicTrack",
+        backref="poll",
+        cascade="all, delete-orphan",
+        order_by="MusicTrack.position",
+    )
+
+
+class MusicTrack(db.Model):
+    __tablename__ = "music_tracks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    poll_id = db.Column(db.Integer, db.ForeignKey("music_poll.id"), nullable=False, index=True)
+    spotify_url = db.Column(db.String(500), nullable=False)
+    spotify_track_id = db.Column(db.String(30), nullable=False, index=True)
+    title = db.Column(db.String(300), nullable=False)
+    artist = db.Column(db.String(200), nullable=False, default="")
+    album = db.Column(db.String(200), nullable=False, default="")
+    thumbnail_url = db.Column(db.String(500), nullable=True)
+    preview_url = db.Column(db.String(500), nullable=True)
+    vote_count = db.Column(db.Integer, default=0)
+    position = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    votes = db.relationship("MusicVote", backref="track", cascade="all, delete-orphan")
+
+
+class MusicVote(db.Model):
+    __tablename__ = "music_votes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    poll_id = db.Column(db.Integer, db.ForeignKey("music_poll.id"), nullable=False, index=True)
+    track_id = db.Column(db.Integer, db.ForeignKey("music_tracks.id"), nullable=False, index=True)
+    session_id = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("track_id", "session_id", name="uq_music_vote_track_session"),
     )

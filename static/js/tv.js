@@ -16,6 +16,10 @@ let lastShownIds = [];
 let autonewsLastFetch = 0;
 const AUTONEWS_DURATION = 15;
 let showBusMode = false;
+/** Pagination bus (plein écran TV) */
+let tvBusPageCtl = null;
+/** Pagination bus (diapo type « bus » dans la présentation) */
+let tvSlideBusPageCtl = null;
 let currentPriorityAnnouncement = null;
 
 const tvPriorityOverlay = document.getElementById("tv-priority-overlay");
@@ -72,6 +76,17 @@ async function fetchTvAnnouncements() {
     } catch (e) { /* ignore */ }
 }
 
+function destroyTvBusMounts() {
+    if (tvBusPageCtl) {
+        tvBusPageCtl.destroy();
+        tvBusPageCtl = null;
+    }
+    if (tvSlideBusPageCtl) {
+        tvSlideBusPageCtl.destroy();
+        tvSlideBusPageCtl = null;
+    }
+}
+
 async function fetchData() {
     try {
         const hasPriority = await fetchPriorityAnnouncement();
@@ -87,6 +102,7 @@ async function fetchData() {
         const url = exclude ? `/api/tv/${TV_SLUG}?exclude=${encodeURIComponent(exclude)}` : `/api/tv/${TV_SLUG}`;
         const res = await fetch(url);
         const data = await res.json();
+        const wasBusFullscreen = showBusMode;
 
         if (data.page_type === "disabled") {
             stopSlideshow();
@@ -140,7 +156,7 @@ async function fetchData() {
         }
 
         isAutoNewsMode = false;
-        if (data.updated_at !== lastUpdated) {
+        if (data.updated_at !== lastUpdated || wasBusFullscreen) {
             lastUpdated = data.updated_at;
             const newSlides = data.slides || [];
             const changed = JSON.stringify(newSlides) !== JSON.stringify(slides);
@@ -153,7 +169,7 @@ async function fetchData() {
             } else {
                 container.classList.remove("hidden");
                 emptyEl.classList.add("hidden");
-                if (currentIdx < 0 || changed) {
+                if (currentIdx < 0 || changed || wasBusFullscreen) {
                     stopSlideshow();
                     startSlideshow();
                 }
@@ -192,6 +208,7 @@ function startSlideshow() {
 function stopSlideshow() {
     if (timer) clearTimeout(timer);
     timer = null;
+    destroyTvBusMounts();
     if (busSlideRefreshTimer) { clearInterval(busSlideRefreshTimer); busSlideRefreshTimer = null; }
     currentIdx = -1;
     panelA.className = "tv-slide";
@@ -205,6 +222,10 @@ function nextSlide() {
     if (!slides.length) return;
     currentIdx = (currentIdx + 1) % slides.length;
     const slide = slides[currentIdx];
+    if (slide.slide_type !== "bus" && tvSlideBusPageCtl) {
+        tvSlideBusPageCtl.destroy();
+        tvSlideBusPageCtl = null;
+    }
     const incoming = activePanel === "a" ? panelB : panelA;
     const outgoing = activePanel === "a" ? panelA : panelB;
 
@@ -351,6 +372,10 @@ function tvBusDeparturesHtml(data) {
 
 async function renderBusSlideInSlot(el) {
     try {
+        if (tvSlideBusPageCtl) {
+            tvSlideBusPageCtl.destroy();
+            tvSlideBusPageCtl = null;
+        }
         const url =
             typeof busDisplayApiUrl === "function"
                 ? busDisplayApiUrl("/api/display/bus")
@@ -358,10 +383,23 @@ async function renderBusSlideInSlot(el) {
         const res = await fetch(url);
         const data = await res.json();
         if (typeof busLogPayload === "function") busLogPayload(data, "tv-slide");
-        const inner = tvBusDeparturesHtml(data);
-        el.innerHTML = inner
-            ? `<div class="tv-bus-slide-in-slot">${inner}</div>`
-            : `<div class="tv-bus-slide-in-slot tv-bus-slide-empty"><p>Prochains bus indisponibles</p></div>`;
+        const deps = (data.departures || []).slice();
+        const theory = data.source === "gtfs_static" || data.source === "test";
+        const foot = theory ? `<p class="bus-dep-footnote">Horaires théoriques (GTFS)</p>` : "";
+        if (!data.available || !deps.length) {
+            el.innerHTML = `<div class="tv-bus-slide-in-slot tv-bus-slide-empty"><p>Prochains bus indisponibles</p></div>`;
+            return;
+        }
+        el.innerHTML = `<div class="tv-bus-slide-in-slot"><div class="tv-bus-viewport-slot bus-dep-viewport"></div>${foot}</div>`;
+        const viewport = el.querySelector(".tv-bus-viewport-slot");
+        if (viewport && typeof busBoardPagesMount === "function") {
+            tvSlideBusPageCtl = busBoardPagesMount(viewport, deps, { pageSwitchMs: 12000 });
+        } else {
+            const inner = tvBusDeparturesHtml(data);
+            el.innerHTML = inner
+                ? `<div class="tv-bus-slide-in-slot">${inner}</div>`
+                : `<div class="tv-bus-slide-in-slot tv-bus-slide-empty"><p>Prochains bus indisponibles</p></div>`;
+        }
     } catch (e) {
         el.innerHTML = `<div class="tv-text-slide" style="background:#0a0f1a;color:#fff"><div class="tv-text-inner"><h1>PROCHAINS BUS</h1><p>Chargement...</p></div></div>`;
     }
@@ -410,8 +448,25 @@ async function updateTvBusDisplay() {
 
 function renderTvBusPanel(data) {
     if (!busStopsEl) return;
-    const inner = tvBusDeparturesHtml(data);
-    busStopsEl.innerHTML = inner || "";
+    if (tvBusPageCtl) {
+        tvBusPageCtl.destroy();
+        tvBusPageCtl = null;
+    }
+    const deps = (data.departures || []).slice();
+    const theory = data.source === "gtfs_static" || data.source === "test";
+    const foot = theory ? `<p class="bus-dep-footnote">Horaires théoriques (GTFS)</p>` : "";
+    if (!data.available || !deps.length) {
+        busStopsEl.innerHTML = `<div class="tv-bus-empty"><p>Aucun départ à afficher</p></div>`;
+        return;
+    }
+    busStopsEl.innerHTML = `<div class="tv-bus-inner"><div id="tv-bus-viewport" class="bus-dep-viewport"></div>${foot}</div>`;
+    const viewport = document.getElementById("tv-bus-viewport");
+    if (viewport && typeof busBoardPagesMount === "function") {
+        tvBusPageCtl = busBoardPagesMount(viewport, deps, { pageSwitchMs: 12000 });
+    } else {
+        const inner = tvBusDeparturesHtml(data);
+        busStopsEl.innerHTML = inner || `<div class="tv-bus-empty"><p>Aucun départ à afficher</p></div>`;
+    }
 }
 
 let busSlideRefreshTimer = null;

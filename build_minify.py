@@ -45,6 +45,7 @@ def main():
     print("Minification JS...")
     for name in [
         "student.js",
+        "music-poll.js",
         "admin.js",
         "bus-diagnostics.js",
         "display-announcements.js",

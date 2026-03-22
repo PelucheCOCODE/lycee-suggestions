@@ -174,21 +174,21 @@ Suggestion d'élève : "{text}"
 
 Réponds UNIQUEMENT par la question courte ou "non"."""
 
-SUBTITLE_PROMPT = """Plusieurs élèves ont signalé le même problème au lycée. Génère un court sous-titre (1 phrase, max 20 mots) qui reformule ou précise ce qu'ils ont dit.
-{context}
-Titre de la suggestion : "{title}"
+SUBTITLE_PROMPT = """Tu rédiges le court texte affiché SOUS le titre sur la page élève (boîte à idées). Ce n'est pas un compte rendu administratif.
 
-Voici ce que les élèves ont écrit (leurs messages originaux) :
+{context}
+Titre affiché : "{title}"
+
+Textes des élèves (messages ou précisions) :
 {original_texts}
 
 Règles STRICTES :
-- Utilise UNIQUEMENT les informations présentes dans les messages des élèves ci-dessus
-- NE JAMAIS inventer, supposer ou ajouter de détails (conséquences, causes, impacts) qui ne sont pas explicitement mentionnés
-- Reformule correctement en français (orthographe, grammaire) sans enrichir le contenu
-- Si les élèves n'ont donné qu'un détail (ex: "fenêtres cassées au bat C"), ne pas ajouter d'autres problèmes (ex: infiltrations, froid, etc.)
-- Ton naturel, pas trop formel
-- Maximum 20 mots
-- Réponds UNIQUEMENT avec le sous-titre, rien d'autre"""
+- Utilise UNIQUEMENT ce qui figure dans les textes ci-dessus (y compris [for]/[against] si présent)
+- N'invente rien : pas de chiffres, pas de "plusieurs élèves ont signalé", pas de "consigné pour intervention", pas de ton rapport ou de comité
+- Style : direct, simple, comme une note lycée — une ou deux phrases courtes, au plus trois si vraiment nécessaire
+- Évite le jargon : pas de "au sein de", "ont été constatés", "échanges informels", "faciliter une éventuelle intervention"
+- Longueur : environ 120 à 400 caractères (court et lisible sur mobile)
+- Réponds UNIQUEMENT avec ce texte, sans titre ni guillemets autour"""
 
 PROPORTION_PROMPT = """Tu évalues une proposition de lycée pour décider si elle mérite un débat (arguments pour ET contre) ou seulement des soutiens.
 
@@ -740,17 +740,24 @@ def moderate_community_message_llm(text: str) -> tuple[bool, str]:
 
 
 def generate_subtitle(title: str, original_texts: list[str]) -> str | None:
-    """Generate a subtitle with more detail about the problem, using school context."""
+    """Résumé agrégé IA (sous-titre long) à partir du titre et de tous les textes élèves / précisions."""
     ctx = f"\nContexte de l'établissement : {_school_context}\n" if _school_context else ""
-    formatted = "\n".join(f'- "{t}"' for t in original_texts[:6] if t)
-    prompt = SUBTITLE_PROMPT.format(title=title, original_texts=formatted, context=ctx)
-    result = _call_ollama(prompt, temperature=0.3, num_predict=60, timeout=20)
+    texts = [t.strip() for t in (original_texts or []) if t and str(t).strip()]
+    if not texts:
+        return None
+    # Cap pour le prompt (évite les dépassements de contexte sur des listes énormes)
+    formatted = "\n".join(f'- "{t[:1200]}"' for t in texts[:80])
+    prompt = SUBTITLE_PROMPT.format(title=(title or "")[:400], original_texts=formatted, context=ctx)
+    result = _call_ollama(prompt, temperature=0.2, num_predict=380, timeout=90)
 
     if result:
-        result = result.strip().strip('"').strip("'").strip("\u00ab\u00bb").strip().rstrip(".")
-        lines = result.split("\n")
-        result = lines[0].strip()
-        if result and 5 < len(result) < 300:
+        result = result.strip().strip('"').strip("'").strip("\u00ab\u00bb").strip()
+        if result and 20 <= len(result) <= 8000:
+            # Plafond affichage élève : évite les dérives longues même si le modèle déborde
+            if len(result) > 650:
+                result = result[:647].rsplit(" ", 1)[0] + "…"
+            if len(result) == 1:
+                return result.upper()
             return result[0].upper() + result[1:]
 
     return None

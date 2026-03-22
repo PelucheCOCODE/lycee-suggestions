@@ -136,6 +136,7 @@
 
         <!-- Suggestions list -->
         <section class="suggestions-section">
+            <div id="ringtone-student-banner" class="ringtone-student-banner hidden" aria-live="polite"></div>
             <div id="suggestions-desktop-wrap" class="suggestions-desktop-wrap">
             <div class="phone-list-search-wrap" id="phone-list-search-wrap">
                 <label class="visually-hidden" for="list-search">Rechercher une suggestion</label>
@@ -171,6 +172,7 @@
         </div>
     </footer>
 
+    <script src="{{ url_for('static', filename=asset('js/music-poll.js')) }}"></script>
     <script src="{{ url_for('static', filename=asset('js/student.js')) }}"></script>
     <script src="{{ url_for('static', filename='js/diagnostic_frontend.js') }}" defer></script>
 </body>

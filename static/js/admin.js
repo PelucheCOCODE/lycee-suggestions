@@ -1,24 +1,58 @@
 const API = {
     async get(url) {
-        const res = await fetch(url);
+        const res = await fetch(url, { credentials: "same-origin" });
         if (res.status === 401) { window.location.href = "/admin"; throw new Error("401"); }
         return res.json();
     },
     async post(url, data) {
-        const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
-        return { data: await res.json(), status: res.status };
+        const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(data),
+            credentials: "same-origin",
+        });
+        let payload = {};
+        try {
+            payload = await res.json();
+        } catch (e) {
+            payload = { error: "Réponse serveur invalide" };
+        }
+        return { data: payload, status: res.status };
     },
     async postFile(url, fd) {
-        const res = await fetch(url, { method: "POST", body: fd });
-        return { data: await res.json(), status: res.status };
+        const res = await fetch(url, { method: "POST", body: fd, credentials: "same-origin" });
+        let payload = {};
+        try {
+            payload = await res.json();
+        } catch (e) {
+            payload = { error: "Réponse invalide" };
+        }
+        return { data: payload, status: res.status };
     },
     async put(url, data) {
-        const res = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
-        return { data: await res.json(), status: res.status };
+        const res = await fetch(url, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(data),
+            credentials: "same-origin",
+        });
+        let payload = {};
+        try {
+            payload = await res.json();
+        } catch (e) {
+            payload = { error: "Réponse serveur invalide" };
+        }
+        return { data: payload, status: res.status };
     },
     async delete(url) {
-        const res = await fetch(url, { method: "DELETE" });
-        return { data: await res.json(), status: res.status };
+        const res = await fetch(url, { method: "DELETE", credentials: "same-origin" });
+        let payload = {};
+        try {
+            payload = await res.json();
+        } catch (e) {
+            payload = {};
+        }
+        return { data: payload, status: res.status };
     },
 };
 
@@ -53,11 +87,18 @@ async function init() {
     setupDisplayManager();
     setupCvlProposal();
     setupBus();
+    setupMusicPoll();
+    setupSpotifyApiCard();
+    setupSuggestionsHub();
     setupBackup();
     setupHistoryModal();
     setupLogsSection();
     setupDilemmas();
-    await Promise.all([loadDashboard(), loadSettings()]);
+    setupArchiveDetailModal();
+    await loadSettings();
+    if (!restoreAdminSectionFromStorage()) {
+        await loadDashboard();
+    }
     loadPriorityBanner();
     setInterval(() => {
         const dash = document.getElementById("section-dashboard");
@@ -72,32 +113,69 @@ async function init() {
         const ann = document.getElementById("section-announcements");
         if (ann?.classList.contains("active")) loadAnnouncements();
     }, 8000);
+    if (location.hash.startsWith("#suggestion=")) {
+        const sid = parseInt(location.hash.replace("#suggestion=", ""), 10);
+        if (Number.isFinite(sid)) {
+            setTimeout(() => openSuggestionFocusFromLog(sid), 500);
+        }
+    }
+}
+
+const ADMIN_SECTION_LOADERS = {
+    suggestions: () => loadAdminSuggestions(),
+    logs: () => loadLogs(),
+    locations: () => loadLocations(),
+    dashboard: () => loadDashboard(),
+    engagement: () => loadEngagement(),
+    dilemmas: () => loadDilemmas(),
+    calibration: () => loadCalibration(),
+    trace: () => setupTrace(),
+    "calibration-verify": () => loadCalibrationVerify(),
+    announcements: () => loadAnnouncements(),
+    "llm-resources": () => loadLLMResources(),
+    "display-manager": () => loadDisplayManager(),
+    "cvl-proposal": () => loadCvlProposal(),
+    "cvl-official-info": () => loadCvlOfficialInfo(),
+    bus: () => loadBusSettings(),
+    "music-poll": () => loadMusicPollAdmin(),
+    backup: () => loadBackup(),
+    development: () => loadDevelopment(),
+};
+
+function activateAdminSection(section) {
+    const item = document.querySelector(`.nav-item[data-section="${section}"]`);
+    const secEl = document.getElementById(`section-${section}`);
+    if (!item || !secEl) return;
+    document.querySelectorAll(".nav-item").forEach((n) => n.classList.remove("active"));
+    item.classList.add("active");
+    document.querySelectorAll(".admin-section").forEach((s) => s.classList.remove("active"));
+    secEl.classList.add("active");
+    try {
+        sessionStorage.setItem("admin_active_section", section);
+    } catch (e) {
+        /* private mode */
+    }
+    const loader = ADMIN_SECTION_LOADERS[section];
+    if (loader) loader();
+}
+
+function restoreAdminSectionFromStorage() {
+    try {
+        const saved = sessionStorage.getItem("admin_active_section");
+        if (saved && document.querySelector(`.nav-item[data-section="${saved}"]`)) {
+            activateAdminSection(saved);
+            return true;
+        }
+    } catch (e) {
+        /* ignore */
+    }
+    return false;
 }
 
 function setupNavigation() {
     document.querySelectorAll(".nav-item").forEach((item) => {
         item.addEventListener("click", () => {
-            const section = item.dataset.section;
-            document.querySelectorAll(".nav-item").forEach((n) => n.classList.remove("active"));
-            item.classList.add("active");
-            document.querySelectorAll(".admin-section").forEach((s) => s.classList.remove("active"));
-            document.getElementById(`section-${section}`).classList.add("active");
-            if (section === "suggestions") loadAdminSuggestions();
-            if (section === "logs") loadLogs();
-            if (section === "locations") loadLocations();
-            if (section === "dashboard") loadDashboard();
-            if (section === "engagement") loadEngagement();
-            if (section === "dilemmas") loadDilemmas();
-            if (section === "calibration") loadCalibration();
-            if (section === "trace") setupTrace();
-            if (section === "calibration-verify") loadCalibrationVerify();
-            if (section === "announcements") loadAnnouncements();
-            if (section === "llm-resources") loadLLMResources();
-            if (section === "display-manager") loadDisplayManager();
-            if (section === "cvl-proposal") loadCvlProposal();
-            if (section === "cvl-official-info") loadCvlOfficialInfo();
-            if (section === "bus") loadBusSettings();
-            if (section === "backup") loadBackup();
+            activateAdminSection(item.dataset.section);
         });
     });
 }
@@ -152,6 +230,30 @@ function renderDashboard(stats) {
         renderStatusChart(stats.by_status);
     }
     renderTopVoted(stats.top_voted);
+    const cvM = document.getElementById("chart-suggestions-month");
+    if (cvM && typeof Chart !== "undefined" && stats.suggestions_per_month) {
+        if (chartSuggestionsMonth) chartSuggestionsMonth.destroy();
+        const pm = stats.suggestions_per_month;
+        chartSuggestionsMonth = new Chart(cvM, {
+            type: "bar",
+            data: {
+                labels: pm.map((x) => x.month),
+                datasets: [
+                    {
+                        label: "Suggestions créées",
+                        data: pm.map((x) => x.count),
+                        backgroundColor: "#6366f1",
+                        borderRadius: 6,
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+            },
+        });
+    }
 }
 function renderCategoryChart(d) {
     const cv = document.getElementById("chart-categories");
@@ -175,6 +277,13 @@ let chartEngMood = null;
 let chartEngPresence = null;
 let chartEngCards = null;
 let chartEngActivity = null;
+let chartSuggestionsMonth = null;
+let chartMoodMonth = null;
+let chartMoodHour = null;
+let chartImpMonth = null;
+
+let quillDev = null;
+let devSaveTimer = null;
 
 async function loadEngagement() {
     try {
@@ -274,6 +383,90 @@ function renderEngagement(s) {
         else {
             top.innerHTML = topList.map((x) => `<div class="mini-suggestion-item"><span class="mini-suggestion-title">${esc(x.title)}</span><span class="mini-suggestion-votes">🔥 ${Number(x.importance_score || 0).toFixed(1)} · ♥ ${x.vote_count}</span></div>`).join("");
         }
+    }
+
+    const moodColors = { bien: "#22c55e", bof: "#94a3b8", fatigue: "#f97316", stresse: "#dc2626" };
+    const mbm = s.mood_by_month || {};
+    const monthsM = Object.keys(mbm).sort();
+    const moodKeysSet = new Set();
+    monthsM.forEach((mk) => Object.keys(mbm[mk] || {}).forEach((k) => moodKeysSet.add(k)));
+    const moodKeys = Array.from(moodKeysSet);
+    const cvMm = document.getElementById("chart-mood-month");
+    if (cvMm && typeof Chart !== "undefined") {
+        if (chartMoodMonth) chartMoodMonth.destroy();
+        chartMoodMonth = new Chart(cvMm, {
+            type: "bar",
+            data: {
+                labels: monthsM.length ? monthsM : ["—"],
+                datasets: moodKeys.length
+                    ? moodKeys.map((mood) => ({
+                          label: mood,
+                          data: monthsM.length ? monthsM.map((mk) => (mbm[mk] && mbm[mk][mood]) || 0) : [0],
+                          backgroundColor: moodColors[mood] || "#64748b",
+                          stack: "m",
+                      }))
+                    : [{ label: "—", data: [0], backgroundColor: "#e2e8f0" }],
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: "bottom" } },
+                scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } } },
+            },
+        });
+    }
+
+    const mbh = s.mood_by_hour || {};
+    const cvMh = document.getElementById("chart-mood-hour");
+    if (cvMh && typeof Chart !== "undefined") {
+        if (chartMoodHour) chartMoodHour.destroy();
+        const hours = Array.from({ length: 24 }, (_, i) => String(i));
+        chartMoodHour = new Chart(cvMh, {
+            type: "line",
+            data: {
+                labels: hours.map((h) => `${h}h`),
+                datasets: moodKeys.length
+                    ? moodKeys.map((mood) => ({
+                          label: mood,
+                          data: hours.map((h) => (mbh[h] && mbh[h][mood]) || 0),
+                          borderColor: moodColors[mood] || "#64748b",
+                          backgroundColor: "transparent",
+                          tension: 0.25,
+                          fill: false,
+                      }))
+                    : [{ label: "—", data: hours.map(() => 0), borderColor: "#cbd5e1" }],
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: "bottom" } },
+                scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+            },
+        });
+    }
+
+    const imb = s.importance_votes_by_month || {};
+    const impMonths = Object.keys(imb).sort();
+    const cvIm = document.getElementById("chart-imp-month");
+    if (cvIm && typeof Chart !== "undefined") {
+        if (chartImpMonth) chartImpMonth.destroy();
+        chartImpMonth = new Chart(cvIm, {
+            type: "bar",
+            data: {
+                labels: impMonths.length ? impMonths : ["—"],
+                datasets: [
+                    {
+                        label: "Votes importance",
+                        data: impMonths.length ? impMonths.map((m) => imb[m] || 0) : [0],
+                        backgroundColor: "#a855f7",
+                        borderRadius: 6,
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+            },
+        });
     }
 }
 
@@ -378,6 +571,154 @@ function renderDilemmaList(rows) {
     `).join("");
 }
 
+// ==================== Développement (notes Quill) ====================
+
+function loadDevelopment() {
+    const el = document.getElementById("dev-notes-editor");
+    if (!el || typeof Quill === "undefined") return;
+    if (quillDev) return;
+    quillDev = new Quill("#dev-notes-editor", {
+        theme: "snow",
+        modules: {
+            toolbar: [
+                [{ header: [1, 2, 3, false] }],
+                ["bold", "italic", "underline", "strike"],
+                [{ list: "ordered" }, { list: "bullet" }],
+                [{ color: [] }, { background: [] }],
+                ["blockquote", "code-block"],
+                ["link"],
+                ["clean"],
+            ],
+        },
+    });
+    API.get("/api/admin/dev-notes")
+        .then((d) => {
+            if (d && d.html) quillDev.root.innerHTML = d.html;
+        })
+        .catch(() => {});
+    quillDev.on("text-change", () => {
+        clearTimeout(devSaveTimer);
+        devSaveTimer = setTimeout(async () => {
+            const st = document.getElementById("dev-notes-save-status");
+            if (st) st.textContent = "Enregistrement…";
+            try {
+                await API.put("/api/admin/dev-notes", { html: quillDev.root.innerHTML });
+                if (st) st.textContent = "Enregistré.";
+                setTimeout(() => {
+                    if (st) st.textContent = "";
+                }, 2000);
+            } catch (e) {
+                if (st) st.textContent = "Erreur d’enregistrement.";
+            }
+        }, 900);
+    });
+}
+
+// ==================== Historique — modale détail ====================
+
+function setupArchiveDetailModal() {
+    document.getElementById("archive-detail-close")?.addEventListener("click", closeArchiveDetailModal);
+    document.getElementById("archive-detail-backdrop")?.addEventListener("click", closeArchiveDetailModal);
+}
+
+function closeArchiveDetailModal() {
+    document.getElementById("archive-detail-modal")?.classList.add("hidden");
+    document.body.style.overflow = "";
+}
+
+function buildArchiveDetailHtml(d) {
+    const arch = d.archive;
+    const live = d.live;
+    const sid = arch?.suggestion_id || live?.id;
+    if (live) {
+        const sub = live.subtitle || "";
+        let html = `<p class="context-hint">#${sid} · ${esc(live.category || "")} · ${esc(live.status || "")}</p>`;
+        html += `<div class="form-group"><label>Résumé / sous-titre (IA)</label><div class="archive-detail-box">${esc(sub)}</div></div>`;
+        html += `<div class="form-group"><label>Texte original</label><div class="archive-detail-box">${esc(live.original_text || "")}</div></div>`;
+        html += `<div class="form-group"><label>Titre</label><input type="text" id="archive-modal-title" class="control-select" style="width:100%;max-width:100%;box-sizing:border-box" value="${esc(live.title || "")}" maxlength="200"></div>`;
+        html += `<div class="form-group"><label>Statut</label><select id="archive-modal-status" class="control-select">${STATUSES.map((st) => `<option value="${esc(st)}" ${live.status === st ? "selected" : ""}>${esc(st)}</option>`).join("")}</select></div>`;
+        html += `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center;">`;
+        html += `<button type="button" class="btn btn-primary" id="archive-modal-save-status">Appliquer le statut</button>`;
+        html += `<button type="button" class="btn btn-secondary" id="archive-modal-save-title">Mettre à jour le titre</button>`;
+        html += `<a class="btn btn-secondary" href="/api/admin/suggestions/${sid}/pdf" target="_blank" rel="noopener">Télécharger PDF</a>`;
+        if (live.status === "Terminée" || live.status === "Refusée" || live.status === "En cours de mise en place") {
+            html += `<button type="button" class="btn btn-primary" id="archive-modal-republish">Remettre en ligne (Acceptée)</button>`;
+        }
+        html += `</div>`;
+        return html;
+    }
+    if (arch) {
+        let html = `<p class="context-hint">Cette suggestion n’existe plus dans la base active (supprimée ou import).</p>`;
+        html += `<div class="form-group"><strong>Titre (archive)</strong><div>${esc(arch.title)}</div></div>`;
+        html += `<div class="form-group"><label>Texte original</label><div class="archive-detail-box">${esc(arch.original_text || "")}</div></div>`;
+        if (arch.deleted_at) {
+            html += `<button type="button" class="btn btn-primary" id="archive-modal-restore-from-archive">Restaurer depuis l’archive</button>`;
+        }
+        return html;
+    }
+    return '<p class="empty-msg">Aucune donnée.</p>';
+}
+
+function bindArchiveDetailForm(sid, d) {
+    const live = d.live;
+    document.getElementById("archive-modal-save-status")?.addEventListener("click", async () => {
+        if (!live) return;
+        const st = document.getElementById("archive-modal-status")?.value;
+        const { data, status } = await API.put(`/api/admin/suggestions/${sid}/status`, { status: st });
+        if (status >= 400) {
+            alert((data && data.error) || "Erreur");
+            return;
+        }
+        await loadSuggestionArchive();
+        closeArchiveDetailModal();
+    });
+    document.getElementById("archive-modal-save-title")?.addEventListener("click", async () => {
+        if (!live) return;
+        const t = document.getElementById("archive-modal-title")?.value?.trim();
+        if (!t || t.length < 3) {
+            alert("Titre trop court");
+            return;
+        }
+        const { status } = await API.put(`/api/admin/suggestions/${sid}/title`, { title: t });
+        if (status >= 400) {
+            alert("Erreur");
+            return;
+        }
+        await loadSuggestionArchive();
+        closeArchiveDetailModal();
+    });
+    document.getElementById("archive-modal-republish")?.addEventListener("click", async () => {
+        const { data, status } = await API.put(`/api/admin/suggestions/${sid}/status`, { status: "Acceptée" });
+        if (status >= 400) {
+            alert((data && data.error) || "Erreur");
+            return;
+        }
+        await loadSuggestionArchive();
+        closeArchiveDetailModal();
+    });
+    document.getElementById("archive-modal-restore-from-archive")?.addEventListener("click", (e) => {
+        e.preventDefault();
+        restoreSuggestionFromArchive(sid);
+        closeArchiveDetailModal();
+    });
+}
+
+async function openArchiveDetailModal(sid) {
+    const modal = document.getElementById("archive-detail-modal");
+    const body = document.getElementById("archive-detail-body");
+    if (!modal || !body) return;
+    body.innerHTML = '<p class="empty-msg">Chargement…</p>';
+    modal.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    try {
+        const d = await API.get(`/api/admin/suggestions/${sid}/detail`);
+        body.innerHTML = buildArchiveDetailHtml(d);
+        bindArchiveDetailForm(sid, d);
+    } catch (e) {
+        body.innerHTML = '<p class="empty-msg">Erreur de chargement.</p>';
+    }
+}
+
 // ==================== Logs ====================
 
 let logsLastId = 0;
@@ -422,6 +763,17 @@ const LOG_REFUSAL_TYPES = new Set([
     "proposal_argument_rejected", "troll_blocked",
 ]);
 
+function parseLogDetailJson(detailStr) {
+    if (!detailStr || typeof detailStr !== "string") return null;
+    const t = detailStr.trim();
+    if (!t.startsWith("{")) return null;
+    try {
+        return JSON.parse(t);
+    } catch (e) {
+        return null;
+    }
+}
+
 function logEntryHtml(l) {
     const label = LOG_EVENT_LABELS[l.event_type] || l.event_type;
     const color = LOG_EVENT_COLORS[l.event_type] || "#94a3b8";
@@ -431,16 +783,32 @@ function logEntryHtml(l) {
     const refusal = LOG_REFUSAL_TYPES.has(l.event_type);
     const rowClass = refusal ? "log-item log-item--refusal" : "log-item";
     const detailStr = l.detail && String(l.detail).trim();
+    const detailJson = parseLogDetailJson(detailStr);
     let detailHtml = "";
     if (detailStr) {
         const detailTitle = refusal ? "Motif, extrait ou texte concerné" : "Détail";
-        detailHtml = `<div class="log-detail-block"><span class="log-detail-title">${detailTitle}</span><div class="log-detail-body">${esc(l.detail)}</div></div>`;
+        let bodyInner = esc(l.detail);
+        if (detailJson && (detailJson.title || detailJson.new_status)) {
+            bodyInner = [
+                detailJson.new_status ? `<div class="log-detail-line"><strong>Statut</strong> · ${esc(detailJson.new_status)}</div>` : "",
+                detailJson.title ? `<div class="log-detail-line log-detail-line--title">${esc(detailJson.title)}</div>` : "",
+            ]
+                .filter(Boolean)
+                .join("");
+        } else {
+            bodyInner = `<div class="log-detail-body">${esc(l.detail)}</div>`;
+        }
+        detailHtml = `<div class="log-detail-block"><span class="log-detail-title">${detailTitle}</span>${bodyInner}</div>`;
+    }
+    let actionHtml = "";
+    if (detailJson && detailJson.suggestion_id) {
+        actionHtml = `<div class="log-detail-actions"><button type="button" class="btn btn-sm btn-secondary log-open-suggestion-btn" data-sid="${detailJson.suggestion_id}">Fiche suggestion #${detailJson.suggestion_id}</button></div>`;
     }
     const metaBits = [];
     if (l.ip) metaBits.push(`IP : ${esc(l.ip)}`);
     if (l.visitor_id) metaBits.push(`Visiteur : ${esc(l.visitor_id)}`);
     const metaHtml = metaBits.length ? `<div class="log-meta">${metaBits.join(" · ")}</div>` : "";
-    return `<div class="${rowClass}" data-id="${l.id}"><div class="log-head"><span class="log-badge" style="background:${color}">${esc(label)}</span><time class="log-datetime" datetime="${l.created_at || ""}">${timeFull}</time></div><div class="log-msg">${esc(l.message)}</div>${detailHtml}${metaHtml}</div>`;
+    return `<div class="${rowClass}" data-id="${l.id}"><div class="log-head"><span class="log-badge" style="background:${color}">${esc(label)}</span><time class="log-datetime" datetime="${l.created_at || ""}">${timeFull}</time></div><div class="log-msg">${esc(l.message)}</div>${detailHtml}${actionHtml}${metaHtml}</div>`;
 }
 
 async function loadLogs() {
@@ -542,8 +910,12 @@ function renderSuggestionArchive() {
             ? `<div class="archive-reason archive-reason--prominent"><strong>Motif du refus (filtre / IA / admin)</strong><div class="archive-motif-text">${r.reject_reason ? esc(r.reject_reason) : '<span class="archive-motif-missing">(aucun motif enregistré dans la base)</span>'}</div></div>`
             : "";
         const orig = r.original_text || "";
-        return `<div class="archive-card${r.status === "Refusée" ? " archive-card--refused" : ""}">
-            <div class="archive-card-head"><span class="archive-id">#${r.suggestion_id}</span> ${del}<span class="${stClass}">${esc(r.status)}</span></div>
+        const restore =
+            r.deleted_at
+                ? `<button type="button" class="btn btn-sm btn-primary archive-restore-btn" data-sid="${r.suggestion_id}">Remettre en ligne</button>`
+                : "";
+        return `<div class="archive-card archive-card--clickable${r.status === "Refusée" ? " archive-card--refused" : ""}" data-sid="${r.suggestion_id}" title="Cliquer pour le détail (statut, PDF, titre…)">
+            <div class="archive-card-head"><span class="archive-id">#${r.suggestion_id}</span> ${del}<span class="${stClass}">${esc(r.status)}</span>${restore}</div>
             <div class="archive-title">${esc(r.title)}</div>
             <div class="archive-meta">${esc(r.category)} · ${r.vote_count ?? 0} soutien${(r.vote_count || 0) !== 1 ? "s" : ""}</div>
             ${motifHtml}
@@ -551,6 +923,34 @@ function renderSuggestionArchive() {
             <div class="archive-original-text">${esc(orig)}</div>
         </div>`;
     }).join("");
+    el.querySelectorAll(".archive-card--clickable").forEach((card) => {
+        card.addEventListener("click", (e) => {
+            if (e.target.closest(".archive-restore-btn")) return;
+            openArchiveDetailModal(parseInt(card.dataset.sid, 10));
+        });
+    });
+    el.querySelectorAll(".archive-restore-btn").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            restoreSuggestionFromArchive(parseInt(btn.dataset.sid, 10));
+        });
+    });
+}
+
+async function restoreSuggestionFromArchive(sid) {
+    if (sid == null || Number.isNaN(sid)) return;
+    if (!confirm(`Remettre la suggestion #${sid} en ligne ? Elle réapparaîtra comme « En attente » (votes remis à zéro).`)) return;
+    try {
+        const { data, status } = await API.post("/api/admin/suggestion-archive/restore", { suggestion_id: sid });
+        if (status >= 400) {
+            alert((data && data.error) || "Erreur");
+            return;
+        }
+        await loadSuggestionArchive();
+        await loadAdminSuggestions();
+    } catch (e) {
+        alert("Erreur réseau.");
+    }
 }
 
 async function downloadArchiveExport(format) {
@@ -627,12 +1027,189 @@ function setupLogsSection() {
     document.getElementById("logs-export-json")?.addEventListener("click", () => downloadActivityLogsExport("json"));
     document.getElementById("archive-export-csv")?.addEventListener("click", () => downloadArchiveExport("csv"));
     document.getElementById("archive-export-json")?.addEventListener("click", () => downloadArchiveExport("json"));
+
+    document.getElementById("logs-list")?.addEventListener("click", (e) => {
+        const btn = e.target.closest(".log-open-suggestion-btn");
+        if (!btn) return;
+        const sid = parseInt(btn.dataset.sid, 10);
+        if (Number.isFinite(sid)) void openSuggestionFocusFromLog(sid);
+    });
 }
 
 // ==================== Suggestions ====================
 
 async function loadAdminSuggestions() {
-    try { allSuggestions = await API.get("/api/admin/suggestions"); renderAdminSuggestions(); } catch (e) { console.error(e); }
+    try {
+        allSuggestions = await API.get("/api/admin/suggestions");
+        renderAdminSuggestions();
+        await loadSuggestionsHub();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function navigateToAdminSection(section) {
+    document.querySelector(`[data-section="${section}"]`)?.click();
+}
+
+async function openSuggestionFocusFromLog(sid) {
+    const panel = document.getElementById("suggestion-focus-panel");
+    if (!panel) return;
+    navigateToAdminSection("suggestions");
+    panel.classList.remove("hidden");
+    panel.innerHTML = `<div class="suggestion-focus-loading">Chargement…</div>`;
+    try {
+        history.replaceState(null, "", `${location.pathname}${location.search}#suggestion=${sid}`);
+    } catch (e) {
+        location.hash = `suggestion=${sid}`;
+    }
+    requestAnimationFrame(() => {
+        try {
+            panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        } catch (e) {
+            panel.scrollIntoView();
+        }
+    });
+    try {
+        const data = await API.get(`/api/admin/suggestions/${sid}/stats`);
+        const s = data.suggestion;
+        const st = data.stats;
+        const imp = s.ai_proportion != null ? Math.round(s.ai_proportion * 100) : null;
+        const fais = s.ai_feasibility != null ? Math.round(s.ai_feasibility * 100) : null;
+        const cout = s.ai_cost != null ? Math.round(s.ai_cost * 100) : null;
+        panel.innerHTML = `
+<div class="suggestion-focus-inner">
+  <div class="suggestion-focus-head">
+    <h2 class="suggestion-focus-title">#${s.id} — ${esc(s.title)}</h2>
+    <button type="button" class="btn btn-ghost suggestion-focus-close" aria-label="Fermer">×</button>
+  </div>
+  <div class="suggestion-focus-meta">
+    <span class="badge badge-category">${esc(s.category)}</span>
+    <span class="badge badge-status">${esc(s.status)}</span>
+  </div>
+  ${s.subtitle ? `<p class="suggestion-focus-sub">${esc(s.subtitle)}</p>` : ""}
+  <p class="suggestion-focus-original">« ${esc(s.original_text)} »</p>
+  <div class="suggestion-focus-stats-grid">
+    <div class="suggestion-focus-stat"><span class="sf-val">${st.total_votes}</span><span class="sf-lbl">Votes / soutiens</span></div>
+    <div class="suggestion-focus-stat"><span class="sf-val">${st.votes_for}</span><span class="sf-lbl">Pour</span></div>
+    <div class="suggestion-focus-stat"><span class="sf-val">${st.votes_against}</span><span class="sf-lbl">Contre</span></div>
+    <div class="suggestion-focus-stat"><span class="sf-val">${st.arguments_total}</span><span class="sf-lbl">Arguments</span></div>
+    <div class="suggestion-focus-stat"><span class="sf-val">${st.arguments_pending}</span><span class="sf-lbl">Arguments en attente</span></div>
+    <div class="suggestion-focus-stat"><span class="sf-val">${st.importance_ratings_count ?? "—"}</span><span class="sf-lbl">Notes d’importance</span></div>
+    <div class="suggestion-focus-stat"><span class="sf-val">${st.importance_average_level != null ? st.importance_average_level : "—"}</span><span class="sf-lbl">Moy. importance (1–4)</span></div>
+  </div>
+  <div class="suggestion-focus-ai">
+    <p><strong>Score importance (agrégé) :</strong> ${s.importance_score != null ? Number(s.importance_score).toFixed(1) : "—"} / 100</p>
+    <p><strong>Évaluation IA :</strong> impact ${imp != null ? imp + " %" : "—"} · faisabilité ${fais != null ? fais + " %" : "—"} · coût ${cout != null ? cout + " %" : "—"}</p>
+  </div>
+  <div class="suggestion-focus-actions">
+    <a class="btn btn-sm btn-secondary" href="/api/admin/suggestions/${sid}/pdf" target="_blank" rel="noopener" download>Télécharger PDF</a>
+    <button type="button" class="btn btn-sm btn-secondary suggestion-focus-history-btn" data-sid="${sid}">Historique</button>
+  </div>
+</div>`;
+        panel.querySelector(".suggestion-focus-close")?.addEventListener("click", () => {
+            panel.classList.add("hidden");
+            panel.innerHTML = "";
+            try {
+                history.replaceState(null, "", location.pathname + location.search);
+            } catch (e) { /* ignore */ }
+        });
+        panel.querySelector(".suggestion-focus-history-btn")?.addEventListener("click", () => {
+            openHistoryModal("suggestion", sid);
+        });
+    } catch (e) {
+        console.error(e);
+        panel.innerHTML = `<p class="empty-msg">Impossible de charger la suggestion.</p>`;
+    }
+}
+
+async function loadSuggestionsHub() {
+    const hub = document.getElementById("admin-suggestions-hub");
+    if (!hub) return;
+    try {
+        const settings = await API.get("/api/admin/settings");
+        const tp = document.getElementById("hub-toggle-official-proposal");
+        const ti = document.getElementById("hub-toggle-cvl-info");
+        const tm = document.getElementById("hub-toggle-music-poll");
+        const trb = document.getElementById("hub-toggle-ringtone-banner");
+        if (tp) tp.checked = settings.feature_official_proposal_enabled !== "false";
+        if (ti) ti.checked = settings.feature_cvl_official_info_enabled !== "false";
+        if (tm) tm.checked = settings.feature_music_poll_enabled !== "false";
+        if (trb) trb.checked = settings.feature_ringtone_banner_enabled === "true";
+
+        const [plist, infos, mPolls] = await Promise.all([
+            API.get("/api/admin/official-proposals"),
+            API.get("/api/admin/cvl-official-info"),
+            API.get("/api/admin/music-polls"),
+        ]);
+        const proposals = Array.isArray(plist) ? plist : [];
+        const activeP = proposals.find((x) => x.active);
+        const sp = document.getElementById("hub-summary-official-proposal");
+        if (sp) {
+            sp.textContent = activeP
+                ? `Affichée : #${activeP.id} (${activeP.status || ""}) — ${activeP.vote_for ?? 0} pour / ${activeP.vote_against ?? 0} contre`
+                : proposals.length
+                  ? `Aucune active (${proposals.length} au catalogue — utiliser Publier dans l’éditeur)`
+                  : "Aucune proposition créée";
+        }
+
+        const infolist = Array.isArray(infos) ? infos : [];
+        const activeCount = infolist.filter((x) => x.active !== false).length;
+        const si = document.getElementById("hub-summary-cvl-info");
+        if (si) {
+            si.textContent =
+                infolist.length === 0
+                    ? "Aucune information"
+                    : `${activeCount} active(s) / ${infolist.length} au total`;
+        }
+
+        const polls = (mPolls && mPolls.polls) || [];
+        const spotifyOk = mPolls && mPolls.spotify_configured;
+        const activePoll = polls.find((p) => p.is_active);
+        const sm = document.getElementById("hub-summary-music-poll");
+        if (sm) {
+            sm.textContent = !spotifyOk
+                ? "Spotify non configuré — voir la carte API dans « Sondage musique »"
+                : activePoll
+                  ? `Sondage actif : « ${activePoll.title} » (${activePoll.track_count} morceaux)`
+                  : polls.length
+                    ? `${polls.length} sondage(s) enregistré(s), aucun actif`
+                    : "Aucun sondage créé";
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function setupSuggestionsHub() {
+    document.getElementById("hub-toggle-official-proposal")?.addEventListener("change", async (e) => {
+        await API.put("/api/admin/settings", { feature_official_proposal_enabled: e.target.checked ? "true" : "false" });
+    });
+    document.getElementById("hub-toggle-cvl-info")?.addEventListener("change", async (e) => {
+        await API.put("/api/admin/settings", { feature_cvl_official_info_enabled: e.target.checked ? "true" : "false" });
+    });
+    document.getElementById("hub-toggle-music-poll")?.addEventListener("change", async (e) => {
+        await API.put("/api/admin/settings", { feature_music_poll_enabled: e.target.checked ? "true" : "false" });
+    });
+    document.getElementById("hub-toggle-ringtone-banner")?.addEventListener("change", async (e) => {
+        await setRingtoneBannerEnabledFromUi(e.target.checked);
+    });
+    document.getElementById("hub-btn-open-cvl-proposal")?.addEventListener("click", () => navigateToAdminSection("cvl-proposal"));
+    document.getElementById("hub-btn-open-cvl-info")?.addEventListener("click", () => navigateToAdminSection("cvl-official-info"));
+    document.getElementById("hub-btn-open-music-poll")?.addEventListener("click", () => navigateToAdminSection("music-poll"));
+    document.getElementById("hub-btn-close-cvl-proposal")?.addEventListener("click", async () => {
+        if (!confirm("Retirer la proposition officielle de l’affichage côté élèves ?")) return;
+        await API.post("/api/admin/official-proposal/close", {});
+        await loadSuggestionsHub();
+    });
+    document.getElementById("hub-btn-publish-cvl-proposal")?.addEventListener("click", async () => {
+        const { data, status } = await API.post("/api/admin/official-proposal/publish", {});
+        if (status >= 400) {
+            alert((data && data.error) || "Erreur");
+            return;
+        }
+        await loadSuggestionsHub();
+    });
 }
 function renderAdminSuggestions() {
     const cf = document.getElementById("admin-filter-category").value;
@@ -1994,6 +2571,8 @@ async function loadBusSettings() {
         if (useStatic) useStatic.checked = data.bus_use_static || false;
         const restrictSched = document.getElementById("bus-restrict-to-schedule");
         if (restrictSched) restrictSched.checked = data.bus_restrict_to_schedule || false;
+        const tvSchedOnly = document.getElementById("bus-tv-show-only-during-schedule");
+        if (tvSchedOnly) tvSchedOnly.checked = data.bus_tv_show_only_during_schedule || false;
         document.getElementById("bus-force-display").checked = data.bus_force_display || false;
         document.getElementById("bus-force-display-until").value = data.bus_force_display_until ? data.bus_force_display_until.slice(0, 16) : "";
         document.getElementById("bus-alternance-enabled").checked = data.bus_alternance_enabled || false;
@@ -2082,6 +2661,7 @@ async function saveBusSettings() {
         bus_api_key: document.getElementById("bus-api-key")?.value?.trim() || "",
         bus_use_static: document.getElementById("bus-use-static")?.checked || false,
         bus_restrict_to_schedule: document.getElementById("bus-restrict-to-schedule")?.checked || false,
+        bus_tv_show_only_during_schedule: document.getElementById("bus-tv-show-only-during-schedule")?.checked || false,
         bus_force_display: document.getElementById("bus-force-display")?.checked || false,
         bus_force_display_until: until ? new Date(until).toISOString().slice(0, 19) : "",
         bus_schedule: schedule,
@@ -2258,6 +2838,10 @@ function setupSettings() {
         updateSettingsHints();
     });
 
+    document.getElementById("toggle-feature-ringtone-banner")?.addEventListener("change", async (e) => {
+        await setRingtoneBannerEnabledFromUi(e.target.checked);
+    });
+
     document.getElementById("display-mode-select").addEventListener("change", async (e) => {
         await API.put("/api/admin/settings", { display_mode: e.target.value });
         updateSettingsHints();
@@ -2273,6 +2857,17 @@ function setupSettings() {
         s.textContent = "\u2713 Sauvegard\u00e9";
         setTimeout(() => (s.textContent = ""), 2000);
     });
+
+    document.getElementById("save-subtitle-threshold")?.addEventListener("click", async () => {
+        const raw = parseInt(document.getElementById("subtitle-like-threshold")?.value, 10);
+        const v = Math.max(2, Math.min(200, Number.isFinite(raw) ? raw : 5));
+        await API.put("/api/admin/settings", { subtitle_like_threshold: String(v) });
+        const st = document.getElementById("subtitle-threshold-save-status");
+        if (st) {
+            st.textContent = "\u2713 Sauvegard\u00e9";
+            setTimeout(() => (st.textContent = ""), 2000);
+        }
+    });
 }
 
 async function loadSettings() {
@@ -2281,10 +2876,14 @@ async function loadSettings() {
         document.getElementById("toggle-submissions").checked = settings.submissions_open !== "false";
         document.getElementById("toggle-feature-bus").checked = settings.feature_bus_enabled !== "false";
         document.getElementById("toggle-feature-display-dynamic").checked = settings.feature_display_dynamic_enabled !== "false";
+        const tr = document.getElementById("toggle-feature-ringtone-banner");
+        if (tr) tr.checked = settings.feature_ringtone_banner_enabled === "true";
         document.getElementById("display-mode-select").value = settings.display_mode || "normal";
         document.getElementById("waiting-title-input").value = settings.display_waiting_title || "";
         document.getElementById("waiting-text-input").value = settings.display_waiting_text || "";
         document.getElementById("waiting-text-config").classList.toggle("hidden", settings.display_mode !== "waiting");
+        const stThr = document.getElementById("subtitle-like-threshold");
+        if (stThr) stThr.value = settings.subtitle_like_threshold ?? "5";
         updateSettingsHints();
     } catch (e) {
         console.error(e);
@@ -2309,6 +2908,13 @@ function updateSettingsHints() {
     if (displayDynamicHint) {
         displayDynamicHint.textContent = displayDynamicEnabled ? "Activ\u00e9" : "D\u00e9sactiv\u00e9";
         displayDynamicHint.style.color = displayDynamicEnabled ? "var(--success)" : "var(--error)";
+    }
+
+    const ringtoneOn = document.getElementById("toggle-feature-ringtone-banner")?.checked ?? false;
+    const ringtoneHint = document.getElementById("feature-ringtone-hint");
+    if (ringtoneHint) {
+        ringtoneHint.textContent = ringtoneOn ? "Activ\u00e9" : "D\u00e9sactiv\u00e9";
+        ringtoneHint.style.color = ringtoneOn ? "var(--success)" : "var(--error)";
     }
 
     const mode = document.getElementById("display-mode-select").value;
@@ -3507,6 +4113,647 @@ function renderOverview() {
     html += `</div></div>`;
 
     el.innerHTML = html;
+}
+
+// ==================== Sondage musique ====================
+
+let musicPollList = [];
+let musicPollCurrentId = null;
+
+function isoToDatetimeLocal(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function datetimeLocalToIso(val) {
+    if (!val || !String(val).trim()) return null;
+    const d = new Date(val);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
+}
+
+/** Préécoute : proxy admin (Spotify p.scdn.co + extraits Deezer *.dzcdn.net). */
+function spotifyPreviewSrcForAdmin(url) {
+    if (!url || typeof url !== "string") return "";
+    const u = url.trim();
+    if (!u.startsWith("https://")) return u;
+    if (u.startsWith("https://p.scdn.co/") || u.includes(".dzcdn.net/")) {
+        return `/api/admin/spotify/preview-audio?url=${encodeURIComponent(u)}`;
+    }
+    return u;
+}
+
+let musicPollTabsSetupDone = false;
+
+async function setRingtoneBannerEnabledFromUi(checked) {
+    await API.put("/api/admin/settings", { feature_ringtone_banner_enabled: checked ? "true" : "false" });
+    const t = document.getElementById("toggle-feature-ringtone-banner");
+    const h = document.getElementById("hub-toggle-ringtone-banner");
+    const r = document.getElementById("ringtone-banner-enabled");
+    if (t) t.checked = checked;
+    if (h) h.checked = checked;
+    if (r) r.checked = checked;
+    updateSettingsHints();
+}
+
+function setupMusicPollTabs() {
+    if (musicPollTabsSetupDone) return;
+    musicPollTabsSetupDone = true;
+    document.querySelectorAll("[data-music-poll-tab]").forEach((btn) => {
+        btn.addEventListener("click", () => switchMusicPollTab(btn.getAttribute("data-music-poll-tab")));
+    });
+}
+
+function switchMusicPollTab(tab) {
+    const editor = document.getElementById("music-poll-tab-panel-editor");
+    const results = document.getElementById("music-poll-tab-panel-results");
+    const be = document.getElementById("music-poll-tab-btn-editor");
+    const br = document.getElementById("music-poll-tab-btn-results");
+    if (!editor || !results) return;
+    const isEditor = tab === "editor";
+    editor.classList.toggle("hidden", !isEditor);
+    results.classList.toggle("hidden", isEditor);
+    if (be) {
+        be.classList.toggle("music-poll-tab-btn--active", isEditor);
+        be.setAttribute("aria-selected", isEditor ? "true" : "false");
+    }
+    if (br) {
+        br.classList.toggle("music-poll-tab-btn--active", !isEditor);
+        br.setAttribute("aria-selected", !isEditor ? "true" : "false");
+    }
+    if (!isEditor) refreshRingtoneAdminPanel();
+}
+
+async function refreshRingtoneAdminPanel() {
+    const disp = document.getElementById("ringtone-current-display");
+    const empty = document.getElementById("ringtone-active-poll-empty");
+    const resultsEl = document.getElementById("ringtone-poll-results-clickable");
+    try {
+        const data = await API.get("/api/admin/ringtone");
+        const enabled = !!data.enabled;
+        const rb = document.getElementById("ringtone-banner-enabled");
+        const tf = document.getElementById("toggle-feature-ringtone-banner");
+        const hub = document.getElementById("hub-toggle-ringtone-banner");
+        if (rb) rb.checked = enabled;
+        if (tf) tf.checked = enabled;
+        if (hub) hub.checked = enabled;
+        updateSettingsHints();
+        const sel = data.selection;
+        if (disp) {
+            if (!sel || !sel.title) {
+                disp.innerHTML = `<p class="empty-msg">Aucun morceau sélectionné.</p>`;
+            } else {
+                const th = sel.thumbnail_url
+                    ? `<img class="ringtone-admin-thumb" src="${esc(sel.thumbnail_url)}" alt="" width="72" height="72" loading="lazy">`
+                    : `<div class="ringtone-admin-thumb ringtone-admin-thumb--ph" aria-hidden="true">♪</div>`;
+                const src = sel.source === "poll" ? "Sondage" : "Spotify";
+                disp.innerHTML = `<div class="ringtone-current-row">${th}<div><strong>${esc(sel.title)}</strong><br><span>${esc(
+                    sel.artist || "",
+                )}</span><br><span class="context-hint">Source : ${src}</span></div></div>`;
+            }
+        }
+        const ap = data.active_poll;
+        if (!ap) {
+            if (empty) empty.classList.remove("hidden");
+            if (resultsEl) resultsEl.innerHTML = "";
+            return;
+        }
+        if (empty) empty.classList.add("hidden");
+        if (!resultsEl) return;
+        if (!ap.tracks || !ap.tracks.length) {
+            resultsEl.innerHTML = `<p class="empty-msg">Aucun morceau dans le sondage actif.</p>`;
+            return;
+        }
+        const total = ap.total_votes || 0;
+        let html = `<p class="music-poll-results-total">Sondage « ${esc(ap.title)} » — total des votes : <strong>${total}</strong></p>`;
+        html += `<div class="music-poll-results-bars">`;
+        ap.tracks.forEach((row, i) => {
+            const pct = total ? Math.round((100 * row.vote_count) / total) : 0;
+            const isSel = sel && sel.source === "poll" && sel.poll_id === ap.id && sel.track_id === row.id;
+            html += `<div class="music-poll-result-row music-poll-result-row--selectable${
+                isSel ? " music-poll-result-row--selected" : ""
+            }" data-poll-id="${ap.id}" data-track-id="${row.id}" role="button" tabindex="0">
+  <div class="music-poll-result-head">
+    <span class="music-poll-result-label">${i + 1}. ${esc(row.title)} — ${esc(row.artist)}</span>
+    <span class="music-poll-result-num">${row.vote_count} vote(s) · ${pct}%</span>
+  </div>
+  <div class="music-poll-result-bar-wrap">
+    <div class="music-poll-result-bar" style="width:${pct}%"></div>
+  </div>
+</div>`;
+        });
+        html += `</div>`;
+        resultsEl.innerHTML = html;
+    } catch (e) {
+        console.error(e);
+        if (resultsEl) resultsEl.innerHTML = `<p class="empty-msg">Impossible de charger les résultats.</p>`;
+    }
+}
+
+function setupRingtoneAdminPanel() {
+    document.getElementById("ringtone-apply-spotify-btn")?.addEventListener("click", async () => {
+        const url = document.getElementById("ringtone-spotify-url")?.value?.trim() || "";
+        const st = document.getElementById("ringtone-save-status");
+        if (!url) {
+            if (st) st.textContent = "Collez un lien Spotify.";
+            return;
+        }
+        if (st) st.textContent = "Enregistrement…";
+        const { data, status } = await API.put("/api/admin/ringtone", { selection: { source: "manual", spotify_url: url } });
+        if (status >= 400) {
+            if (st) st.textContent = data.error || "Erreur";
+            return;
+        }
+        if (st) st.textContent = "\u2713 Enregistré";
+        setTimeout(() => {
+            if (st) st.textContent = "";
+        }, 2500);
+        await refreshRingtoneAdminPanel();
+    });
+    document.getElementById("ringtone-clear-btn")?.addEventListener("click", async () => {
+        const { data, status } = await API.put("/api/admin/ringtone", { clear_selection: true });
+        if (status >= 400) {
+            alert(data.error || "Erreur");
+            return;
+        }
+        const inp = document.getElementById("ringtone-spotify-url");
+        if (inp) inp.value = "";
+        await refreshRingtoneAdminPanel();
+    });
+    const ringtoneResultsEl = document.getElementById("ringtone-poll-results-clickable");
+    const applyRingtoneRowSelection = async (row) => {
+        if (!row) return;
+        const pollId = parseInt(row.dataset.pollId, 10);
+        const trackId = parseInt(row.dataset.trackId, 10);
+        const { data, status } = await API.put("/api/admin/ringtone", {
+            selection: { source: "poll", poll_id: pollId, track_id: trackId },
+        });
+        if (status >= 400) {
+            alert(data.error || "Erreur");
+            return;
+        }
+        await refreshRingtoneAdminPanel();
+    };
+    ringtoneResultsEl?.addEventListener("click", async (e) => {
+        const row = e.target.closest(".music-poll-result-row--selectable");
+        if (!row) return;
+        await applyRingtoneRowSelection(row);
+    });
+    ringtoneResultsEl?.addEventListener("keydown", async (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const row = e.target.closest(".music-poll-result-row--selectable");
+        if (!row) return;
+        e.preventDefault();
+        await applyRingtoneRowSelection(row);
+    });
+    document.getElementById("ringtone-banner-enabled")?.addEventListener("change", async (e) => {
+        await setRingtoneBannerEnabledFromUi(e.target.checked);
+    });
+}
+
+function setupMusicPoll() {
+    setupMusicPollTabs();
+    setupRingtoneAdminPanel();
+    document.getElementById("music-poll-selector").addEventListener("change", onMusicPollSelectorChange);
+    document.getElementById("music-poll-new-btn").addEventListener("click", newMusicPollForm);
+    document.getElementById("music-poll-save-btn").addEventListener("click", saveMusicPoll);
+    document.getElementById("music-poll-publish-btn")?.addEventListener("click", publishMusicPoll);
+    document.getElementById("music-poll-delete-btn").addEventListener("click", deleteMusicPoll);
+    document.getElementById("music-poll-add-track-btn").addEventListener("click", addMusicPollTrack);
+    document.getElementById("music-poll-refresh-preview-btn")?.addEventListener("click", refreshMusicPollPreview);
+    document.getElementById("music-poll-test-playlist-btn")?.addEventListener("click", testMusicPollPlaylist);
+}
+
+async function refreshMusicPollPreview() {
+    const wrap = document.getElementById("music-poll-student-preview");
+    if (!wrap) return;
+    const editId = document.getElementById("music-poll-edit-id").value;
+    window.MusicPollWidget?.stopAll?.();
+    if (!editId) {
+        wrap.innerHTML = `<p class="empty-msg">Enregistrez d’abord le sondage (titre + Enregistrer), puis ajoutez des morceaux.</p>`;
+        return;
+    }
+    wrap.innerHTML = `<p class="empty-msg">Chargement…</p>`;
+    try {
+        const data = await API.get(`/api/admin/music-poll/${editId}/preview`);
+        if (!data.active) {
+            wrap.innerHTML = `<p class="empty-msg">${esc(data.message || "Aperçu indisponible.")}</p>`;
+            return;
+        }
+        const MW = window.MusicPollWidget;
+        if (!MW || !MW.buildDOM || !MW.bindPreview) {
+            wrap.innerHTML = `<p class="empty-msg">Script sondage musique manquant.</p>`;
+            return;
+        }
+        wrap.innerHTML = "";
+        const el = MW.buildDOM(data.poll);
+        el.classList.add("music-poll--admin-preview");
+        el.id = "music-poll-admin-preview-module";
+        wrap.appendChild(el);
+        MW.bindPreview(el);
+        el.querySelectorAll(".music-track-card").forEach((card) => {
+            const u = card.dataset.previewUrl;
+            if (u) card.dataset.previewUrl = spotifyPreviewSrcForAdmin(u);
+        });
+    } catch (e) {
+        console.error(e);
+        wrap.innerHTML = `<p class="empty-msg">Impossible de charger l’aperçu.</p>`;
+    }
+}
+
+async function testMusicPollPlaylist() {
+    const url = document.getElementById("music-poll-playlist").value.trim();
+    const statusEl = document.getElementById("music-poll-playlist-test-status");
+    const previewEl = document.getElementById("music-poll-playlist-preview");
+    if (!statusEl || !previewEl) return;
+    if (!url) {
+        statusEl.textContent = "Collez d’abord un lien Spotify.";
+        statusEl.style.color = "";
+        previewEl.classList.add("hidden");
+        previewEl.innerHTML = "";
+        return;
+    }
+    statusEl.textContent = "Vérification…";
+    statusEl.style.color = "";
+    previewEl.classList.add("hidden");
+    previewEl.innerHTML = "";
+    try {
+        const { data, status } = await API.post("/api/admin/spotify/verify-playlist", { url });
+        if (status === 503) {
+            statusEl.textContent = data.error || "Spotify non configuré.";
+            return;
+        }
+        if (status >= 400 && !data.ok) {
+            statusEl.textContent = data.error || "Erreur.";
+            return;
+        }
+        if (!data.ok) {
+            const detail = data.detail ? ` (${data.detail})` : "";
+            statusEl.textContent = (data.error || "Échec.") + detail;
+            return;
+        }
+        statusEl.textContent = data.message || "OK.";
+        statusEl.style.color = "#15803d";
+        setTimeout(() => {
+            statusEl.textContent = "";
+            statusEl.style.color = "";
+        }, 8000);
+        previewEl.classList.remove("hidden");
+        const thumb = data.thumbnail_url
+            ? `<img class="music-poll-playlist-preview-thumb" src="${esc(data.thumbnail_url)}" alt="" width="64" height="64" loading="lazy">`
+            : `<div class="music-poll-admin-thumb music-poll-admin-thumb--ph" aria-hidden="true">♪</div>`;
+        previewEl.innerHTML = `<div class="music-poll-playlist-preview-card">${thumb}<div class="music-poll-playlist-preview-meta"><strong>${esc(
+            data.name || "Playlist"
+        )}</strong><a href="${esc(data.external_url)}" target="_blank" rel="noopener">Ouvrir sur Spotify ↗</a></div></div>`;
+    } catch (e) {
+        console.error(e);
+        statusEl.textContent = "Erreur réseau.";
+    }
+}
+
+function onMusicPollSelectorChange() {
+    const id = document.getElementById("music-poll-selector").value;
+    if (!id) {
+        newMusicPollForm();
+        return;
+    }
+    loadMusicPollDetail(parseInt(id, 10));
+}
+
+async function loadSpotifyAdmin() {
+    try {
+        const d = await API.get("/api/admin/spotify-settings");
+        document.getElementById("spotify-client-id").value = d.client_id || "";
+        const badge = document.getElementById("spotify-config-badge");
+        const warn = document.getElementById("music-poll-spotify-warning");
+        const envHint = document.getElementById("spotify-env-hint");
+        if (d.configured) {
+            badge.textContent = "Configuré";
+            badge.className = "spotify-config-badge spotify-config-badge--on";
+            warn.classList.add("hidden");
+        } else {
+            badge.textContent = "Non configuré";
+            badge.className = "spotify-config-badge spotify-config-badge--off";
+            warn.classList.remove("hidden");
+        }
+        const efb = d.env_fallback_active || {};
+        if (efb.client_id || efb.client_secret) {
+            envHint.textContent =
+                "Une partie des identifiants provient des variables d’environnement du serveur (complément ou secours).";
+            envHint.classList.remove("hidden");
+        } else {
+            envHint.classList.add("hidden");
+        }
+        const shell = document.getElementById("spotify-secret-shell");
+        const veil = document.getElementById("spotify-secret-veil");
+        const input = document.getElementById("spotify-client-secret");
+        const dots = document.getElementById("spotify-secret-dots");
+        document.getElementById("spotify-clear-secret").checked = false;
+        if (dots) dots.textContent = d.client_secret_hint || "••••••••";
+        if (d.client_secret_configured) {
+            shell.classList.add("is-locked");
+            shell.classList.remove("is-revealed");
+            veil.classList.remove("hidden");
+            input.value = "";
+            input.placeholder = d.client_secret_hint
+                ? `Secret enregistré (${d.client_secret_hint})`
+                : "Secret enregistré";
+        } else {
+            shell.classList.remove("is-locked");
+            shell.classList.add("is-revealed");
+            veil.classList.add("hidden");
+            input.value = "";
+            input.placeholder = "Collez le Client Secret (dashboard Spotify)";
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function saveSpotifySettings() {
+    const status = document.getElementById("spotify-save-status");
+    status.textContent = "Enregistrement…";
+    const body = { client_id: document.getElementById("spotify-client-id").value };
+    if (document.getElementById("spotify-clear-secret").checked) {
+        body.clear_client_secret = true;
+    } else {
+        const sec = document.getElementById("spotify-client-secret").value.trim();
+        if (sec) body.client_secret = sec;
+    }
+    try {
+        const { data, status: st } = await API.put("/api/admin/spotify-settings", body);
+        if (st >= 400) throw new Error(data.error || "Erreur");
+        status.textContent = data.test_message || "Enregistré.";
+        status.title = data.test_message || "";
+        status.style.color = data.test_ok === false ? "#b45309" : "";
+        setTimeout(() => {
+            status.textContent = "";
+            status.title = "";
+            status.style.color = "";
+        }, 10000);
+        await loadSpotifyAdmin();
+    } catch (e) {
+        status.textContent = e.message || "Erreur";
+    }
+}
+
+function setupSpotifyApiCard() {
+    document.getElementById("spotify-save-btn").addEventListener("click", saveSpotifySettings);
+    document.getElementById("spotify-secret-veil").addEventListener("click", (e) => {
+        e.preventDefault();
+        const shell = document.getElementById("spotify-secret-shell");
+        const veil = document.getElementById("spotify-secret-veil");
+        const input = document.getElementById("spotify-client-secret");
+        shell.classList.remove("is-locked");
+        shell.classList.add("is-revealed");
+        veil.classList.add("hidden");
+        input.value = "";
+        input.placeholder = "Saisir le nouveau Client Secret";
+        input.focus();
+    });
+}
+
+async function loadMusicPollAdmin() {
+    await loadSpotifyAdmin();
+    try {
+        const data = await API.get("/api/admin/music-polls");
+        musicPollList = data.polls || [];
+        const sel = document.getElementById("music-poll-selector");
+        sel.innerHTML = "";
+        const o0 = document.createElement("option");
+        o0.value = "";
+        o0.textContent = "— Choisir —";
+        sel.appendChild(o0);
+        musicPollList.forEach((p) => {
+            const o = document.createElement("option");
+            o.value = String(p.id);
+            o.textContent = `#${p.id} ${p.title} (${p.track_count} morceaux)${p.is_active ? " · actif" : ""}`;
+            sel.appendChild(o);
+        });
+        if (musicPollCurrentId && musicPollList.some((x) => x.id === musicPollCurrentId)) {
+            sel.value = String(musicPollCurrentId);
+            await loadMusicPollDetail(musicPollCurrentId);
+        } else if (musicPollList.length) {
+            sel.value = String(musicPollList[0].id);
+            await loadMusicPollDetail(musicPollList[0].id);
+        } else {
+            newMusicPollForm();
+        }
+        await refreshRingtoneAdminPanel();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function newMusicPollForm() {
+    musicPollCurrentId = null;
+    document.getElementById("music-poll-edit-id").value = "";
+    document.getElementById("music-poll-selector").value = "";
+    document.getElementById("music-poll-title").value = "";
+    document.getElementById("music-poll-max-votes").value = "1";
+    document.getElementById("music-poll-end").value = "";
+    document.getElementById("music-poll-playlist").value = "";
+    document.getElementById("music-poll-active").checked = false;
+    document.getElementById("music-poll-tracks-admin").innerHTML = "";
+    const rr = document.getElementById("ringtone-poll-results-clickable");
+    if (rr) rr.innerHTML = "";
+    document.getElementById("music-poll-save-status").textContent = "";
+    document.getElementById("music-poll-playlist-test-status").textContent = "";
+    const plp = document.getElementById("music-poll-playlist-preview");
+    if (plp) {
+        plp.classList.add("hidden");
+        plp.innerHTML = "";
+    }
+    window.MusicPollWidget?.stopAll?.();
+    const prev = document.getElementById("music-poll-student-preview");
+    if (prev) prev.innerHTML = `<p class="empty-msg">Enregistrez d’abord le sondage (titre + Enregistrer), puis ajoutez des morceaux.</p>`;
+}
+
+async function loadMusicPollDetail(pollId) {
+    musicPollCurrentId = pollId;
+    try {
+        const data = await API.get(`/api/admin/music-poll/${pollId}`);
+        const p = data.poll;
+        document.getElementById("music-poll-edit-id").value = String(p.id);
+        document.getElementById("music-poll-title").value = p.title || "";
+        document.getElementById("music-poll-max-votes").value = String(p.max_votes || 1);
+        document.getElementById("music-poll-end").value = isoToDatetimeLocal(p.end_date);
+        document.getElementById("music-poll-playlist").value = p.spotify_playlist_url || "";
+        document.getElementById("music-poll-active").checked = !!p.is_active;
+        renderMusicPollTracksAdmin(p.tracks || []);
+        await refreshMusicPollPreview();
+        await refreshRingtoneAdminPanel();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function renderMusicPollTracksAdmin(tracks) {
+    const el = document.getElementById("music-poll-tracks-admin");
+    if (!tracks.length) {
+        el.innerHTML = `<p class="empty-msg">Aucun morceau. Colle un lien Spotify (track) ci-dessus.</p>`;
+        return;
+    }
+    el.innerHTML = tracks
+        .map(
+            (t) => `
+<div class="music-poll-admin-track-card" data-track-id="${t.id}">
+  ${t.thumbnail_url ? `<img class="music-poll-admin-thumb" src="${esc(t.thumbnail_url)}" alt="" width="56" height="56" loading="lazy">` : `<div class="music-poll-admin-thumb music-poll-admin-thumb--ph" aria-hidden="true">♪</div>`}
+  <div class="music-poll-admin-track-meta">
+    <strong>${esc(t.title)}</strong>
+    <span>${esc(t.artist)}</span>
+    <span class="music-poll-admin-preview">Aperçu : ${t.preview_available ? "✓" : "✗"} · votes : ${t.vote_count}${t.preview_available ? "" : " <span class=\"music-poll-no-prev-badge\">⚠ Aperçu indisponible</span>"}</span>
+  </div>
+  <div class="music-poll-admin-track-actions">
+    ${t.preview_url ? `<button type="button" class="btn btn-sm btn-secondary music-poll-preview-test">Tester l'aperçu</button>` : ""}
+    <button type="button" class="btn btn-sm btn-secondary music-poll-track-del" data-track-id="${t.id}">Supprimer</button>
+  </div>
+</div>`
+        )
+        .join("");
+    el.querySelectorAll(".music-poll-track-del").forEach((btn) => {
+        btn.addEventListener("click", () => deleteMusicPollTrack(parseInt(btn.dataset.trackId, 10)));
+    });
+    el.querySelectorAll(".music-poll-admin-track-card").forEach((card) => {
+        const tid = parseInt(card.dataset.trackId, 10);
+        const tr = tracks.find((x) => x.id === tid);
+        const testBtn = card.querySelector(".music-poll-preview-test");
+        if (testBtn && tr && tr.preview_url) {
+            testBtn.addEventListener("click", () => {
+                const a = new Audio(spotifyPreviewSrcForAdmin(tr.preview_url));
+                a.volume = 0.8;
+                a.play().catch(() => {});
+            });
+        }
+    });
+}
+
+async function publishMusicPoll() {
+    const status = document.getElementById("music-poll-save-status");
+    const title = document.getElementById("music-poll-title").value.trim();
+    if (!title) {
+        status.textContent = "Titre requis.";
+        return;
+    }
+    const editId = document.getElementById("music-poll-edit-id").value;
+    if (!editId) {
+        status.textContent = "Enregistrez d’abord le sondage (titre + Enregistrer).";
+        return;
+    }
+    document.getElementById("music-poll-active").checked = true;
+    status.textContent = "Publication…";
+    const body = {
+        title,
+        max_votes: parseInt(document.getElementById("music-poll-max-votes").value, 10) || 1,
+        end_date: datetimeLocalToIso(document.getElementById("music-poll-end").value),
+        spotify_playlist_url: document.getElementById("music-poll-playlist").value.trim() || null,
+        is_active: true,
+    };
+    try {
+        const { data, status: st } = await API.put(`/api/admin/music-poll/${editId}`, body);
+        if (st >= 400) throw new Error(data.error || "Erreur");
+        musicPollCurrentId = data.poll.id;
+        status.textContent = "Publié (actif).";
+        setTimeout(() => {
+            status.textContent = "";
+        }, 3000);
+        await loadMusicPollAdmin();
+    } catch (e) {
+        status.textContent = e.message || "Erreur";
+    }
+}
+
+async function saveMusicPoll() {
+    const status = document.getElementById("music-poll-save-status");
+    const title = document.getElementById("music-poll-title").value.trim();
+    if (!title) {
+        status.textContent = "Titre requis.";
+        return;
+    }
+    const body = {
+        title,
+        max_votes: parseInt(document.getElementById("music-poll-max-votes").value, 10) || 1,
+        end_date: datetimeLocalToIso(document.getElementById("music-poll-end").value),
+        spotify_playlist_url: document.getElementById("music-poll-playlist").value.trim() || null,
+        is_active: document.getElementById("music-poll-active").checked,
+    };
+    const editId = document.getElementById("music-poll-edit-id").value;
+    status.textContent = "Enregistrement…";
+    try {
+        if (editId) {
+            const { data, status: st } = await API.put(`/api/admin/music-poll/${editId}`, body);
+            if (st >= 400) throw new Error(data.error || "Erreur");
+            musicPollCurrentId = data.poll.id;
+            status.textContent = "Enregistré.";
+        } else {
+            const { data, status: st } = await API.post("/api/admin/music-poll", body);
+            if (st >= 400) throw new Error(data.error || "Erreur");
+            musicPollCurrentId = data.poll.id;
+            document.getElementById("music-poll-edit-id").value = String(data.poll.id);
+            status.textContent = "Créé.";
+        }
+        setTimeout(() => { status.textContent = ""; }, 2500);
+        await loadMusicPollAdmin();
+    } catch (e) {
+        status.textContent = e.message || "Erreur";
+    }
+}
+
+async function deleteMusicPoll() {
+    const editId = document.getElementById("music-poll-edit-id").value;
+    if (!editId) return;
+    if (!confirm("Supprimer ce sondage et tous les votes ?")) return;
+    try {
+        await API.delete(`/api/admin/music-poll/${editId}`);
+        musicPollCurrentId = null;
+        await loadMusicPollAdmin();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function addMusicPollTrack() {
+    const editId = document.getElementById("music-poll-edit-id").value;
+    if (!editId) {
+        alert("Enregistre d’abord le sondage (titre + Enregistrer).");
+        return;
+    }
+    const url = document.getElementById("music-poll-track-url").value.trim();
+    if (!url) return;
+    const btn = document.getElementById("music-poll-add-track-btn");
+    btn.disabled = true;
+    try {
+        const { data, status } = await API.post(`/api/admin/music-poll/${editId}/tracks`, { spotify_url: url });
+        if (status === 503) {
+            document.getElementById("music-poll-spotify-warning")?.classList.remove("hidden");
+            alert("Spotify non configuré : renseignez Client ID et Secret dans la carte API ci-dessus (ou sur le serveur).");
+            return;
+        }
+        if (status >= 400) {
+            alert(data.error || "Erreur lors de l’ajout");
+            return;
+        }
+        document.getElementById("music-poll-track-url").value = "";
+        await loadMusicPollDetail(parseInt(editId, 10));
+    } catch (e) {
+        alert("Erreur réseau.");
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function deleteMusicPollTrack(trackId) {
+    const editId = document.getElementById("music-poll-edit-id").value;
+    if (!editId) return;
+    try {
+        await API.delete(`/api/admin/music-poll/${editId}/tracks/${trackId}`);
+        await loadMusicPollDetail(parseInt(editId, 10));
+    } catch (e) {
+        console.error(e);
+    }
 }
 
 // ==================== Helpers ====================

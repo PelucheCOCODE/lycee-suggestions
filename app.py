@@ -17,9 +17,11 @@ from functools import wraps
 
 from sqlalchemy.exc import IntegrityError
 
+from urllib.parse import unquote, urlparse
+
 from flask import (
     Flask, render_template, request, jsonify, session, redirect, url_for,
-    send_from_directory, send_file, Response, has_request_context,
+    send_from_directory, send_file, Response, has_request_context, abort,
 )
 
 from sqlalchemy import func
@@ -30,7 +32,9 @@ from models import (
     ActivityLog, TraceFeedback, Backup, SuggestionArchive,
     SuggestionImportance, DailySessionActivity, DailyPresence, EngagementCardDone, EngagementGuess, CommunityMessage, DailyMood,
     Dilemma, DilemmaVote,
+    MusicPoll, MusicTrack, MusicVote,
 )
+import music_utils
 from ai_engine import AIEngine
 from content_filter import filter_content, filter_content_quick
 import bus_gtfs
@@ -55,6 +59,8 @@ app.config["SESSION_COOKIE_NAME"] = "lycee_session"
 # Session anonyme persistante (cookie) — aligné avec get_session_id() qui pose session.permanent = True
 app.config["SESSION_PERMANENT"] = True
 app.config["MINIFY"] = os.environ.get("MINIFY", "true").lower() in ("1", "true", "yes")
+app.config["SPOTIFY_CLIENT_ID"] = os.environ.get("SPOTIFY_CLIENT_ID", "")
+app.config["SPOTIFY_CLIENT_SECRET"] = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 
 
 @app.before_request
@@ -456,10 +462,36 @@ def _check_csrf_safe() -> bool:
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return True
     origin = request.headers.get("Origin")
+    if origin is None:
+        return True
     our_origin = request.url_root.rstrip("/")
-    if origin is not None and origin != our_origin:
-        return False
-    return True
+    if origin == our_origin:
+        return True
+    try:
+        from urllib.parse import urlparse
+
+        o = urlparse(origin)
+        u = urlparse(our_origin)
+
+        def _host_norm(h):
+            if not h:
+                return ""
+            hl = (h or "").lower()
+            if hl in ("127.0.0.1", "localhost", "::1"):
+                return "localhost"
+            return hl
+
+        port_o = o.port if o.port is not None else (443 if o.scheme == "https" else 80)
+        port_u = u.port if u.port is not None else (443 if u.scheme == "https" else 80)
+        if (
+            o.scheme == u.scheme
+            and _host_norm(o.hostname) == _host_norm(u.hostname)
+            and port_o == port_u
+        ):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def admin_required(f):
@@ -525,6 +557,23 @@ def _split_argument_text(text: str) -> list[str]:
     return [text]
 
 
+def _location_extra_aliases(loc: Location) -> list[str]:
+    """Synonymes connus (ex. CDI → lieu « Au cœur » si le nom contient cœur)."""
+    out: list[str] = []
+    n = (loc.name or "").lower()
+    if "coeur" in n or "cœur" in n:
+        out.extend(
+            [
+                "CDI",
+                "cdi",
+                "centre de documentation et d'information",
+                "centre documentation",
+                "documentation",
+            ]
+        )
+    return out
+
+
 def _get_locations_list():
     """Return locations with placements for AI detection."""
     result = []
@@ -533,6 +582,9 @@ def _get_locations_list():
         for p in Placement.query.filter_by(location_id=loc.id).all():
             if p.name:
                 names.append(p.name)
+        for a in _location_extra_aliases(loc):
+            if a and a not in names:
+                names.append(a)
         result.append({"id": loc.id, "name": loc.name, "names": names})
     return result
 
@@ -691,6 +743,7 @@ def engagement_bootstrap():
         Suggestion.status != "Refusée",
     )
     guess_eligible_ids = [s.id for s in query.all() if _terminée_still_visible(s) and s.id not in guessed_sids]
+    mp = _music_poll_active_payload()
     return jsonify({
         "day": day,
         "connected_today": connected,
@@ -701,6 +754,7 @@ def engagement_bootstrap():
         "cards_done_today": done,
         "guess_eligible_ids": guess_eligible_ids,
         "dilemma": _dilemma_payload_for_session(session_id, day),
+        "music_polls": [mp] if mp else [],
     })
 
 
@@ -914,6 +968,29 @@ def engagement_activity_card_dismiss():
     day = _paris_today_str()
     if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="activity").first():
         db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="activity"))
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/engagement/music-poll-dismiss", methods=["POST"])
+def engagement_music_poll_dismiss():
+    """Marque la carte swipe « sondage musique » (par poll_id) comme vue pour la journée."""
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    data = request.get_json() or {}
+    try:
+        pid = int(data.get("poll_id") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid <= 0:
+        return jsonify({"error": "poll_id invalide"}), 400
+    session_id = get_session_id()
+    day = _paris_today_str()
+    ct = f"music_{pid}"
+    if len(ct) > 32:
+        return jsonify({"error": "poll_id trop long"}), 400
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type=ct).first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type=ct))
         db.session.commit()
     return jsonify({"ok": True})
 
@@ -1186,28 +1263,60 @@ def _process_suggestion_background(suggestion_id: int):
     threading.Thread(target=_work, daemon=True).start()
 
 
+def _subtitle_like_threshold() -> int:
+    try:
+        return max(2, int(get_setting("subtitle_like_threshold", "5") or "5"))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _effective_support_count(suggestion: Suggestion) -> int:
+    """Soutiens : votes « classiques » ou, en mode débat, votes Pour uniquement."""
+    if getattr(suggestion, "needs_debate", False):
+        return Vote.query.filter_by(suggestion_id=suggestion.id, vote_type="for").count()
+    return Vote.query.filter_by(suggestion_id=suggestion.id).count()
+
+
 def _maybe_generate_subtitle(suggestion_id: int):
-    """Generate a subtitle when a suggestion reaches 3+ supporters, based on voter original texts."""
+    """Résumé IA agrégé (champ subtitle) dès que le seuil de soutiens est atteint ; régénéré à chaque nouveau soutien."""
     def _work():
         with app.app_context():
             suggestion = Suggestion.query.get(suggestion_id)
             if not suggestion:
                 return
-            if suggestion.vote_count < 3:
+            thr = _subtitle_like_threshold()
+            eff = _effective_support_count(suggestion)
+            if eff < thr:
                 return
-            if suggestion.subtitle:
+            last_gen = int(getattr(suggestion, "subtitle_generated_at_support_count", None) or 0)
+            if suggestion.subtitle and (suggestion.subtitle or "").strip() and eff <= last_gen:
                 return
-
-            original_texts = [suggestion.original_text]
-            votes = Vote.query.filter_by(suggestion_id=suggestion.id).all()
-            for v in votes:
-                if v.original_text and v.original_text not in original_texts:
-                    original_texts.append(v.original_text)
 
             import llm_engine
+
+            if not llm_engine.is_available():
+                return
+
+            original_texts = [(suggestion.original_text or "").strip()]
+            votes = Vote.query.filter_by(suggestion_id=suggestion.id).all()
+            for v in votes:
+                t = (v.original_text or "").strip()
+                if t and t not in original_texts:
+                    original_texts.append(t)
+            if getattr(suggestion, "needs_debate", False):
+                args = SuggestionArgument.query.filter_by(suggestion_id=suggestion.id, status="approved").all()
+                for a in args:
+                    piece = ((a.summary or a.original_text or "").strip())
+                    if not piece:
+                        continue
+                    label = f"[{a.side}] {piece}"
+                    if label not in original_texts:
+                        original_texts.append(label)
+
             subtitle = llm_engine.generate_subtitle(suggestion.title, original_texts)
             if subtitle:
-                suggestion.subtitle = subtitle
+                suggestion.subtitle = subtitle[:8000]
+                suggestion.subtitle_generated_at_support_count = eff
                 db.session.commit()
 
     threading.Thread(target=_work, daemon=True).start()
@@ -1251,6 +1360,7 @@ def _process_suggestion_argument_background(arg_id: int):
                     arg.summary = summary
                     arg.status = "approved"
                     db.session.commit()
+                    _maybe_generate_subtitle(suggestion.id)
                     _log_activity(
                         "suggestion_argument_accepted",
                         f"Argument accepté ({arg.side}) — résumé : {summary[:140]}",
@@ -1356,6 +1466,7 @@ def _vote_simple_suggestion_locked(sid: int, suggestion: Suggestion, session_id:
             _increment_daily_activity(session_id, "like")
         except Exception:
             pass
+    _maybe_generate_subtitle(sid)
     return jsonify(_pack_vote_json(suggestion, session_id, False, my_vote=vote_type, has_voted=True))
 
 
@@ -1488,6 +1599,7 @@ def _vote_suggestion_locked(sid: int):
     for aid in pending_arg_ids:
         _process_suggestion_argument_background(aid)
 
+    _maybe_generate_subtitle(sid)
     resp = _pack_vote_json(suggestion, session_id, needs_debate, my_vote=vote_type, has_voted=True)
     return jsonify(resp)
 
@@ -1562,6 +1674,816 @@ def public_list_locations():
 @app.route("/api/status", methods=["GET"])
 def api_status():
     return jsonify({"llm_available": ai.llm_available()})
+
+
+def _parse_iso_datetime_optional(val):
+    if val is None or val == "":
+        return None
+    if isinstance(val, datetime):
+        return _utc_dt(val)
+    s = str(val).strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _recalc_music_track_vote_count(track_id: int) -> int:
+    c = db.session.query(func.count(MusicVote.id)).filter_by(track_id=track_id).scalar() or 0
+    t = MusicTrack.query.get(track_id)
+    if t:
+        t.vote_count = c
+    return int(c)
+
+
+def _music_poll_deactivate_others(keep_id: int | None):
+    q = MusicPoll.query.filter_by(is_active=True)
+    if keep_id is not None:
+        q = q.filter(MusicPoll.id != keep_id)
+    for p in q.all():
+        p.is_active = False
+
+
+def _music_track_to_public_dict(t: MusicTrack, visitor_id: str, vc: int | None = None) -> dict:
+    if vc is None:
+        vc = db.session.query(func.count(MusicVote.id)).filter_by(track_id=t.id).scalar() or 0
+    has_voted = (
+        MusicVote.query.filter_by(track_id=t.id, session_id=visitor_id).first() is not None
+    )
+    return {
+        "id": t.id,
+        "spotify_track_id": t.spotify_track_id,
+        "title": t.title,
+        "artist": t.artist,
+        "album": t.album or "",
+        "thumbnail_url": t.thumbnail_url,
+        "preview_url": t.preview_url,
+        "preview_available": bool(t.preview_url),
+        "spotify_url": t.spotify_url or f"https://open.spotify.com/track/{t.spotify_track_id}",
+        "vote_count": int(vc),
+        "has_voted": has_voted,
+    }
+
+
+def _music_track_to_preview_dict(t: MusicTrack) -> dict:
+    """Aperçu admin : mêmes champs que l’API publique, votes affichés mais sans interaction."""
+    vc = db.session.query(func.count(MusicVote.id)).filter_by(track_id=t.id).scalar() or 0
+    return {
+        "id": t.id,
+        "spotify_track_id": t.spotify_track_id,
+        "title": t.title,
+        "artist": t.artist,
+        "album": t.album or "",
+        "thumbnail_url": t.thumbnail_url,
+        "preview_url": t.preview_url,
+        "preview_available": bool(t.preview_url),
+        "spotify_url": t.spotify_url or f"https://open.spotify.com/track/{t.spotify_track_id}",
+        "vote_count": int(vc),
+        "has_voted": False,
+    }
+
+
+def _music_poll_serialize_admin(p: MusicPoll, include_tracks: bool = True) -> dict:
+    d = {
+        "id": p.id,
+        "title": p.title,
+        "is_active": p.is_active,
+        "max_votes": p.max_votes or 1,
+        "end_date": p.end_date.isoformat() if p.end_date else None,
+        "spotify_playlist_url": p.spotify_playlist_url,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+    if include_tracks:
+        tracks = MusicTrack.query.filter_by(poll_id=p.id).order_by(MusicTrack.position, MusicTrack.id).all()
+        d["tracks"] = [_music_track_to_admin_dict(x) for x in tracks]
+    return d
+
+
+def _music_track_to_admin_dict(t: MusicTrack) -> dict:
+    vc = db.session.query(func.count(MusicVote.id)).filter_by(track_id=t.id).scalar() or 0
+    return {
+        "id": t.id,
+        "poll_id": t.poll_id,
+        "spotify_url": t.spotify_url,
+        "spotify_track_id": t.spotify_track_id,
+        "title": t.title,
+        "artist": t.artist,
+        "album": t.album or "",
+        "thumbnail_url": t.thumbnail_url,
+        "preview_url": t.preview_url,
+        "preview_available": bool(t.preview_url),
+        "vote_count": int(vc),
+        "position": t.position or 0,
+    }
+
+
+_music_poll_preview_enrich_last: dict[int, float] = {}
+
+
+def _maybe_enrich_track_preview(t: MusicTrack) -> None:
+    """Si pas d’URL d’extrait en base, tente Spotify+Deezer ou Deezer seul (recherche)."""
+    if t.preview_url:
+        return
+    tid = int(t.id)
+    now = time.time()
+    if now - _music_poll_preview_enrich_last.get(tid, 0.0) < 300:
+        return
+    _music_poll_preview_enrich_last[tid] = now
+    try:
+        if music_utils.spotify_credentials_configured():
+            meta = music_utils.fetch_spotify_track_metadata(t.spotify_url)
+            pu = meta.get("preview_url")
+            if pu:
+                t.preview_url = pu[:500]
+        else:
+            pu = music_utils.try_deezer_preview_for_track(t.artist or "", t.title or "", None)
+            if pu:
+                t.preview_url = pu[:500]
+    except Exception:
+        pass
+
+
+def _music_poll_active_payload() -> dict | None:
+    """Un seul sondage musique actif (non expiré, avec morceaux), format mur élève."""
+    if get_setting("feature_music_poll_enabled", "true") != "true":
+        return None
+    now = datetime.now(timezone.utc)
+    visitor_id = get_session_id()
+    rows = MusicPoll.query.filter_by(is_active=True).order_by(MusicPoll.id.desc()).all()
+    if len(rows) > 1:
+        for p in rows[1:]:
+            p.is_active = False
+        db.session.commit()
+        rows = rows[:1]
+    poll = rows[0] if rows else None
+    if not poll:
+        return None
+    if poll.end_date:
+        ed = _utc_dt(poll.end_date)
+        if ed and now > ed:
+            poll.is_active = False
+            db.session.commit()
+            return None
+    tracks = MusicTrack.query.filter_by(poll_id=poll.id).order_by(MusicTrack.position, MusicTrack.id).all()
+    if not tracks:
+        return None
+    session_votes_count = (
+        db.session.query(func.count(MusicVote.id))
+        .filter_by(poll_id=poll.id, session_id=visitor_id)
+        .scalar()
+        or 0
+    )
+    out_tracks = []
+    for t in tracks:
+        _maybe_enrich_track_preview(t)
+        vc = db.session.query(func.count(MusicVote.id)).filter_by(track_id=t.id).scalar() or 0
+        if t.vote_count != vc:
+            t.vote_count = vc
+        out_tracks.append(_music_track_to_public_dict(t, visitor_id, vc))
+    db.session.commit()
+    return {
+        "id": poll.id,
+        "title": poll.title,
+        "max_votes": max(1, min(2, poll.max_votes or 1)),
+        "spotify_playlist_url": poll.spotify_playlist_url,
+        "session_votes_count": int(session_votes_count),
+        "tracks": out_tracks,
+    }
+
+
+@app.route("/api/music-poll/active", methods=["GET"])
+def music_poll_active():
+    payload = _music_poll_active_payload()
+    if not payload:
+        return jsonify({"active": False})
+    return jsonify({"active": True, "poll": payload})
+
+
+@app.route("/api/music-poll/<int:poll_id>/vote", methods=["POST"])
+def music_poll_vote(poll_id):
+    if get_setting("feature_music_poll_enabled", "true") != "true":
+        return jsonify({"message": "Sondage musique désactivé"}), 400
+    poll = MusicPoll.query.get_or_404(poll_id)
+    now = datetime.now(timezone.utc)
+    if poll.end_date and _utc_dt(poll.end_date) and now > _utc_dt(poll.end_date):
+        if poll.is_active:
+            poll.is_active = False
+            db.session.commit()
+        return jsonify({"message": "Sondage terminé"}), 400
+    if not poll.is_active:
+        return jsonify({"message": "Sondage inactif"}), 400
+
+    data = request.get_json() or {}
+    track_id = data.get("track_id")
+    remove_vote = bool(data.get("remove_vote"))
+    try:
+        track_id = int(track_id)
+    except (TypeError, ValueError):
+        return jsonify({"message": "track_id invalide"}), 400
+
+    track = MusicTrack.query.filter_by(id=track_id, poll_id=poll_id).first()
+    if not track:
+        return jsonify({"message": "Morceau introuvable"}), 400
+
+    session_id = get_session_id()
+    max_v = max(1, min(2, poll.max_votes or 1))
+    existing = MusicVote.query.filter_by(track_id=track_id, session_id=session_id).first()
+
+    if remove_vote:
+        if existing:
+            db.session.delete(existing)
+            db.session.commit()
+        vc = _recalc_music_track_vote_count(track_id)
+        session_votes_count = (
+            db.session.query(func.count(MusicVote.id))
+            .filter_by(poll_id=poll_id, session_id=session_id)
+            .scalar()
+            or 0
+        )
+        return jsonify(
+            {
+                "track_id": track_id,
+                "has_voted": False,
+                "vote_count": vc,
+                "session_votes_count": int(session_votes_count),
+            }
+        )
+
+    if existing:
+        vc = _recalc_music_track_vote_count(track_id)
+        session_votes_count = (
+            db.session.query(func.count(MusicVote.id))
+            .filter_by(poll_id=poll_id, session_id=session_id)
+            .scalar()
+            or 0
+        )
+        return jsonify(
+            {
+                "track_id": track_id,
+                "has_voted": True,
+                "vote_count": vc,
+                "session_votes_count": int(session_votes_count),
+            }
+        )
+
+    session_votes_count = (
+        db.session.query(func.count(MusicVote.id))
+        .filter_by(poll_id=poll_id, session_id=session_id)
+        .scalar()
+        or 0
+    )
+    if session_votes_count >= max_v:
+        return jsonify({"message": "Nombre de votes max atteint"}), 400
+
+    db.session.add(MusicVote(poll_id=poll_id, track_id=track_id, session_id=session_id))
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+    vc = _recalc_music_track_vote_count(track_id)
+    session_votes_count = (
+        db.session.query(func.count(MusicVote.id))
+        .filter_by(poll_id=poll_id, session_id=session_id)
+        .scalar()
+        or 0
+    )
+    has_v = MusicVote.query.filter_by(track_id=track_id, session_id=session_id).first() is not None
+    return jsonify(
+        {
+            "track_id": track_id,
+            "has_voted": has_v,
+            "vote_count": vc,
+            "session_votes_count": int(session_votes_count),
+        }
+    )
+
+
+def _spotify_secret_hint(val: str | None) -> str | None:
+    if not val:
+        return None
+    v = val.strip()
+    if len(v) <= 4:
+        return "••••"
+    return "•" * min(10, len(v) - 4) + v[-4:]
+
+
+@app.route("/api/admin/spotify-settings", methods=["GET", "PUT"])
+@admin_required
+def admin_spotify_settings():
+    """Client ID / Secret : stockés en base (site_settings), repli sur les variables d'environnement."""
+    if request.method == "GET":
+        row_id = SiteSettings.query.get("spotify_client_id")
+        row_sec = SiteSettings.query.get("spotify_client_secret")
+        dbcid = ((row_id.value if row_id else "") or "").strip()
+        dbsec = ((row_sec.value if row_sec else "") or "").strip()
+        env_cid = (app.config.get("SPOTIFY_CLIENT_ID") or "").strip()
+        env_sec = (app.config.get("SPOTIFY_CLIENT_SECRET") or "").strip()
+        resolved_cid, resolved_sec = music_utils.get_resolved_spotify_credentials()
+        return jsonify(
+            {
+                "client_id": resolved_cid,
+                "client_id_stored_in_db": bool(dbcid),
+                "client_secret_configured": bool(resolved_sec),
+                "client_secret_hint": _spotify_secret_hint(resolved_sec) if resolved_sec else None,
+                "configured": music_utils.spotify_credentials_configured(),
+                "env_fallback_active": {
+                    "client_id": bool(env_cid) and not dbcid,
+                    "client_secret": bool(env_sec) and not dbsec,
+                },
+            }
+        )
+
+    data = request.get_json() or {}
+    if "client_id" in data:
+        v = data.get("client_id")
+        set_setting("spotify_client_id", (v or "").strip() if isinstance(v, str) else "")
+    if data.get("clear_client_secret"):
+        set_setting("spotify_client_secret", "")
+    elif "client_secret" in data:
+        sec = data.get("client_secret")
+        if isinstance(sec, str) and sec.strip():
+            set_setting("spotify_client_secret", sec.strip())
+    music_utils.clear_spotify_token_cache()
+    test_ok = False
+    test_message = ""
+    try:
+        tok = music_utils.get_spotify_token()
+        if tok:
+            test_ok = True
+            test_message = "Test API Spotify : jeton d’accès obtenu — la connexion fonctionne."
+        else:
+            test_message = (
+                "Identifiants enregistrés, mais aucun jeton (vérifiez Client ID et Secret sur le dashboard)."
+            )
+    except Exception as e:
+        test_message = f"Test API Spotify : erreur — {str(e)[:280]}"
+
+    return jsonify(
+        {
+            "ok": True,
+            "configured": music_utils.spotify_credentials_configured(),
+            "test_ok": test_ok,
+            "test_message": test_message,
+        }
+    )
+
+
+@app.route("/api/admin/music-polls", methods=["GET"])
+@admin_required
+def admin_music_polls_list():
+    rows = MusicPoll.query.order_by(MusicPoll.id.desc()).all()
+    out = []
+    for p in rows:
+        n = MusicTrack.query.filter_by(poll_id=p.id).count()
+        out.append(
+            {
+                "id": p.id,
+                "title": p.title,
+                "is_active": p.is_active,
+                "track_count": n,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+        )
+    return jsonify(
+        {
+            "polls": out,
+            "spotify_configured": music_utils.spotify_credentials_configured(),
+        }
+    )
+
+
+@app.route("/api/admin/music-poll/<int:poll_id>", methods=["GET"])
+@admin_required
+def admin_music_poll_get(poll_id):
+    p = MusicPoll.query.get_or_404(poll_id)
+    return jsonify({"poll": _music_poll_serialize_admin(p, True)})
+
+
+@app.route("/api/admin/music-poll", methods=["POST"])
+@admin_required
+def admin_music_poll_create():
+    data = request.get_json() or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "Titre requis"}), 400
+    max_votes = int(data.get("max_votes", 1))
+    if max_votes not in (1, 2):
+        max_votes = 1
+    end_date = _parse_iso_datetime_optional(data.get("end_date"))
+    spl = (data.get("spotify_playlist_url") or "").strip() or None
+    is_active = bool(data.get("is_active"))
+    p = MusicPoll(
+        title=title[:200],
+        max_votes=max_votes,
+        end_date=end_date,
+        spotify_playlist_url=(spl[:500] if spl else None),
+        is_active=False,
+    )
+    db.session.add(p)
+    db.session.flush()
+    if is_active:
+        _music_poll_deactivate_others(p.id)
+        p.is_active = True
+    db.session.commit()
+    return jsonify({"poll": _music_poll_serialize_admin(p, True)})
+
+
+@app.route("/api/admin/music-poll/<int:poll_id>", methods=["PUT"])
+@admin_required
+def admin_music_poll_update(poll_id):
+    p = MusicPoll.query.get_or_404(poll_id)
+    data = request.get_json() or {}
+    if "title" in data:
+        t = (data.get("title") or "").strip()
+        if not t:
+            return jsonify({"error": "Titre requis"}), 400
+        p.title = t[:200]
+    if "max_votes" in data:
+        mv = int(data.get("max_votes", 1))
+        p.max_votes = mv if mv in (1, 2) else 1
+    if "end_date" in data:
+        p.end_date = _parse_iso_datetime_optional(data.get("end_date"))
+    if "spotify_playlist_url" in data:
+        spl = (data.get("spotify_playlist_url") or "").strip() or None
+        p.spotify_playlist_url = spl[:500] if spl else None
+    if "is_active" in data:
+        is_active = bool(data.get("is_active"))
+        if is_active:
+            _music_poll_deactivate_others(p.id)
+            p.is_active = True
+        else:
+            p.is_active = False
+    db.session.commit()
+    return jsonify({"poll": _music_poll_serialize_admin(p, True)})
+
+
+@app.route("/api/admin/music-poll/<int:poll_id>", methods=["DELETE"])
+@admin_required
+def admin_music_poll_delete(poll_id):
+    p = MusicPoll.query.get_or_404(poll_id)
+    db.session.delete(p)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/music-poll/<int:poll_id>/tracks", methods=["POST"])
+@admin_required
+def admin_music_poll_add_track(poll_id):
+    if not music_utils.spotify_credentials_configured():
+        return jsonify(
+            {
+                "error": "Spotify non configuré : renseignez Client ID et Secret dans Administration → Sondage musique, ou les variables SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET.",
+            }
+        ), 503
+    p = MusicPoll.query.get_or_404(poll_id)
+    data = request.get_json() or {}
+    spotify_url = (data.get("spotify_url") or "").strip()
+    if not spotify_url:
+        return jsonify({"error": "spotify_url requis"}), 400
+    n_existing = MusicTrack.query.filter_by(poll_id=poll_id).count()
+    if n_existing >= 5:
+        return jsonify({"error": "Maximum 5 morceaux par sondage"}), 400
+    try:
+        meta = music_utils.fetch_spotify_track_metadata(spotify_url)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    tid = meta["spotify_track_id"]
+    dup = MusicTrack.query.filter_by(poll_id=poll_id, spotify_track_id=tid).first()
+    if dup:
+        return jsonify({"error": "Ce morceau est déjà dans le sondage"}), 400
+    pos = (
+        db.session.query(func.max(MusicTrack.position))
+        .filter_by(poll_id=poll_id)
+        .scalar()
+    )
+    pos = int(pos or 0) + 1
+    t = MusicTrack(
+        poll_id=poll_id,
+        spotify_url=meta["spotify_url"][:500],
+        spotify_track_id=tid[:30],
+        title=(meta.get("title") or "Sans titre")[:300],
+        artist=(meta.get("artist") or "")[:200],
+        album=(meta.get("album") or "")[:200],
+        thumbnail_url=(meta["thumbnail_url"][:500] if meta.get("thumbnail_url") else None),
+        preview_url=(meta["preview_url"][:500] if meta.get("preview_url") else None),
+        position=pos,
+        vote_count=0,
+    )
+    db.session.add(t)
+    db.session.commit()
+    return jsonify({"track": _music_track_to_admin_dict(t)})
+
+
+@app.route("/api/admin/music-poll/<int:poll_id>/tracks/<int:track_id>", methods=["DELETE"])
+@admin_required
+def admin_music_poll_delete_track(poll_id, track_id):
+    MusicPoll.query.get_or_404(poll_id)
+    t = MusicTrack.query.filter_by(id=track_id, poll_id=poll_id).first()
+    if not t:
+        abort(404)
+    db.session.delete(t)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/music-poll/<int:poll_id>/results", methods=["GET"])
+@admin_required
+def admin_music_poll_results(poll_id):
+    p = MusicPoll.query.get_or_404(poll_id)
+    tracks = MusicTrack.query.filter_by(poll_id=poll_id).all()
+    rows = []
+    total = 0
+    for t in tracks:
+        vc = db.session.query(func.count(MusicVote.id)).filter_by(track_id=t.id).scalar() or 0
+        total += int(vc)
+        rows.append(
+            {
+                "id": t.id,
+                "title": t.title,
+                "artist": t.artist,
+                "vote_count": int(vc),
+            }
+        )
+    rows.sort(key=lambda x: (-x["vote_count"], x["id"]))
+    for r in rows:
+        r["percent"] = round(100.0 * r["vote_count"] / total, 1) if total else 0.0
+    return jsonify(
+        {
+            "poll_id": p.id,
+            "title": p.title,
+            "total_votes": total,
+            "tracks": rows,
+        }
+    )
+
+
+def _ringtone_active_poll_bundle():
+    """Sondage musique actif + résultats (votes), pour l’onglet Résultats / sonnerie."""
+    p = MusicPoll.query.filter_by(is_active=True).order_by(MusicPoll.id.desc()).first()
+    if not p:
+        return None
+    tracks = MusicTrack.query.filter_by(poll_id=p.id).all()
+    rows = []
+    total = 0
+    for t in tracks:
+        vc = db.session.query(func.count(MusicVote.id)).filter_by(track_id=t.id).scalar() or 0
+        vc = int(vc)
+        total += vc
+        rows.append(
+            {
+                "id": t.id,
+                "title": t.title,
+                "artist": t.artist,
+                "vote_count": vc,
+                "thumbnail_url": t.thumbnail_url,
+            }
+        )
+    rows.sort(key=lambda x: (-x["vote_count"], x["id"]))
+    for r in rows:
+        r["percent"] = round(100.0 * r["vote_count"] / total, 1) if total else 0.0
+    return {
+        "id": p.id,
+        "title": p.title,
+        "total_votes": total,
+        "tracks": rows,
+    }
+
+
+@app.route("/api/admin/ringtone", methods=["GET", "PUT"])
+@admin_required
+def admin_ringtone():
+    """Sélection affichée sur la page élève (musique de sonnerie) — métadonnées uniquement, pas d’audio."""
+    if request.method == "GET":
+        enabled = get_setting("feature_ringtone_banner_enabled", "false") == "true"
+        raw = (get_setting("ringtone_selection_json", "") or "").strip()
+        selection = None
+        if raw:
+            try:
+                selection = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                selection = None
+        return jsonify(
+            {
+                "enabled": enabled,
+                "selection": selection,
+                "active_poll": _ringtone_active_poll_bundle(),
+                "spotify_configured": music_utils.spotify_credentials_configured(),
+            }
+        )
+
+    data = request.get_json() or {}
+    if data.get("clear_selection"):
+        set_setting("ringtone_selection_json", "")
+        return jsonify({"ok": True})
+
+    sel = data.get("selection")
+    if sel is None:
+        return jsonify({"ok": True})
+
+    source = (sel.get("source") or "").strip()
+    if source == "manual":
+        if not music_utils.spotify_credentials_configured():
+            return jsonify(
+                {"error": "Spotify non configuré : renseignez Client ID et Secret (Sondage musique)."},
+            ), 503
+        url = (sel.get("spotify_url") or "").strip()
+        if not url:
+            return jsonify({"error": "URL Spotify requise"}), 400
+        try:
+            meta = music_utils.fetch_spotify_track_metadata(url)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        payload = {
+            "source": "manual",
+            "spotify_track_id": meta["spotify_track_id"],
+            "title": meta.get("title") or "Sans titre",
+            "artist": meta.get("artist") or "",
+            "thumbnail_url": meta.get("thumbnail_url"),
+        }
+        set_setting("ringtone_selection_json", json.dumps(payload, ensure_ascii=False))
+    elif source == "poll":
+        try:
+            poll_id = int(sel.get("poll_id"))
+            track_id = int(sel.get("track_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "poll_id et track_id requis"}), 400
+        t = MusicTrack.query.filter_by(id=track_id, poll_id=poll_id).first()
+        if not t:
+            return jsonify({"error": "Morceau introuvable"}), 400
+        payload = {
+            "source": "poll",
+            "poll_id": poll_id,
+            "track_id": track_id,
+            "spotify_track_id": t.spotify_track_id,
+            "title": t.title,
+            "artist": t.artist,
+            "thumbnail_url": t.thumbnail_url,
+        }
+        set_setting("ringtone_selection_json", json.dumps(payload, ensure_ascii=False))
+    else:
+        return jsonify({"error": "source invalide"}), 400
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ringtone/current", methods=["GET"])
+def public_ringtone_current():
+    """Bandeau élève : métadonnées du morceau choisi (pas de lecture audio)."""
+    if get_setting("feature_ringtone_banner_enabled", "false") != "true":
+        return jsonify({"enabled": False, "track": None})
+    raw = (get_setting("ringtone_selection_json", "") or "").strip()
+    if not raw:
+        return jsonify({"enabled": True, "track": None})
+    try:
+        d = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return jsonify({"enabled": True, "track": None})
+    track = {
+        "title": d.get("title"),
+        "artist": d.get("artist"),
+        "thumbnail_url": d.get("thumbnail_url"),
+    }
+    return jsonify({"enabled": True, "track": track})
+
+
+@app.route("/api/admin/music-poll/<int:poll_id>/preview", methods=["GET"])
+@admin_required
+def admin_music_poll_preview(poll_id):
+    """JSON au même format que /api/music-poll/active pour prévisualiser le rendu élève (sans vote)."""
+    if get_setting("feature_music_poll_enabled", "true") != "true":
+        return jsonify({"active": False, "message": "Sondage musique désactivé."})
+    p = MusicPoll.query.get_or_404(poll_id)
+    tracks = MusicTrack.query.filter_by(poll_id=p.id).order_by(MusicTrack.position, MusicTrack.id).all()
+    if not tracks:
+        return jsonify(
+            {
+                "active": False,
+                "message": "Ajoute au moins un morceau pour voir l’aperçu.",
+            }
+        )
+    for t in tracks:
+        _maybe_enrich_track_preview(t)
+    db.session.commit()
+    out_tracks = [_music_track_to_preview_dict(t) for t in tracks]
+    return jsonify(
+        {
+            "active": True,
+            "preview": True,
+            "poll": {
+                "id": p.id,
+                "title": p.title,
+                "max_votes": max(1, min(2, p.max_votes or 1)),
+                "spotify_playlist_url": p.spotify_playlist_url,
+                "session_votes_count": 0,
+                "tracks": out_tracks,
+            },
+        }
+    )
+
+
+@app.route("/api/admin/spotify/verify-playlist", methods=["POST"])
+@admin_required
+def admin_spotify_verify_playlist():
+    """Vérifie qu’une URL playlist est reconnue et interroge l’API Spotify (nom, pochette)."""
+    if not music_utils.spotify_credentials_configured():
+        return jsonify({"ok": False, "error": "Spotify non configuré (Client ID + Secret)."}), 503
+    data = request.get_json() or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"ok": False, "error": "Indiquez une URL de playlist."}), 400
+    try:
+        music_utils.extract_spotify_playlist_id(url)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    meta = music_utils.fetch_spotify_playlist_metadata(url)
+    if meta.get("error"):
+        return jsonify(
+            {
+                "ok": False,
+                "error": "L’URL est reconnue mais l’API Spotify a échoué.",
+                "detail": meta.get("error"),
+            }
+        )
+    name = meta.get("name") or "Playlist"
+    return jsonify(
+        {
+            "ok": True,
+            "playlist_id": meta["playlist_id"],
+            "name": name,
+            "external_url": meta.get("external_url"),
+            "thumbnail_url": meta.get("thumbnail_url"),
+            "message": f"Playlist « {name} » détectée et vérifiée sur Spotify.",
+        }
+    )
+
+
+def _music_preview_url_allowed(url: str) -> bool:
+    """Autorise uniquement les extraits Spotify (p.scdn.co) et Deezer (*.dzcdn.net)."""
+    pr = urlparse(url)
+    if pr.scheme != "https" or not pr.netloc:
+        return False
+    netloc = pr.netloc.lower()
+    path = pr.path.lower()
+    if netloc == "p.scdn.co":
+        return "mp3-preview" in pr.path or "/mp3/" in pr.path
+    if netloc.endswith(".dzcdn.net"):
+        return ".mp3" in path or "/api/" in path or "/stream/preview" in path
+    return False
+
+
+def _spotify_preview_proxy_response():
+    """Proxy sécurisé pour les MP3 (Spotify p.scdn.co + extraits Deezer *.dzcdn.net)."""
+    import requests as req_lib
+
+    raw = (request.args.get("url") or "").strip()
+    url = unquote(raw)
+    if not url.startswith("https://"):
+        return jsonify({"error": "URL invalide"}), 400
+    if not _music_preview_url_allowed(url):
+        return jsonify({"error": "Hôte ou chemin non autorisé pour la préécoute"}), 400
+    try:
+        r = req_lib.get(
+            url,
+            stream=True,
+            timeout=25,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; LyceeSuggestions/1.0)"},
+        )
+        r.raise_for_status()
+
+        def generate():
+            try:
+                for chunk in r.iter_content(chunk_size=16384):
+                    if chunk:
+                        yield chunk
+            finally:
+                r.close()
+
+        ct = r.headers.get("content-type") or "audio/mpeg"
+        return Response(generate(), content_type=ct, headers={"Cache-Control": "private, max-age=300"})
+    except Exception as e:
+        app.logger.warning("preview-audio proxy: %s", e)
+        return jsonify({"error": "Lecture impossible"}), 502
+
+
+@app.route("/api/music-poll/preview-audio", methods=["GET"])
+def music_poll_preview_audio():
+    """Même proxy que l’admin pour la page élève (évite blocages referrer / CORP sur p.scdn.co)."""
+    return _spotify_preview_proxy_response()
+
+
+@app.route("/api/admin/spotify/preview-audio", methods=["GET"])
+@admin_required
+def admin_spotify_preview_audio():
+    """Proxy lecture des extraits MP3 (Spotify CDN) pour l’aperçu admin."""
+    return _spotify_preview_proxy_response()
 
 
 @app.route("/api/admin/llm-credits", methods=["GET"])
@@ -1881,6 +2803,8 @@ def _recalc_proposal_votes(p):
 @app.route("/api/official-proposal", methods=["GET"])
 def get_official_proposal():
     """Public: get active official proposal for display/student page."""
+    if get_setting("feature_official_proposal_enabled", "true") != "true":
+        return jsonify(None)
     p = _get_active_proposal()
     if not p:
         return jsonify(None)
@@ -1979,6 +2903,8 @@ def _process_argument_background(arg_id: int):
 @app.route("/api/official-proposal/vote", methods=["POST"])
 def vote_official_proposal():
     """Vote for or against the active proposal. Optional argument for debate proposals."""
+    if get_setting("feature_official_proposal_enabled", "true") != "true":
+        return jsonify({"error": "Proposition officielle désactivée"}), 400
     ip = _client_ip()
     if _ip_rate_exceeded(ip, "vote_cvl", _IP_VOTE_PER_MINUTE, 60):
         return _ip_rate_response()
@@ -2064,6 +2990,8 @@ def vote_official_proposal():
 @app.route("/api/official-proposal/argument", methods=["POST"])
 def add_official_proposal_argument():
     """Ajoute un argument pour/contre sans changer le vote (plusieurs arguments autorisés)."""
+    if get_setting("feature_official_proposal_enabled", "true") != "true":
+        return jsonify({"error": "Proposition officielle désactivée"}), 400
     ip = _client_ip()
     if _ip_rate_exceeded(ip, "arg_cvl", _IP_ARG_PER_MINUTE, 60):
         return _ip_rate_response()
@@ -2146,6 +3074,8 @@ def get_critical_moments():
 @app.route("/api/cvl-official-info", methods=["GET"])
 def get_cvl_official_info():
     """Public: informations officielles du CVL à afficher en haut de la page Boîte à Idées."""
+    if get_setting("feature_cvl_official_info_enabled", "true") != "true":
+        return jsonify([])
     info_list = CvlOfficialInfo.query.filter_by(active=True).order_by(CvlOfficialInfo.display_order).all()
     return jsonify([i.to_dict() for i in info_list])
 
@@ -2172,11 +3102,21 @@ def update_status(sid):
     suggestion.status = new_status
     if new_status in ("En cours de mise en place", "Terminée"):
         suggestion.completed_at = datetime.now(timezone.utc)
+    else:
+        suggestion.completed_at = None
     if "reject_reason" in data:
         suggestion.reject_reason = (data.get("reject_reason") or "")[:2000]
     _sync_suggestion_archive(suggestion)
     db.session.commit()
-    _log_activity("status_changed", f"Admin : suggestion #{sid} → {new_status}", detail=suggestion.title[:100])
+    detail_json = json.dumps(
+        {
+            "suggestion_id": sid,
+            "new_status": new_status,
+            "title": (suggestion.title or "")[:200],
+        },
+        ensure_ascii=False,
+    )
+    _log_activity("status_changed", f"Admin : suggestion #{sid} → {new_status}", detail=detail_json)
     return jsonify(suggestion.to_dict())
 
 
@@ -2275,6 +3215,36 @@ def admin_suggestion_history(sid):
     return jsonify(suggestion.to_dict())
 
 
+@app.route("/api/admin/suggestions/<int:sid>/stats", methods=["GET"])
+@admin_required
+def admin_suggestion_stats(sid):
+    """Fiche synthèse : suggestion + métriques (votes, arguments, notes d'importance)."""
+    s = Suggestion.query.get_or_404(sid)
+    total_votes = Vote.query.filter_by(suggestion_id=sid).count()
+    vf = Vote.query.filter_by(suggestion_id=sid, vote_type="for").count()
+    va = Vote.query.filter_by(suggestion_id=sid, vote_type="against").count()
+    args_all = SuggestionArgument.query.filter_by(suggestion_id=sid).all()
+    args_pending = sum(1 for a in args_all if (a.status or "") == "pending")
+    imp_rows = SuggestionImportance.query.filter_by(suggestion_id=sid).all()
+    imp_levels = [r.level for r in imp_rows if r.level is not None]
+    imp_avg = (sum(imp_levels) / len(imp_levels)) if imp_levels else None
+    d = s.to_dict()
+    return jsonify(
+        {
+            "suggestion": d,
+            "stats": {
+                "total_votes": total_votes,
+                "votes_for": vf,
+                "votes_against": va,
+                "arguments_total": len(args_all),
+                "arguments_pending": args_pending,
+                "importance_ratings_count": len(imp_levels),
+                "importance_average_level": round(imp_avg, 2) if imp_avg is not None else None,
+            },
+        }
+    )
+
+
 @app.route("/api/admin/suggestions/<int:sid>/pdf", methods=["GET"])
 @admin_required
 def admin_suggestion_pdf(sid):
@@ -2320,13 +3290,69 @@ def admin_stats():
         .all()
     )
 
+    # Suggestions créées par mois (12 derniers mois, fuseau UTC)
+    from collections import defaultdict
+
+    sug_by_month: dict[str, int] = defaultdict(int)
+    twelve_m_ago = datetime.now(timezone.utc) - timedelta(days=370)
+    _ym = func.strftime("%Y-%m", Suggestion.created_at)
+    for row in (
+        db.session.query(_ym, func.count(Suggestion.id))
+        .filter(Suggestion.created_at >= twelve_m_ago)
+        .group_by(_ym)
+        .all()
+    ):
+        if row[0]:
+            sug_by_month[str(row[0])] = int(row[1])
+    month_keys = []
+    y, m = datetime.now(timezone.utc).year, datetime.now(timezone.utc).month
+    for _ in range(12):
+        month_keys.append(f"{y:04d}-{m:02d}")
+        m -= 1
+        if m < 1:
+            m = 12
+            y -= 1
+    month_keys.reverse()
+    suggestions_per_month = [{"month": mk, "count": sug_by_month.get(mk, 0)} for mk in month_keys]
+
     return jsonify({
         "total": total,
         "by_category": by_category,
         "by_status": by_status,
         "top_voted": [s.to_dict() for s in top_suggestions],
         "recent": [s.to_dict() for s in recent],
+        "suggestions_per_month": suggestions_per_month,
     })
+
+
+@app.route("/api/admin/dev-notes", methods=["GET", "PUT"])
+@admin_required
+def admin_dev_notes():
+    """Bloc notes développement (HTML riche, auto-sauvegardé côté client)."""
+    if request.method == "GET":
+        return jsonify({"html": get_setting("admin_dev_notes_html", "") or ""})
+    data = request.get_json() or {}
+    html = data.get("html", "")
+    if not isinstance(html, str):
+        return jsonify({"error": "Format invalide"}), 400
+    if len(html) > 2_000_000:
+        return jsonify({"error": "Contenu trop volumineux"}), 400
+    set_setting("admin_dev_notes_html", html)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/suggestions/<int:sid>/detail", methods=["GET"])
+@admin_required
+def admin_suggestion_detail(sid):
+    """Archive + fiche live pour modale (historique / Terminée)."""
+    arch = SuggestionArchive.query.filter_by(suggestion_id=sid).first()
+    live = Suggestion.query.get(sid)
+    return jsonify(
+        {
+            "archive": arch.to_dict() if arch else None,
+            "live": live.to_dict() if live else None,
+        }
+    )
 
 
 @app.route("/api/admin/engagement-stats", methods=["GET"])
@@ -2377,6 +3403,35 @@ def admin_engagement_stats():
         DailySessionActivity.day == day
     ).scalar()
 
+    from collections import defaultdict
+
+    since_400d = datetime.now(timezone.utc) - timedelta(days=400)
+    mood_by_month: dict[str, dict[str, int]] = {}
+    mood_by_hour: dict[int, dict[str, int]] = {h: {} for h in range(24)}
+    for dm in DailyMood.query.filter(DailyMood.created_at >= since_400d).all():
+        ca = dm.created_at
+        if ca is None:
+            continue
+        if ca.tzinfo is None:
+            ca = ca.replace(tzinfo=timezone.utc)
+        local = ca.astimezone(PARIS_TZ) if PARIS_TZ else ca
+        mk = local.strftime("%Y-%m")
+        hr = local.hour
+        mood_by_month.setdefault(mk, {})
+        mood_by_month[mk][dm.mood] = mood_by_month[mk].get(dm.mood, 0) + 1
+        mood_by_hour[hr][dm.mood] = mood_by_hour[hr].get(dm.mood, 0) + 1
+
+    _ym_imp = func.strftime("%Y-%m", SuggestionImportance.created_at)
+    imp_votes_by_month: dict[str, int] = defaultdict(int)
+    for row in (
+        db.session.query(_ym_imp, func.count(SuggestionImportance.id))
+        .filter(SuggestionImportance.created_at >= since_400d)
+        .group_by(_ym_imp)
+        .all()
+    ):
+        if row[0]:
+            imp_votes_by_month[str(row[0])] = int(row[1])
+
     return jsonify({
         "reference": {
             "timezone": "Europe/Paris",
@@ -2401,6 +3456,9 @@ def admin_engagement_stats():
             {"id": s.id, "title": s.title, "importance_score": float(s.importance_score or 0), "vote_count": s.vote_count}
             for s in top_hot
         ],
+        "mood_by_month": mood_by_month,
+        "mood_by_hour": {str(h): mood_by_hour[h] for h in range(24)},
+        "importance_votes_by_month": dict(imp_votes_by_month),
     })
 
 
@@ -4116,6 +5174,10 @@ def public_settings():
         "bus_alternance_interval_sec": int(get_setting("bus_alternance_interval_sec", "60") or "60"),
         "feature_bus_enabled": get_setting("feature_bus_enabled", "true") == "true",
         "feature_display_dynamic_enabled": get_setting("feature_display_dynamic_enabled", "true") == "true",
+        "feature_music_poll_enabled": get_setting("feature_music_poll_enabled", "true") == "true",
+        "feature_official_proposal_enabled": get_setting("feature_official_proposal_enabled", "true") == "true",
+        "feature_cvl_official_info_enabled": get_setting("feature_cvl_official_info_enabled", "true") == "true",
+        "feature_ringtone_banner_enabled": get_setting("feature_ringtone_banner_enabled", "false") == "true",
     })
 
 
@@ -4553,6 +5615,28 @@ def _parse_bus_schedule_slots() -> list[dict]:
     if s:
         return s
     return _default_bus_schedule_slots()
+
+
+def _paris_now_dt() -> datetime:
+    """Maintenant en Europe/Paris (affichage bus / TV)."""
+    if PARIS_TZ is not None:
+        try:
+            return datetime.now(PARIS_TZ)
+        except Exception:
+            pass
+    return datetime.now(timezone.utc)
+
+
+def _tv_should_show_bus_fullscreen(bus_enabled: bool, bus_excluded: bool) -> bool:
+    """Plein écran bus sur /tv/ : uniquement si réglage activé + dans les créneaux + données GTFS disponibles."""
+    if not bus_enabled or bus_excluded:
+        return False
+    if get_setting("bus_tv_show_only_during_schedule", "false") != "true":
+        return False
+    slots = _parse_bus_schedule_slots()
+    if not _is_now_in_bus_slots(_paris_now_dt(), slots):
+        return False
+    return _get_bus_display_payload_cached().get("available") is True
 
 
 def _is_now_in_bus_slots(now_dt: datetime, slots: list[dict]) -> bool:
@@ -5802,6 +6886,7 @@ def get_bus_settings():
         "bus_schedule": _parse_bus_schedule_slots(),
         "bus_alternance_enabled": get_setting("bus_alternance_enabled", "false") == "true",
         "bus_alternance_interval_sec": int(get_setting("bus_alternance_interval_sec", "60") or "60"),
+        "bus_tv_show_only_during_schedule": get_setting("bus_tv_show_only_during_schedule", "false") == "true",
         "bus_test_mode": get_setting("bus_test_mode", "false") == "true",
         "bus_test_perturbations": get_setting("bus_test_perturbations", "false") == "true",
         "bus_display_pages": [{"id": p.id, "name": p.name, "slug": p.slug, "bus_excluded": getattr(p, "bus_excluded", False)} for p in DisplayPage.query.order_by(DisplayPage.name).all()],
@@ -5834,6 +6919,8 @@ def update_bus_settings():
     if "bus_alternance_interval_sec" in data:
         v = int(data["bus_alternance_interval_sec"]) if data["bus_alternance_interval_sec"] else 60
         set_setting("bus_alternance_interval_sec", str(max(10, min(600, v))))
+    if "bus_tv_show_only_during_schedule" in data:
+        set_setting("bus_tv_show_only_during_schedule", "true" if data["bus_tv_show_only_during_schedule"] else "false")
     if "bus_test_mode" in data:
         set_setting("bus_test_mode", "true" if data["bus_test_mode"] else "false")
     if "bus_test_perturbations" in data:
@@ -6001,6 +7088,54 @@ def admin_suggestion_archive_list():
             or qstr in str(r.suggestion_id)
         ]
     return jsonify([r.to_dict() for r in rows])
+
+
+@app.route("/api/admin/suggestion-archive/restore", methods=["POST"])
+@admin_required
+def admin_restore_suggestion_from_archive():
+    """Remet une suggestion supprimée en ligne (recréée avec le même id si possible)."""
+    data = request.get_json() or {}
+    try:
+        sid = int(data.get("suggestion_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "suggestion_id invalide"}), 400
+    arch = SuggestionArchive.query.filter_by(suggestion_id=sid).first()
+    if not arch:
+        return jsonify({"error": "Entrée d’archive introuvable"}), 404
+    if Suggestion.query.get(sid):
+        return jsonify({"error": "Cette suggestion existe déjà"}), 400
+    s = Suggestion(
+        id=sid,
+        original_text=arch.original_text or "",
+        title=(arch.title or "Sans titre")[:200],
+        subtitle="",
+        keywords="",
+        category=arch.category or "Autre",
+        location_id=None,
+        status="En attente",
+        vote_count=0,
+        needs_debate=bool(arch.needs_debate),
+        vote_for=0,
+        vote_against=0,
+        reject_reason="",
+    )
+    try:
+        db.session.add(s)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"Restauration impossible : {e!s}"[:300]}), 400
+    _sync_suggestion_archive(s)
+    row = SuggestionArchive.query.filter_by(suggestion_id=sid).first()
+    if row:
+        row.deleted_at = None
+    db.session.commit()
+    _log_activity(
+        "suggestion_restored",
+        f"Suggestion #{sid} remise en ligne depuis l’historique",
+        detail=(s.title or "")[:100],
+    )
+    return jsonify({"suggestion": s.to_dict()})
 
 
 @app.route("/api/admin/suggestion-archive/export", methods=["GET"])
@@ -6351,9 +7486,7 @@ def tv_data(slug):
 
     bus_enabled = get_setting("feature_bus_enabled", "true") == "true"
     bus_excluded = getattr(page, "bus_excluded", False)
-    show_bus = False
-    if bus_enabled and not bus_excluded:
-        show_bus = _get_bus_display_payload_cached().get("available") is True
+    show_bus = _tv_should_show_bus_fullscreen(bus_enabled, bus_excluded)
     bus_schedule = _parse_bus_schedule_slots()
 
     page_type = getattr(page, "page_type", None) or "presentation"
@@ -6609,6 +7742,13 @@ def _schedule_calibration_from_completed():
 with app.app_context():
     db.create_all()
     try:
+        if not music_utils.spotify_credentials_configured():
+            app.logger.warning(
+                "Spotify non configuré : Administration → Sondage musique (Client ID / Secret) ou variables SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET."
+            )
+    except Exception:
+        pass
+    try:
         from sqlalchemy import text
         db.session.execute(text("ALTER TABLE calibration_details ADD COLUMN suggestion_base VARCHAR(300)"))
         db.session.commit()
@@ -6621,6 +7761,7 @@ with app.app_context():
             "ALTER TABLE suggestions ADD COLUMN reject_reason TEXT DEFAULT ''",
             # Anciennes BDD sans migration manuelle (sinon OperationalError sur /api/suggestions)
             "ALTER TABLE suggestions ADD COLUMN importance_score REAL DEFAULT 0",
+            "ALTER TABLE suggestions ADD COLUMN subtitle_generated_at_support_count INTEGER DEFAULT 0",
         ):
             try:
                 db.session.execute(_sql_text(stmt))

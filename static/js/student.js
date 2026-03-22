@@ -190,6 +190,25 @@ let debateArgSheetEl = null;
 /** Deck swipe (suggestions mélangées + cartes engagement), uniquement tactile */
 let engagementBootstrap = null;
 let swipeDeckItems = [];
+/** Suggestions déjà passées en « suivant » (session onglet) — chaque id une seule fois */
+const SWIPE_CONSUMED_STORAGE_KEY = "swipe_consumed_suggestion_ids_v1";
+let swipeConsumedIds = new Set();
+try {
+    const raw = sessionStorage.getItem(SWIPE_CONSUMED_STORAGE_KEY);
+    if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) swipeConsumedIds = new Set(arr.map(Number).filter((n) => !Number.isNaN(n)));
+    }
+} catch (e) {
+    /* ignore */
+}
+function saveSwipeConsumedIds() {
+    try {
+        sessionStorage.setItem(SWIPE_CONSUMED_STORAGE_KEY, JSON.stringify([...swipeConsumedIds].sort((a, b) => a - b)));
+    } catch (e) {
+        /* ignore */
+    }
+}
 const swipeGuessReveal = {};
 /** Morpion (carte spéciale) */
 let tttBoard = null;
@@ -245,6 +264,8 @@ async function init() {
     }
     loadCategories();
     loadSuggestions();
+    loadRingtoneStudentBanner();
+    if (typeof initMusicPollModule === "function") initMusicPollModule();
     checkSubmissionsStatus();
     scheduleSuggestionsPoll();
     setupLiveSyncActivityListeners();
@@ -270,7 +291,39 @@ function onDocumentVisibilityChange() {
     clearTimeout(window.__visibilityReloadTimer);
     window.__visibilityReloadTimer = setTimeout(() => {
         loadSuggestions({ reason: "poll" });
+        loadRingtoneStudentBanner();
     }, 400);
+}
+
+async function loadRingtoneStudentBanner() {
+    const host = document.getElementById("ringtone-student-banner");
+    if (!host) return;
+    try {
+        const data = await API.get("/api/ringtone/current");
+        if (!data.enabled || !data.track || !data.track.title) {
+            host.classList.add("hidden");
+            host.innerHTML = "";
+            return;
+        }
+        const t = data.track;
+        const thumb = t.thumbnail_url
+            ? `<img class="ringtone-cd ringtone-cd-spin" src="${escapeHtml(t.thumbnail_url)}" alt="" width="56" height="56" loading="lazy">`
+            : `<div class="ringtone-cd ringtone-cd--ph ringtone-cd-spin" aria-hidden="true">♪</div>`;
+        host.innerHTML = `<div class="ringtone-student-inner">
+        <h2 class="ringtone-student-heading">Musique de la sonnerie Actuelle</h2>
+        <div class="ringtone-student-row">
+          <div class="ringtone-cd-shell">${thumb}</div>
+          <div class="ringtone-student-meta">
+            <span class="ringtone-student-track">${escapeHtml(t.title || "")}</span>
+            <span class="ringtone-student-artist">${escapeHtml(t.artist || "")}</span>
+          </div>
+        </div>
+      </div>`;
+        host.classList.remove("hidden");
+    } catch (e) {
+        host.classList.add("hidden");
+        host.innerHTML = "";
+    }
 }
 
 function computeSwipeDeckSig() {
@@ -279,10 +332,15 @@ function computeSwipeDeckSig() {
         .slice()
         .sort((a, b) => a - b)
         .join(",");
+    const consumed = [...swipeConsumedIds].sort((a, b) => a - b).join(",");
     const done = (engagementBootstrap?.cards_done_today || []).slice().sort().join(",");
     const guessEl = (engagementBootstrap?.guess_eligible_ids || []).slice().sort((a, b) => a - b).join(",");
     const dlm = engagementBootstrap?.dilemma?.id ?? "";
-    return `${ids}|${done}|${guessEl}|${dlm}`;
+    const mpSig = (engagementBootstrap?.music_polls || [])
+        .map((p) => p.id)
+        .sort((a, b) => a - b)
+        .join(",");
+    return `${ids}|c:${consumed}|${done}|${guessEl}|${dlm}|mp:${mpSig}`;
 }
 
 /** Met à jour le compteur / texte sur la carte swipe courante sans recréer le DOM (évite reset du geste). */
@@ -2282,8 +2340,8 @@ function buildEngagementGamePool(includeTtt) {
     const done = engagementBootstrap?.cards_done_today || [];
     const pool = [];
     const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-    const ids = allSuggestions.map((s) => s.id);
-    const guessEl = engagementBootstrap?.guess_eligible_ids || [];
+    const ids = allSuggestions.filter((s) => !swipeConsumedIds.has(s.id)).map((s) => s.id);
+    const guessEl = (engagementBootstrap?.guess_eligible_ids || []).filter((id) => !swipeConsumedIds.has(id));
     const dlm = engagementBootstrap?.dilemma;
 
     if (!done.includes("importance") && ids.length) pool.push({ kind: "special", type: "importance", refId: pick(ids) });
@@ -2293,6 +2351,13 @@ function buildEngagementGamePool(includeTtt) {
     if (!done.includes("mood")) pool.push({ kind: "special", type: "mood" });
     if (!done.includes("dilemma") && dlm && dlm.id) pool.push({ kind: "special", type: "dilemma" });
     if (includeTtt && !done.includes("ttt")) pool.push({ kind: "special", type: "ttt" });
+    const mps = engagementBootstrap?.music_polls || [];
+    for (const poll of mps) {
+        const ct = `music_${poll.id}`;
+        if (!done.includes(ct)) {
+            pool.push({ kind: "special", type: "music_poll", poll });
+        }
+    }
     return pool;
 }
 
@@ -2302,6 +2367,7 @@ function buildSwipeDeck() {
     const seen = new Set();
     const sugItems = [];
     for (const s of allSuggestions) {
+        if (swipeConsumedIds.has(s.id)) continue;
         if (!seen.has(s.id)) {
             seen.add(s.id);
             sugItems.push({ kind: "suggestion", id: s.id });
@@ -2602,21 +2668,42 @@ function createSpecialCardHtml(item) {
             </div>
         </div>`;
     }
+    if (item.type === "music_poll") {
+        const poll = item.poll;
+        if (!poll || !poll.tracks || !poll.tracks.length) {
+            return `<div class="swipe-card swipe-card--special"><div class="swipe-card-inner"><p>—</p></div></div>`;
+        }
+        const lines = poll.tracks
+            .slice(0, 6)
+            .map((t) => `<li class="swipe-music-poll-track">${escapeHtml(t.title)} <span class="swipe-music-poll-artist">— ${escapeHtml(t.artist)}</span></li>`)
+            .join("");
+        return `
+        <div class="swipe-card swipe-card--dating swipe-card--special swipe-card--music-poll" data-special="1">
+            <div class="swipe-card-inner">
+                <span class="swipe-eng-badge">Sondage musique</span>
+                <p class="swipe-eng-title">${escapeHtml(poll.title)}</p>
+                <ul class="swipe-music-poll-tracks-ul">${lines}</ul>
+                <p class="swipe-eng-sub">Vote sur la liste des suggestions (section plus bas).</p>
+                <button type="button" class="btn btn-primary swipe-eng-continue" data-eng="music-poll-dismiss" data-pid="${poll.id}">OK</button>
+            </div>
+        </div>`;
+    }
     if (item.type === "ttt") {
         const cells = Array.from({ length: 9 }, (_, i) => `<button type="button" class="ttt-cell" data-idx="${i}" aria-label="Case ${i + 1}"></button>`).join("");
         if (item.emptyState) {
             return `
         <div class="swipe-card swipe-card--dating swipe-card--special swipe-card--ttt swipe-card--ttt-empty" data-special="1">
             <div class="swipe-card-inner">
-                <p class="swipe-eng-empty-banner" role="status">Aucune suggestion à voter, revenez plus tard.</p>
+                <p class="swipe-eng-empty-banner" role="status">Plus de nouvelles suggestions pour l’instant — mini-jeu ci-dessous.</p>
                 <span class="swipe-eng-badge">Mini-jeu</span>
                 <p class="swipe-eng-title">Morpion</p>
                 <p class="swipe-eng-sub">Tu joues les <strong>X</strong>, l’IA les <strong>O</strong> (niveau difficile).</p>
                 <div class="ttt-grid" id="swipe-ttt-grid">${cells}</div>
                 <p class="ttt-status" id="swipe-ttt-status" aria-live="polite"></p>
                 <div class="swipe-eng-empty-actions">
-                    <button type="button" class="btn btn-secondary" data-eng="swipe-empty-retry">Réessayer</button>
-                    <button type="button" class="btn btn-primary swipe-eng-continue hidden" id="swipe-ttt-done" data-eng="ttt-dismiss">Continuer</button>
+                    <button type="button" class="btn btn-primary" data-eng="ttt-replay">Rejouer</button>
+                    <button type="button" class="btn btn-secondary" data-eng="swipe-empty-retry">Actualiser les suggestions</button>
+                    <button type="button" class="btn btn-ghost swipe-eng-continue hidden" id="swipe-ttt-done" data-eng="ttt-dismiss">Continuer</button>
                 </div>
             </div>
         </div>`;
@@ -2629,7 +2716,10 @@ function createSpecialCardHtml(item) {
                 <p class="swipe-eng-sub">Tu joues les <strong>X</strong>, l’IA les <strong>O</strong> (niveau difficile).</p>
                 <div class="ttt-grid" id="swipe-ttt-grid">${cells}</div>
                 <p class="ttt-status" id="swipe-ttt-status" aria-live="polite"></p>
-                <button type="button" class="btn btn-primary swipe-eng-continue hidden" id="swipe-ttt-done" data-eng="ttt-dismiss">Continuer</button>
+                <div class="swipe-eng-ttt-actions">
+                    <button type="button" class="btn btn-secondary" data-eng="ttt-replay">Rejouer</button>
+                    <button type="button" class="btn btn-primary swipe-eng-continue hidden" id="swipe-ttt-done" data-eng="ttt-dismiss">Continuer</button>
+                </div>
             </div>
         </div>`;
     }
@@ -2776,7 +2866,35 @@ function renderSwipeView() {
 function swipeGoNext() {
     const list = swipeDeckItems;
     if (list.length === 0) return;
-    swipeIndex = (swipeIndex + 1) % list.length;
+
+    const leaving = list[swipeIndex];
+    if (leaving && leaving.kind === "special" && leaving.type === "music_poll" && leaving.poll && leaving.poll.id) {
+        void API.post("/api/engagement/music-poll-dismiss", { poll_id: leaving.poll.id }).then(() => refreshEngagementBootstrap());
+    }
+
+    if (swipeIndex >= list.length - 1) {
+        const cur = list[swipeIndex];
+        if (cur && cur.kind === "suggestion") {
+            swipeConsumedIds.add(cur.id);
+            saveSwipeConsumedIds();
+            showFeedback("Plus de nouvelles suggestions.", "info");
+            buildSwipeDeck();
+            lastSwipeDeckSig = computeSwipeDeckSig();
+            clampSwipeIndex();
+            swipeIndex = 0;
+            renderSwipeView();
+            return;
+        }
+        showFeedback("Plus de nouvelles suggestions.", "info");
+        return;
+    }
+
+    const cur = list[swipeIndex];
+    if (cur && cur.kind === "suggestion") {
+        swipeConsumedIds.add(cur.id);
+        saveSwipeConsumedIds();
+    }
+    swipeIndex++;
     engagementPingSwipe();
     renderSwipeView();
 }
@@ -2784,7 +2902,8 @@ function swipeGoNext() {
 function swipeGoPrev() {
     const list = swipeDeckItems;
     if (list.length === 0) return;
-    swipeIndex = (swipeIndex - 1 + list.length) % list.length;
+    if (swipeIndex <= 0) return;
+    swipeIndex--;
     engagementPingSwipe();
     renderSwipeView();
 }
@@ -3134,6 +3253,11 @@ async function handleEngagementClick(ev) {
     const t = ev.target.closest("[data-eng]");
     if (!t) return;
     const eng = t.dataset.eng;
+    if (eng === "ttt-replay") {
+        ev.preventDefault();
+        initTttUi();
+        return;
+    }
     if (eng === "swipe-empty-retry") {
         ev.preventDefault();
         await loadSuggestions({ reason: "user" });
@@ -3161,6 +3285,10 @@ async function handleEngagementClick(ev) {
     if (eng === "act-dismiss") {
         await API.post("/api/engagement/activity-card-dismiss", {});
         await refreshEngagementBootstrap();
+        swipeGoNext();
+        return;
+    }
+    if (eng === "music-poll-dismiss") {
         swipeGoNext();
         return;
     }

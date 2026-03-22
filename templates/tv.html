@@ -18,7 +18,7 @@
                 <p class="display-bus-sub">Temps d’attente estimé</p>
             </div>
         </div>
-        <div id="tv-bus-stops" class="display-bus-stops"></div>
+        <div id="tv-bus-stops" class="display-bus-stops tv-bus-stops-wrap"></div>
     </div>
     <div id="tv-container" class="tv-container">
         <div id="tv-slide-a" class="tv-slide tv-slide-active"></div>
@@ -34,6 +34,7 @@
     </script>
     <script src="{{ url_for('static', filename=asset('js/bus-diagnostics.js')) }}"></script>
     <script src="{{ url_for('static', filename=asset('js/bus-board-render.js')) }}"></script>
+    <script src="{{ url_for('static', filename=asset('js/bus-board-pages.js')) }}"></script>
     <script src="{{ url_for('static', filename=asset('js/tv.js')) }}"></script>
 </body>
 </html>

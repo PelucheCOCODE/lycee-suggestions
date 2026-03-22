@@ -7,6 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
+    <link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4/dist/chart.umd.min.js"></script>
 </head>
 <body class="admin-body">
@@ -20,30 +21,48 @@
             <span class="sidebar-badge">CVL</span>
         </div>
         <nav class="sidebar-nav">
-            <button class="nav-item active" data-section="dashboard">Tableau de bord</button>
-            <button class="nav-item" data-section="engagement">Engagement</button>
-            <button class="nav-item" data-section="dilemmas">Dilemmes</button>
-
-            <div class="nav-group-label">Gestion</div>
-            <button class="nav-item" data-section="logs">Logs</button>
-            <button class="nav-item" data-section="suggestions">Suggestions</button>
-            <button class="nav-item" data-section="cvl-proposal">Proposition Officielle CVL</button>
-            <button class="nav-item" data-section="cvl-official-info">Information Officielle CVL</button>
-            <button class="nav-item" data-section="locations">Lieux</button>
-            <button class="nav-item" data-section="announcements">Annonces</button>
-
-            <div class="nav-group-label">Intelligence artificielle</div>
-            <button class="nav-item" data-section="calibration">Calibration IA</button>
-            <button class="nav-item" data-section="trace">Traçabilité</button>
-            <button class="nav-item" data-section="calibration-verify">Calibration IA vérification</button>
-            <button class="nav-item" data-section="llm-resources">Ressources IA</button>
-
-            <div class="nav-group-label">Affichage</div>
-            <button class="nav-item" data-section="display-manager">Affichage dynamique</button>
-            <button class="nav-item" data-section="bus">Horaires bus</button>
-
-            <div class="nav-group-label">Système</div>
-            <button class="nav-item" data-section="backup">Backup & Historique</button>
+            <details class="nav-group" open>
+                <summary class="nav-group-summary">Vue d’ensemble</summary>
+                <button type="button" class="nav-item active" data-section="dashboard">Tableau de bord</button>
+                <button type="button" class="nav-item" data-section="engagement">Engagement</button>
+            </details>
+            <details class="nav-group" open>
+                <summary class="nav-group-summary">Participation</summary>
+                <button type="button" class="nav-item" data-section="dilemmas">Dilemmes</button>
+            </details>
+            <details class="nav-group" open>
+                <summary class="nav-group-summary">Gestion</summary>
+                <button type="button" class="nav-item" data-section="logs">Logs</button>
+                <button type="button" class="nav-item" data-section="suggestions">Suggestions</button>
+                <button type="button" class="nav-item" data-section="cvl-proposal">Proposition Officielle CVL</button>
+                <button type="button" class="nav-item" data-section="cvl-official-info">Information Officielle CVL</button>
+                <button type="button" class="nav-item" data-section="locations">Lieux</button>
+                <button type="button" class="nav-item" data-section="announcements">Annonces</button>
+            </details>
+            <details class="nav-group" open>
+                <summary class="nav-group-summary">Intelligence artificielle</summary>
+                <button type="button" class="nav-item" data-section="calibration">Calibration IA</button>
+                <button type="button" class="nav-item" data-section="trace">Traçabilité</button>
+                <button type="button" class="nav-item" data-section="calibration-verify">Calibration IA vérification</button>
+                <button type="button" class="nav-item" data-section="llm-resources">Ressources IA</button>
+            </details>
+            <details class="nav-group" open>
+                <summary class="nav-group-summary">Sonnerie</summary>
+                <button type="button" class="nav-item" data-section="music-poll">Sondage musique</button>
+            </details>
+            <details class="nav-group" open>
+                <summary class="nav-group-summary">Affichage</summary>
+                <button type="button" class="nav-item" data-section="display-manager">Affichage dynamique</button>
+                <button type="button" class="nav-item" data-section="bus">Horaires bus</button>
+            </details>
+            <details class="nav-group" open>
+                <summary class="nav-group-summary">Développement</summary>
+                <button type="button" class="nav-item" data-section="development">Notes &amp; idées</button>
+            </details>
+            <details class="nav-group" open>
+                <summary class="nav-group-summary">Système</summary>
+                <button type="button" class="nav-item" data-section="backup">Backup &amp; Historique</button>
+            </details>
         </nav>
         <div class="sidebar-footer">
             <a href="/" class="sidebar-link">Voir le site</a>
@@ -97,6 +116,16 @@
                 </div>
                 <div class="control-row">
                     <div class="control-label">
+                        <span class="control-title">Bandeau « musique de la sonnerie » (page élève)</span>
+                        <span class="control-hint" id="feature-ringtone-hint">Désactivé</span>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="toggle-feature-ringtone-banner">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="control-row">
+                    <div class="control-label">
                         <span class="control-title">Mode d'affichage TV</span>
                         <span class="control-hint" id="display-mode-hint">Normal</span>
                     </div>
@@ -117,11 +146,21 @@
                     <button id="save-waiting-text" class="btn btn-primary">Sauvegarder</button>
                     <span id="waiting-save-status" class="save-status"></span>
                 </div>
+                <div class="form-group" style="margin-top: 1rem;">
+                    <label>Seuil de soutiens — résumé IA agrégé (sous-titre des suggestions)</label>
+                    <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                        <input type="number" id="subtitle-like-threshold" min="2" max="200" value="5" class="control-select" style="max-width: 5rem;">
+                        <button type="button" id="save-subtitle-threshold" class="btn btn-secondary btn-sm">Sauvegarder le seuil</button>
+                        <span id="subtitle-threshold-save-status" class="save-status"></span>
+                    </div>
+                    <p class="context-hint">À partir de ce nombre de soutiens (likes), l’IA synthétise automatiquement les textes et précisions dans le sous-titre ; le résumé est mis à jour à chaque nouveau soutien.</p>
+                </div>
             </div>
 
             <div class="charts-grid">
                 <div class="chart-card"><h3>Suggestions par catégorie</h3><canvas id="chart-categories"></canvas></div>
                 <div class="chart-card"><h3>Suggestions par statut</h3><canvas id="chart-statuses"></canvas></div>
+                <div class="chart-card chart-card--wide"><h3>Suggestions créées par mois (12 mois)</h3><canvas id="chart-suggestions-month"></canvas></div>
             </div>
             <div class="dashboard-section">
                 <h3>Top 10 — Suggestions les plus votées</h3>
@@ -144,6 +183,9 @@
                 <div class="chart-card"><h3>Connexions par jour (14 j)</h3><canvas id="chart-eng-presence"></canvas></div>
                 <div class="chart-card"><h3>Cartes complétées aujourd’hui</h3><canvas id="chart-eng-cards"></canvas></div>
                 <div class="chart-card"><h3>Activité moyenne (swipes / likes)</h3><canvas id="chart-eng-activity"></canvas></div>
+                <div class="chart-card chart-card--wide"><h3>Humeur par mois (toutes données)</h3><canvas id="chart-mood-month"></canvas></div>
+                <div class="chart-card chart-card--wide"><h3>Humeur par heure (Europe/Paris) — fatigue &amp; stress</h3><canvas id="chart-mood-hour"></canvas></div>
+                <div class="chart-card chart-card--wide"><h3>Votes d’importance par mois</h3><canvas id="chart-imp-month"></canvas></div>
             </div>
             <div class="dashboard-section">
                 <h3>Top suggestions par score d’importance</h3>
@@ -245,12 +287,59 @@
                 <div class="section-header-actions">
                     <button id="process-pending-btn" class="btn btn-primary">Traiter les suggestions en attente</button>
                 </div>
+                <div id="suggestion-focus-panel" class="suggestion-focus-panel hidden" aria-live="polite"></div>
                 <div class="section-filters">
                     <select id="admin-filter-category"><option value="">Toutes les catégories</option></select>
                     <select id="admin-filter-status"><option value="">Tous les statuts</option></select>
                     <input type="search" id="admin-search" placeholder="Rechercher...">
                 </div>
             </div>
+
+            <div id="admin-suggestions-hub" class="admin-suggestions-hub">
+                <h2 class="admin-hub-title">Autres contenus visibles sur la page élève</h2>
+                <p class="context-hint admin-hub-lead">Activez ou désactivez l’affichage public. Les réglages détaillés restent dans chaque section dédiée.</p>
+                <div class="admin-hub-grid">
+                    <div class="admin-hub-card" data-hub="proposal">
+                        <div class="admin-hub-card__head">
+                            <span class="admin-hub-card__icon" aria-hidden="true">📋</span>
+                            <h3>Proposition officielle CVL</h3>
+                            <label class="admin-hub-toggle"><input type="checkbox" id="hub-toggle-official-proposal" checked> Afficher</label>
+                        </div>
+                        <p id="hub-summary-official-proposal" class="admin-hub-card__status">—</p>
+                        <div class="admin-hub-card__actions">
+                            <button type="button" class="btn btn-sm btn-secondary" id="hub-btn-open-cvl-proposal">Ouvrir l’éditeur</button>
+                            <button type="button" class="btn btn-sm btn-ghost" id="hub-btn-close-cvl-proposal" title="Retirer de l’affichage élèves">Clôturer</button>
+                            <button type="button" class="btn btn-sm btn-primary" id="hub-btn-publish-cvl-proposal" title="Remettre la dernière proposition en ligne">Réactiver / Publier</button>
+                        </div>
+                    </div>
+                    <div class="admin-hub-card" data-hub="cvl-info">
+                        <div class="admin-hub-card__head">
+                            <span class="admin-hub-card__icon" aria-hidden="true">ℹ️</span>
+                            <h3>Informations officielles CVL</h3>
+                            <label class="admin-hub-toggle"><input type="checkbox" id="hub-toggle-cvl-info" checked> Afficher</label>
+                        </div>
+                        <p id="hub-summary-cvl-info" class="admin-hub-card__status">—</p>
+                        <div class="admin-hub-card__actions">
+                            <button type="button" class="btn btn-sm btn-secondary" id="hub-btn-open-cvl-info">Gérer les bandeaux</button>
+                        </div>
+                    </div>
+                    <div class="admin-hub-card" data-hub="music">
+                        <div class="admin-hub-card__head">
+                            <span class="admin-hub-card__icon" aria-hidden="true">🎵</span>
+                            <h3>Sondage musique</h3>
+                            <label class="admin-hub-toggle"><input type="checkbox" id="hub-toggle-music-poll" checked> Afficher</label>
+                        </div>
+                        <p class="admin-hub-subtoggles">
+                            <label class="admin-hub-toggle admin-hub-toggle--inline"><input type="checkbox" id="hub-toggle-ringtone-banner"> Bandeau musique sonnerie</label>
+                        </p>
+                        <p id="hub-summary-music-poll" class="admin-hub-card__status">—</p>
+                        <div class="admin-hub-card__actions">
+                            <button type="button" class="btn btn-sm btn-secondary" id="hub-btn-open-music-poll">Configurer le sondage</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div id="admin-suggestions-list" class="admin-suggestions-list"></div>
         </section>
 
@@ -786,6 +875,166 @@ Il y a un internat."></textarea>
             </div>
         </section>
 
+        <!-- Sondage musique Spotify -->
+        <section id="section-music-poll" class="admin-section">
+            <div class="section-header">
+                <h1>Sondage musique (Spotify)</h1>
+            </div>
+
+            <div class="spotify-api-card">
+                <div class="spotify-api-card__accent"></div>
+                <div class="spotify-api-card__inner">
+                    <div class="spotify-api-card__title-row">
+                        <span class="spotify-api-card__logo" aria-hidden="true">♪</span>
+                        <div>
+                            <h2 class="spotify-api-card__title">API Spotify (Web API)</h2>
+                            <p class="spotify-api-card__lead">Identifiants d’application — utilisés en arrière-plan (flux <strong>Client Credentials</strong>). Aucun compte Spotify des élèves n’est requis.</p>
+                        </div>
+                        <span id="spotify-config-badge" class="spotify-config-badge spotify-config-badge--off">Non configuré</span>
+                    </div>
+                    <p id="music-poll-spotify-warning" class="spotify-api-card__warn hidden">Les identifiants manquent — l’ajout de morceaux renverra une erreur jusqu’à configuration.</p>
+                    <p id="spotify-env-hint" class="spotify-api-card__env-hint hidden"></p>
+
+                    <div class="spotify-api-grid">
+                        <div class="spotify-field">
+                            <label for="spotify-client-id">Client ID</label>
+                            <input type="text" id="spotify-client-id" class="spotify-api-input" autocomplete="off" spellcheck="false" placeholder="Collez le Client ID du dashboard Spotify">
+                            <span class="spotify-field-hint">Visible sur le dashboard de votre application (onglet « Settings »).</span>
+                        </div>
+                        <div class="spotify-field spotify-field--secret">
+                            <label for="spotify-client-secret">Client Secret</label>
+                            <div class="spotify-secret-shell" id="spotify-secret-shell">
+                                <input type="password" id="spotify-client-secret" class="spotify-api-input spotify-api-input--secret" autocomplete="new-password" placeholder="">
+                                <button type="button" class="spotify-secret-veil" id="spotify-secret-veil" aria-label="Afficher ou modifier le secret">
+                                    <span class="spotify-secret-veil__dots" id="spotify-secret-dots">••••••••••••</span>
+                                    <span class="spotify-secret-veil__cta"><span class="spotify-secret-veil__icon">👁</span> Cliquer pour afficher ou modifier</span>
+                                    <span class="spotify-secret-veil__blur" aria-hidden="true"></span>
+                                </button>
+                            </div>
+                            <label class="spotify-clear-label">
+                                <input type="checkbox" id="spotify-clear-secret"> Effacer le secret enregistré (révoquer côté serveur)
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="spotify-api-actions">
+                        <button type="button" id="spotify-save-btn" class="btn btn-primary spotify-save-btn">Enregistrer les identifiants</button>
+                        <span id="spotify-save-status" class="save-status"></span>
+                    </div>
+                </div>
+            </div>
+
+            <details class="spotify-tutorial">
+                <summary class="spotify-tutorial__summary">
+                    <span class="spotify-tutorial__icon">📖</span>
+                    Tutoriel — comment obtenir et utiliser l’API Spotify ici
+                </summary>
+                <div class="spotify-tutorial__body">
+                    <ol class="spotify-tutorial__steps">
+                        <li><strong>C’est quoi ?</strong> Spotify propose une <a href="https://developer.spotify.com/documentation/web-api" target="_blank" rel="noopener">Web API</a> publique pour les développeurs. Avec le mode <em>Client Credentials</em>, votre serveur obtient un jeton d’accès pour lire des métadonnées (titre, pochette, extrait audio 30 s) sans connexion des utilisateurs.</li>
+                        <li><strong>Créer une application</strong> : connectez-vous au <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify Developer Dashboard</a>, créez une app, puis ouvrez <strong>Settings</strong>.</li>
+                        <li><strong>Client ID et Client Secret</strong> : copiez-les dans les champs ci-dessus (ou définissez les variables d’environnement <code>SPOTIFY_CLIENT_ID</code> et <code>SPOTIFY_CLIENT_SECRET</code> sur le serveur — la base de données du panneau admin prend le dessus si renseignée).</li>
+                        <li><strong>Redirect URI</strong> : inutile pour ce mode (pas d’OAuth utilisateur). Vous pouvez laisser vide ou mettre une URL factice si le dashboard l’exige.</li>
+                        <li><strong>Sécurité</strong> : le secret est stocké en base côté serveur ; sur cette page il est masqué par défaut — cliquez sur la zone floutée pour le modifier. Ne partagez pas ces valeurs publiquement.</li>
+                        <li><strong>Ensuite</strong> : enregistrez, puis ajoutez des morceaux au sondage via un lien <code>open.spotify.com/track/…</code> — les infos et l’extrait MP3 sont récupérés automatiquement.</li>
+                    </ol>
+                </div>
+            </details>
+
+            <div class="form-row" style="align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+                <div class="form-group">
+                    <label for="music-poll-selector">Sondage</label>
+                    <select id="music-poll-selector" class="control-select" style="min-width:220px;"></select>
+                </div>
+                <button type="button" id="music-poll-new-btn" class="btn btn-secondary">Nouveau sondage</button>
+                <button type="button" id="music-poll-delete-btn" class="btn btn-secondary" style="color:#b91c1c;">Supprimer</button>
+            </div>
+
+            <div class="music-poll-tabs" role="tablist" aria-label="Sondage musique">
+                <button type="button" class="music-poll-tab-btn music-poll-tab-btn--active" id="music-poll-tab-btn-editor" role="tab" aria-selected="true" data-music-poll-tab="editor">Sondage</button>
+                <button type="button" class="music-poll-tab-btn" id="music-poll-tab-btn-results" role="tab" aria-selected="false" data-music-poll-tab="results">Résultats</button>
+            </div>
+
+            <div id="music-poll-tab-panel-editor" class="music-poll-tab-panel" role="tabpanel" aria-labelledby="music-poll-tab-btn-editor">
+            <div id="music-poll-editor">
+                <input type="hidden" id="music-poll-edit-id" value="">
+                <div class="form-group">
+                    <label for="music-poll-title">Titre</label>
+                    <input type="text" id="music-poll-title" class="bus-input-wide" maxlength="200" placeholder="Ex. Musique de fin de cours — Semaine 12">
+                </div>
+                <div class="form-row" style="gap:16px;flex-wrap:wrap;">
+                    <div class="form-group">
+                        <label for="music-poll-max-votes">Votes max par session</label>
+                        <select id="music-poll-max-votes" class="control-select">
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="music-poll-end">Date de fin (optionnel)</label>
+                        <input type="datetime-local" id="music-poll-end" class="bus-input-wide">
+                    </div>
+                    <div class="form-group" style="flex:1;min-width:240px;">
+                        <label for="music-poll-playlist">Lien playlist Spotify (optionnel)</label>
+                        <div class="music-poll-playlist-row">
+                            <input type="text" id="music-poll-playlist" class="bus-input-wide" placeholder="https://open.spotify.com/playlist/… ou …/intl-fr/playlist/…" autocomplete="off">
+                            <button type="button" id="music-poll-test-playlist-btn" class="btn btn-secondary">Tester</button>
+                        </div>
+                        <span id="music-poll-playlist-test-status" class="save-status" style="display:block;margin-top:6px;"></span>
+                        <div id="music-poll-playlist-preview" class="music-poll-playlist-preview hidden"></div>
+                    </div>
+                </div>
+                <label class="bus-toggle-label" style="margin:12px 0;">
+                    <input type="checkbox" id="music-poll-active"> Sondage actif (un seul à la fois sur le mur)
+                </label>
+                <div class="music-poll-save-actions">
+                    <button type="button" id="music-poll-save-btn" class="btn btn-primary">Enregistrer le sondage</button>
+                    <button type="button" id="music-poll-publish-btn" class="btn btn-secondary">Publier (activer)</button>
+                    <span id="music-poll-save-status" class="save-status"></span>
+                </div>
+                <h3>Morceaux (3 à 5 recommandés)</h3>
+                <div class="form-row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;">
+                    <div class="form-group" style="flex:1;min-width:260px;">
+                        <label for="music-poll-track-url">Lien morceau Spotify</label>
+                        <input type="text" id="music-poll-track-url" class="bus-input-wide" placeholder="https://open.spotify.com/track/..." inputmode="url" autocomplete="off">
+                    </div>
+                    <button type="button" id="music-poll-add-track-btn" class="btn btn-primary">Ajouter</button>
+                </div>
+                <div id="music-poll-tracks-admin" class="music-poll-admin-tracks"></div>
+                <div class="music-poll-admin-preview-block">
+                    <h3 style="margin-top:28px;">Aperçu côté élève</h3>
+                    <p class="context-hint" style="margin-bottom:10px;">Rendu identique au mur (extraits audio OK ; les clics sur ♡ ne sont pas enregistrés ici).</p>
+                    <button type="button" id="music-poll-refresh-preview-btn" class="btn btn-secondary">Actualiser l’aperçu</button>
+                    <div id="music-poll-student-preview" class="music-poll-admin-preview-wrap"></div>
+                </div>
+            </div>
+            </div>
+
+            <div id="music-poll-tab-panel-results" class="music-poll-tab-panel hidden" role="tabpanel" aria-labelledby="music-poll-tab-btn-results">
+                <div class="ringtone-admin-card">
+                    <h3>Musique actuelle (sonnerie)</h3>
+                    <p class="context-hint">Choisissez le morceau affiché sur la page élève (visuel uniquement, sans son). Vous pouvez coller un lien Spotify ou sélectionner un résultat du sondage actif ci-dessous.</p>
+                    <label class="bus-toggle-label" style="margin:12px 0;">
+                        <input type="checkbox" id="ringtone-banner-enabled"> Afficher le bandeau « Musique de la sonnerie Actuelle » sur la page élève
+                    </label>
+                    <div id="ringtone-current-display" class="ringtone-current-display"></div>
+                    <div class="form-row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;margin:16px 0 8px;">
+                        <div class="form-group" style="flex:1;min-width:260px;">
+                            <label for="ringtone-spotify-url">Lien morceau Spotify</label>
+                            <input type="text" id="ringtone-spotify-url" class="bus-input-wide" placeholder="https://open.spotify.com/track/..." inputmode="url" autocomplete="off">
+                        </div>
+                        <button type="button" id="ringtone-apply-spotify-btn" class="btn btn-primary">Utiliser ce lien</button>
+                    </div>
+                    <button type="button" id="ringtone-clear-btn" class="btn btn-secondary btn-sm">Effacer la sélection</button>
+                    <span id="ringtone-save-status" class="save-status" style="display:block;margin-top:8px;"></span>
+
+                    <h4 class="ringtone-results-section-title">Sondage en cours — résultats (cliquez pour sélectionner)</h4>
+                    <p id="ringtone-active-poll-empty" class="context-hint hidden">Aucun sondage actif. Activez un sondage dans l’onglet Sondage.</p>
+                    <div id="ringtone-poll-results-clickable" class="music-poll-results-admin"></div>
+                </div>
+            </div>
+        </section>
+
         <!-- Bus -->
         <section id="section-bus" class="admin-section admin-section-bus">
             <div class="section-header">
@@ -867,12 +1116,17 @@ Il y a un internat."></textarea>
                 </div>
 
                 <div class="bus-admin-block bus-admin-schedule">
-                    <h3>Créneaux plein écran bus</h3>
+                    <h3>Créneaux horaires (bus)</h3>
                     <label class="bus-toggle-label" style="margin-bottom:12px;display:block;">
                         <input type="checkbox" id="bus-restrict-to-schedule">
-                        Ne calculer les départs que pendant les créneaux ci-dessous (sinon : GTFS toute l’année, H2 incluse)
+                        Limiter le <strong>calcul</strong> GTFS aux créneaux ci-dessous (sinon horaires toute la journée / année scolaire)
                     </label>
-                    <p class="context-hint">Pendant ces plages, les écrans passent en « PROCHAINS BUS » uniquement si l’API renvoie <code>available: true</code>.</p>
+                    <p class="context-hint">Indépendant de l’affichage TV : sert surtout si vous ne voulez pas indexer les départs hors plages.</p>
+                    <label class="bus-toggle-label" style="margin-top:14px;margin-bottom:8px;display:block;">
+                        <input type="checkbox" id="bus-tv-show-only-during-schedule">
+                        <strong>Affichage dynamique (/tv/) : uniquement les bus pendant les créneaux ci-dessous</strong>
+                    </label>
+                    <p class="context-hint">Si activé : pendant ces plages, les pages <code>/tv/…</code> affichent <strong>uniquement</strong> le panneau « Prochains départs » (les diapos de la présentation sont ignorées). En dehors des créneaux, la présentation (images, texte, etc.) s’affiche normalement. Nécessite des données bus disponibles (<code>available: true</code>).</p>
                     <div id="bus-schedule-editor" class="bus-schedule-editor"></div>
                     <button type="button" id="bus-add-slot" class="btn btn-secondary btn-sm">+ Créneau</button>
                     <div class="form-group" style="margin-top:16px;">
@@ -921,6 +1175,17 @@ Il y a un internat."></textarea>
             <div class="bus-actions">
                 <button type="button" id="bus-save" class="btn btn-primary">Sauvegarder</button>
                 <span id="bus-save-status" class="save-status"></span>
+            </div>
+        </section>
+
+        <section id="section-development" class="admin-section">
+            <div class="section-header">
+                <h1>Développement</h1>
+                <span class="context-hint">Notes internes avec mise en forme — sauvegarde automatique à chaque modification (debounce).</span>
+            </div>
+            <div class="dev-notes-wrap">
+                <div id="dev-notes-editor" class="dev-notes-editor"></div>
+                <p id="dev-notes-save-status" class="save-status"></p>
             </div>
         </section>
 
@@ -1088,6 +1353,19 @@ Il y a un internat."></textarea>
         </div>
     </div>
 
+    <div id="archive-detail-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="archive-detail-title">
+        <div class="admin-modal-backdrop" id="archive-detail-backdrop"></div>
+        <div class="admin-modal-content admin-modal-content--lg">
+            <div class="admin-modal-header">
+                <h2 id="archive-detail-title">Suggestion — détail</h2>
+                <button type="button" class="btn btn-ghost" id="archive-detail-close">Fermer</button>
+            </div>
+            <div id="archive-detail-body" class="admin-modal-body"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.quilljs.com/1.3.7/quill.min.js"></script>
+    <script src="{{ url_for('static', filename=asset('js/music-poll.js')) }}"></script>
     <script src="{{ url_for('static', filename=asset('js/admin.js')) }}"></script>
 </body>
 </html>
