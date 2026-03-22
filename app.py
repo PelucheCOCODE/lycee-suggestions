@@ -2692,6 +2692,7 @@ def _spotify_preview_proxy_response():
             timeout=25,
             headers=upstream_headers,
             allow_redirects=True,
+            proxies={"http": None, "https": None},
         )
         if not r.ok:
             snippet = (getattr(r, "text", None) or "")[:400]

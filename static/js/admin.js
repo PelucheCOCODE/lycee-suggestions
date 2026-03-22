@@ -4135,19 +4135,17 @@ function datetimeLocalToIso(val) {
     return d.toISOString();
 }
 
-/** Préécoute : proxy admin (CDN Spotify + Deezer), aligné sur music-poll.js. */
+/** Préécoute : Spotify via proxy ; Deezer en direct (aligné sur music-poll.js). */
 function spotifyPreviewSrcForAdmin(url) {
     if (!url || typeof url !== "string") return "";
     const u = url.trim();
     if (!u.startsWith("https://")) return u;
     try {
         const h = new URL(u).hostname.toLowerCase();
-        if (
-            h === "p.scdn.co" ||
-            h.endsWith(".scdn.co") ||
-            h.endsWith(".spotifycdn.com") ||
-            h.endsWith(".dzcdn.net")
-        ) {
+        if (h.endsWith(".dzcdn.net")) {
+            return u;
+        }
+        if (h === "p.scdn.co" || h.endsWith(".scdn.co") || h.endsWith(".spotifycdn.com")) {
             return `/api/admin/spotify/preview-audio?url=${encodeURIComponent(u)}`;
         }
     } catch (e) {
@@ -4637,9 +4635,28 @@ function renderMusicPollTracksAdmin(tracks) {
         const testBtn = card.querySelector(".music-poll-preview-test");
         if (testBtn && tr && tr.preview_url) {
             testBtn.addEventListener("click", () => {
+                const raw = tr.preview_url.trim();
                 const a = new Audio();
-                a.src = spotifyPreviewSrcForAdmin(tr.preview_url);
+                let src = spotifyPreviewSrcForAdmin(raw);
+                if (src.startsWith("https://") && src.includes("dzcdn.net")) {
+                    a.referrerPolicy = "no-referrer";
+                }
+                a.src = src;
                 a.volume = 0.8;
+                let triedProxy = false;
+                a.addEventListener(
+                    "error",
+                    () => {
+                        if (triedProxy) return;
+                        if (raw.startsWith("https://") && raw.includes("dzcdn.net")) {
+                            triedProxy = true;
+                            a.referrerPolicy = "";
+                            a.src = `/api/admin/spotify/preview-audio?url=${encodeURIComponent(raw)}`;
+                            a.play().catch(() => {});
+                        }
+                    },
+                    { once: true }
+                );
                 a.play().catch(() => {});
             });
         }
