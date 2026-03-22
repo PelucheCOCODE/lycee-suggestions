@@ -4437,6 +4437,8 @@ async function loadSpotifyAdmin() {
     try {
         const d = await API.get("/api/admin/spotify-settings");
         document.getElementById("spotify-client-id").value = d.client_id || "";
+        const dzFb = document.getElementById("music-poll-deezer-fallback");
+        if (dzFb) dzFb.checked = d.music_poll_deezer_preview_fallback === true;
         const badge = document.getElementById("spotify-config-badge");
         const warn = document.getElementById("music-poll-spotify-warning");
         const envHint = document.getElementById("spotify-env-hint");
@@ -4487,6 +4489,8 @@ async function saveSpotifySettings() {
     const status = document.getElementById("spotify-save-status");
     status.textContent = "Enregistrement…";
     const body = { client_id: document.getElementById("spotify-client-id").value };
+    const dzFb = document.getElementById("music-poll-deezer-fallback");
+    if (dzFb) body.music_poll_deezer_preview_fallback = dzFb.checked;
     if (document.getElementById("spotify-clear-secret").checked) {
         body.clear_client_secret = true;
     } else {

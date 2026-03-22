@@ -1969,6 +1969,11 @@ def _music_track_to_admin_dict(t: MusicTrack) -> dict:
 _music_poll_preview_enrich_last: dict[int, float] = {}
 
 
+def _music_poll_deezer_preview_fallback() -> bool:
+    """Si True, complète l’extrait MP3 via Deezer quand Spotify ne renvoie pas preview_url."""
+    return get_setting("music_poll_deezer_preview_fallback", "false").lower() in ("1", "true", "yes")
+
+
 def _maybe_enrich_track_preview(t: MusicTrack) -> None:
     """Si pas d’URL d’extrait en base, tente Spotify+Deezer ou Deezer seul (recherche)."""
     if t.preview_url:
@@ -1980,7 +1985,10 @@ def _maybe_enrich_track_preview(t: MusicTrack) -> None:
     _music_poll_preview_enrich_last[tid] = now
     try:
         if music_utils.spotify_credentials_configured():
-            meta = music_utils.fetch_spotify_track_metadata(t.spotify_url)
+            meta = music_utils.fetch_spotify_track_metadata(
+                t.spotify_url,
+                deezer_preview_fallback=_music_poll_deezer_preview_fallback(),
+            )
             pu = meta.get("preview_url")
             if pu:
                 t.preview_url = pu[:500]
@@ -2175,6 +2183,8 @@ def admin_spotify_settings():
                 "client_secret_configured": bool(resolved_sec),
                 "client_secret_hint": _spotify_secret_hint(resolved_sec) if resolved_sec else None,
                 "configured": music_utils.spotify_credentials_configured(),
+                "music_poll_deezer_preview_fallback": get_setting("music_poll_deezer_preview_fallback", "false")
+                == "true",
                 "env_fallback_active": {
                     "client_id": bool(env_cid) and not dbcid,
                     "client_secret": bool(env_sec) and not dbsec,
@@ -2183,6 +2193,10 @@ def admin_spotify_settings():
         )
 
     data = request.get_json() or {}
+    if "music_poll_deezer_preview_fallback" in data:
+        v = data.get("music_poll_deezer_preview_fallback")
+        on = v is True or (isinstance(v, str) and v.lower() in ("1", "true", "yes"))
+        set_setting("music_poll_deezer_preview_fallback", "true" if on else "false")
     if "client_id" in data:
         v = data.get("client_id")
         set_setting("spotify_client_id", (v or "").strip() if isinstance(v, str) else "")
@@ -2333,7 +2347,10 @@ def admin_music_poll_add_track(poll_id):
     if n_existing >= 5:
         return jsonify({"error": "Maximum 5 morceaux par sondage"}), 400
     try:
-        meta = music_utils.fetch_spotify_track_metadata(spotify_url)
+        meta = music_utils.fetch_spotify_track_metadata(
+            spotify_url,
+            deezer_preview_fallback=_music_poll_deezer_preview_fallback(),
+        )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     tid = meta["spotify_track_id"]
@@ -2479,7 +2496,10 @@ def admin_ringtone():
         if not url:
             return jsonify({"error": "URL Spotify requise"}), 400
         try:
-            meta = music_utils.fetch_spotify_track_metadata(url)
+            meta = music_utils.fetch_spotify_track_metadata(
+                url,
+                deezer_preview_fallback=_music_poll_deezer_preview_fallback(),
+            )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         payload = {
@@ -2636,8 +2656,12 @@ def _preview_upstream_headers(target_url: str) -> dict:
         "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
     }
     if netloc.endswith(".dzcdn.net"):
+        # Le CDN Deezer renvoie 403 si le client final n’est pas « vu » comme deezer.com
+        # (hotlink depuis un autre site). Ne pas rediriger le navigateur vers l’URL signée.
         h["Referer"] = "https://www.deezer.com/"
-        h["Origin"] = "https://www.deezer.com"
+        h["Sec-Fetch-Dest"] = "audio"
+        h["Sec-Fetch-Mode"] = "no-cors"
+        h["Sec-Fetch-Site"] = "cross-site"
     elif "scdn.co" in netloc or "spotifycdn.com" in netloc or netloc == "p.scdn.co":
         h["Referer"] = "https://open.spotify.com/"
     return h
@@ -2655,7 +2679,6 @@ def _spotify_preview_proxy_response():
         return jsonify({"error": "Hôte ou chemin non autorisé pour la préécoute"}), 400
 
     netloc = urlparse(url).netloc.lower()
-    is_deezer_cdn = netloc.endswith(".dzcdn.net")
 
     upstream_headers = _preview_upstream_headers(url)
     rng = request.headers.get("Range")
@@ -2671,18 +2694,16 @@ def _spotify_preview_proxy_response():
             allow_redirects=True,
         )
         if not r.ok:
+            snippet = (getattr(r, "text", None) or "")[:400]
             app.logger.warning(
-                "preview-audio upstream HTTP %s for %s",
+                "preview-audio upstream HTTP %s for %s: %s",
                 r.status_code,
                 netloc,
+                snippet,
             )
-            if is_deezer_cdn:
-                return redirect(url, code=302)
             return jsonify({"error": "Lecture impossible", "upstream": r.status_code}), 502
     except Exception as e:
         app.logger.warning("preview-audio proxy: %s", e, exc_info=True)
-        if is_deezer_cdn:
-            return redirect(url, code=302)
         return jsonify({"error": "Lecture impossible"}), 502
 
     def generate():

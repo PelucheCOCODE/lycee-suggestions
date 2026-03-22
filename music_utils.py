@@ -185,11 +185,16 @@ def try_deezer_preview_for_track(artist: str, title: str, isrc: str | None = Non
     return _deezer_preview_from_search(artist, title)
 
 
-def _resolve_preview_url_from_spotify_track(data: dict) -> str | None:
-    """Spotify fournit souvent preview_url=null ; on complète via Deezer (ISRC puis recherche)."""
+def _preview_url_from_spotify_track_data(data: dict, *, deezer_preview_fallback: bool) -> str | None:
+    """
+    Champ preview_url de la réponse GET /v1/tracks (URL CDN Spotify, souvent p.scdn.co).
+    Si absent et deezer_preview_fallback=True, complète via l’API publique Deezer (ISRC puis recherche).
+    """
     preview = data.get("preview_url")
     if preview:
         return preview
+    if not deezer_preview_fallback:
+        return None
     artists = ", ".join(a["name"] for a in data.get("artists", []))
     title = data.get("name") or ""
     isrc = (data.get("external_ids") or {}).get("isrc")
@@ -200,9 +205,10 @@ def _resolve_preview_url_from_spotify_track(data: dict) -> str | None:
     return _deezer_preview_from_search(artists, title)
 
 
-def fetch_spotify_track_metadata(spotify_url: str) -> dict:
+def fetch_spotify_track_metadata(spotify_url: str, *, deezer_preview_fallback: bool = False) -> dict:
     """
     Retourne titre, artiste, album, pochette, preview_url.
+    preview_url provient de l’API Spotify sauf si deezer_preview_fallback=True et que Spotify ne fournit pas d’extrait.
     Ne plante jamais (fallbacks en cas d'erreur API).
     Lève ValueError uniquement si l'URL est invalide.
     """
@@ -224,7 +230,7 @@ def fetch_spotify_track_metadata(spotify_url: str) -> dict:
         artists = ", ".join(a["name"] for a in data.get("artists", []))
         images = data.get("album", {}).get("images", [])
         thumbnail = images[0]["url"] if images else None
-        preview_url = _resolve_preview_url_from_spotify_track(data)
+        preview_url = _preview_url_from_spotify_track_data(data, deezer_preview_fallback=deezer_preview_fallback)
 
         return {
             "spotify_track_id": track_id,
