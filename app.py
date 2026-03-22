@@ -602,6 +602,140 @@ def _get_existing_suggestions():
     return result
 
 
+def _eval_rapport_precision_pair(existing_orig: str, new_text: str) -> tuple[bool, bool]:
+    """(proceed_with_match, adds_precision) — même règles que le formulaire simple."""
+    adds_precision = False
+    proceed_with_match = True
+    calib_rapport = [e.to_dict() for e in CalibrationRapport.query.order_by(CalibrationRapport.created_at.desc()).limit(12).all()]
+    if calib_rapport:
+        try:
+            import llm_engine
+            res = llm_engine.check_rapport_precision(existing_orig, new_text, calibration=calib_rapport)
+            if res:
+                has_rapport, is_precision = res
+                adds_precision = has_rapport and is_precision
+                if not has_rapport:
+                    proceed_with_match = False
+        except Exception:
+            adds_precision = len(new_text) > len(existing_orig) + 15
+    else:
+        adds_precision = len(new_text) > len(existing_orig) + 15
+    return proceed_with_match, adds_precision
+
+
+def _find_duplicate_match(text: str, existing: list, force_new: bool) -> dict | None:
+    """Doublon : vérification IA (prioritaire) puis repli rapide."""
+    if force_new or not existing:
+        return None
+    m = ai.check_duplicate(text, existing)
+    if m is None:
+        m = ai.quick_duplicate_check(text, existing)
+    return m
+
+
+def _apply_support_vote(suggestion: Suggestion, session_id: str, original_text: str) -> None:
+    """Un soutien avec texte (précision / formulation) pour agrégat subtitle."""
+    vote = Vote(suggestion_id=suggestion.id, session_id=session_id, original_text=original_text)
+    db.session.add(vote)
+    suggestion.vote_count = Vote.query.filter_by(suggestion_id=suggestion.id).count() + 1
+    db.session.commit()
+    suggestion.vote_count = Vote.query.filter_by(suggestion_id=suggestion.id).count()
+    db.session.commit()
+    _maybe_generate_subtitle(suggestion.id)
+
+
+def _submit_multipart_suggestions(parts: list[str], data: dict, session_id: str):
+    """
+    Plusieurs idées dans un même message : pour chaque partie, doublon → soutien + précisions
+    (texte du vote) si le rapport l’indique ; sinon nouvelle suggestion. Même logique que le formulaire simple.
+    """
+    from unidecode import unidecode
+
+    created_ids: list[int] = []
+    notes: list[str] = []
+    force_new = data.get("force_new") is True
+
+    seen = set()
+    unique: list[str] = []
+    for p in parts:
+        p = (p or "").strip()
+        if len(p) < 5:
+            continue
+        key = unidecode(p.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+
+    if not unique:
+        return jsonify({"error": "Message trop court."}), 400
+
+    for part in unique:
+        existing = _get_existing_suggestions()
+        match = _find_duplicate_match(part, existing, force_new)
+        if match:
+            sug = Suggestion.query.get(match["id"])
+            if not sug:
+                match = None
+            else:
+                existing_vote = Vote.query.filter_by(suggestion_id=sug.id, session_id=session_id).first()
+                if existing_vote:
+                    notes.append(f"« {sug.title[:50]} » : vous l’aviez déjà soutenue.")
+                    continue
+                proceed_with_match, adds_precision = _eval_rapport_precision_pair(sug.original_text or "", part)
+                if not proceed_with_match:
+                    match = None
+                else:
+                    _apply_support_vote(sug, session_id, part)
+                    if adds_precision:
+                        notes.append(f"Précisions enregistrées pour « {sug.title[:52]} ».")
+                    else:
+                        notes.append(f"Soutien ajouté à « {sug.title[:52]} ».")
+                    continue
+        if not match:
+            suggestion = Suggestion(
+                original_text=part,
+                title=part[:200],
+                status="En attente",
+                vote_count=1,
+            )
+            db.session.add(suggestion)
+            db.session.flush()
+            vote = Vote(suggestion_id=suggestion.id, session_id=session_id)
+            db.session.add(vote)
+            db.session.commit()
+            _sync_suggestion_archive(suggestion)
+            db.session.commit()
+            _log_activity("suggestion_submitted", f"Suggestion #{suggestion.id} en attente : « {part[:80]} »")
+            _process_suggestion_background(suggestion.id)
+            created_ids.append(suggestion.id)
+
+    if created_ids:
+        n = len(created_ids)
+        msg = f"{n} nouvelle(s) suggestion(s) envoyée(s) ! Elles seront examinées sous peu." if n > 1 else (
+            "Votre suggestion a été envoyée ! Elle sera examinée sous peu."
+        )
+        if notes:
+            msg = msg + " " + " ".join(notes)
+        return jsonify({
+            "status": "submitted",
+            "message": msg.strip(),
+            "suggestion_ids": created_ids,
+            "parts_created": n,
+        }), 201
+
+    if notes:
+        return jsonify({
+            "status": "duplicate_voted",
+            "message": " ".join(notes),
+        }), 200
+
+    return jsonify({
+        "status": "duplicate_skipped",
+        "message": "Aucune idée n’a pu être enregistrée.",
+    }), 200
+
+
 # --------------- Pages ---------------
 
 @app.route("/")
@@ -1103,7 +1237,7 @@ def submit_suggestion():
     session_id = get_session_id()
 
     existing = _get_existing_suggestions()
-    match = None if force_new else ai.quick_duplicate_check(text, existing)
+    match = _find_duplicate_match(text, existing, force_new)
 
     if match:
         suggestion = Suggestion.query.get(match["id"])
@@ -1111,63 +1245,38 @@ def submit_suggestion():
             existing_vote = Vote.query.filter_by(
                 suggestion_id=suggestion.id, session_id=session_id
             ).first()
-            if not existing_vote:
-                existing_orig = suggestion.original_text or ""
-                adds_precision = False
-                proceed_with_match = True
-                calib_rapport = [e.to_dict() for e in CalibrationRapport.query.order_by(CalibrationRapport.created_at.desc()).limit(12).all()]
-                if calib_rapport:
-                    try:
-                        import llm_engine
-                        res = llm_engine.check_rapport_precision(existing_orig, text, calibration=calib_rapport)
-                        if res:
-                            has_rapport, is_precision = res
-                            adds_precision = has_rapport and is_precision
-                            if not has_rapport:
-                                proceed_with_match = False
-                                match = None
-                    except Exception:
-                        adds_precision = len(text) > len(existing_orig) + 15
-                else:
-                    adds_precision = len(text) > len(existing_orig) + 15
-                if proceed_with_match and adds_precision and data.get("confirm_precision") is True and data.get("existing_id") == suggestion.id:
-                    vote = Vote(suggestion_id=suggestion.id, session_id=session_id, original_text=text)
-                    db.session.add(vote)
-                    suggestion.vote_count = Vote.query.filter_by(suggestion_id=suggestion.id).count() + 1
-                    db.session.commit()
-                    suggestion.vote_count = Vote.query.filter_by(suggestion_id=suggestion.id).count()
-                    db.session.commit()
-                    _maybe_generate_subtitle(suggestion.id)
+            if existing_vote:
+                return jsonify({
+                    "status": "duplicate_already_voted",
+                    "message": "Vous avez déjà soutenu cette suggestion.",
+                    "suggestion": suggestion.to_dict(),
+                })
+            proceed_with_match, adds_precision = _eval_rapport_precision_pair(suggestion.original_text or "", text)
+            if not proceed_with_match:
+                match = None
+            else:
+                if adds_precision and data.get("confirm_precision") is True and data.get("existing_id") == suggestion.id:
+                    _apply_support_vote(suggestion, session_id, text)
                     return jsonify({
                         "status": "duplicate_voted",
                         "message": "Vos précisions ont été ajoutées à la suggestion !",
                         "suggestion": suggestion.to_dict(),
                     })
-                if proceed_with_match and adds_precision:
+                if adds_precision:
                     return jsonify({
                         "status": "ask_precision",
                         "message": "Une suggestion similaire existe.",
                         "existing": suggestion.to_dict(),
                         "existing_title": suggestion.title,
                     }), 200
-                if proceed_with_match:
-                    vote = Vote(suggestion_id=suggestion.id, session_id=session_id, original_text=text)
-                    db.session.add(vote)
-                    suggestion.vote_count = Vote.query.filter_by(suggestion_id=suggestion.id).count() + 1
-                    db.session.commit()
-                    suggestion.vote_count = Vote.query.filter_by(suggestion_id=suggestion.id).count()
-                    db.session.commit()
-                    _maybe_generate_subtitle(suggestion.id)
-                    return jsonify({
-                        "status": "duplicate_voted",
-                        "message": "Cette suggestion existe déjà, votre soutien a été ajouté !",
-                        "suggestion": suggestion.to_dict(),
-                    })
-            return jsonify({
-                "status": "duplicate_already_voted",
-                "message": "Vous avez déjà soutenu cette suggestion.",
-                "suggestion": suggestion.to_dict(),
-            })
+                _apply_support_vote(suggestion, session_id, text)
+                return jsonify({
+                    "status": "duplicate_voted",
+                    "message": "Cette suggestion existe déjà, votre soutien a été ajouté !",
+                    "suggestion": suggestion.to_dict(),
+                })
+        else:
+            match = None
 
     suggestion = Suggestion(
         original_text=text,
@@ -1187,80 +1296,152 @@ def submit_suggestion():
     _log_activity("suggestion_submitted", f"Suggestion #{suggestion.id} en attente : « {text[:80]} »")
     _process_suggestion_background(suggestion.id)
 
-    detail_hint = None
-    try:
-        import llm_engine
-        calib_details = [e.to_dict() for e in CalibrationDetails.query.order_by(CalibrationDetails.created_at.desc()).limit(15).all()]
-        detail_hint = llm_engine.suggest_detail_hint(text, calibration_details=calib_details)
-    except Exception:
-        pass
-
-    resp = {"status": "submitted", "message": "Votre suggestion a été envoyée ! Elle sera examinée sous peu."}
-    if detail_hint:
-        resp["detail_hint"] = detail_hint
-    return jsonify(resp), 201
+    return jsonify({
+        "status": "submitted",
+        "message": "Suggestion envoyée ! Traitement en cours…",
+        "suggestion": {
+            "id": suggestion.id,
+            "title": suggestion.title,
+            "original_text": suggestion.original_text,
+            "status": "En attente",
+            "category": None,
+            "vote_count": 1,
+            "needs_debate": False,
+            "location_name": None,
+            "created_at": suggestion.created_at.isoformat() if suggestion.created_at else None,
+        },
+    }), 201
 
 
 def _process_suggestion_background(suggestion_id: int):
-    """Launch background thread to validate & process a suggestion with AI."""
+    """Filtre → split (IA + heuristique) → doublon → traitement IA. N'interrompt jamais la réponse HTTP."""
     def _work():
         with app.app_context():
-            suggestion = Suggestion.query.get(suggestion_id)
-            if not suggestion or suggestion.status != "En attente":
-                return
+            try:
+                suggestion = Suggestion.query.get(suggestion_id)
+                if not suggestion or suggestion.status != "En attente":
+                    return
 
-            is_ok, err_msg = filter_content(suggestion.original_text)
-            if not is_ok:
-                suggestion.status = "Refusée"
-                suggestion.reject_reason = (err_msg or "")[:2000]
-                db.session.commit()
-                _sync_suggestion_archive(suggestion)
-                db.session.commit()
-                vote = Vote.query.filter_by(suggestion_id=suggestion_id).first()
-                if vote:
-                    _troll_record_rejection(vote.session_id)
-                _log_activity(
-                    "suggestion_rejected",
-                    f"Suggestion #{suggestion_id} refusée — {err_msg or 'voir détail'}",
-                    detail=f"Motif :\n{err_msg or '—'}\n\nTexte original :\n{(suggestion.original_text or '')[:2000]}",
-                )
-                return
-
-            existing = _get_existing_suggestions()
-            match = ai.check_duplicate(suggestion.original_text, [e for e in existing if e["id"] != suggestion_id])
-            if match:
-                target = Suggestion.query.get(match["id"])
-                if target:
-                    vote = Vote.query.filter_by(suggestion_id=suggestion.id).first()
-                    if vote and not Vote.query.filter_by(suggestion_id=target.id, session_id=vote.session_id).first():
-                        Vote.query.filter_by(suggestion_id=suggestion.id).delete()
-                        db.session.add(Vote(suggestion_id=target.id, session_id=vote.session_id, original_text=suggestion.original_text))
-                        target.vote_count = Vote.query.filter_by(suggestion_id=target.id).count()
-                    Suggestion.query.filter_by(id=suggestion_id).delete()
+                is_ok, err_msg = filter_content(suggestion.original_text)
+                if not is_ok:
+                    suggestion.status = "Refusée"
+                    suggestion.reject_reason = (err_msg or "")[:2000]
                     db.session.commit()
-                    _maybe_generate_subtitle(target.id)
-                return
+                    _sync_suggestion_archive(suggestion)
+                    db.session.commit()
+                    vote = Vote.query.filter_by(suggestion_id=suggestion_id).first()
+                    if vote:
+                        _troll_record_rejection(vote.session_id)
+                    _log_activity(
+                        "suggestion_rejected",
+                        f"Suggestion #{suggestion_id} refusée — {err_msg or 'voir détail'}",
+                        detail=f"Motif :\n{err_msg or '—'}\n\nTexte original :\n{(suggestion.original_text or '')[:2000]}",
+                    )
+                    return
 
-            locations = _get_locations_list()
-            result = ai.process(suggestion.original_text, locations)
+                split_parts = None
+                try:
+                    import llm_engine
+                    split_parts = llm_engine.split_suggestion_parts(suggestion.original_text)
+                except Exception:
+                    split_parts = None
 
-            suggestion.title = result["title"]
-            suggestion.keywords = ",".join(result["keywords"])
-            suggestion.category = result["category"]
-            if result.get("location_id"):
-                suggestion.location_id = result["location_id"]
-            suggestion.needs_debate = result.get("needs_debate", False)
-            suggestion.ai_needs_debate = result.get("needs_debate", False)
-            suggestion.ai_proportion = result.get("ai_proportion")
-            suggestion.ai_feasibility = result.get("ai_feasibility")
-            suggestion.ai_cost = result.get("ai_cost")
-            suggestion.status = "En étude"
-            db.session.commit()
-            _sync_suggestion_archive(suggestion)
-            db.session.commit()
-            _log_activity("suggestion_accepted", f"Suggestion #{suggestion_id} validée : « {suggestion.title[:50]} »")
+                if split_parts and len(split_parts) > 1:
+                    _handle_split_in_background(suggestion, split_parts)
+                    return
+
+                _process_single_suggestion(suggestion)
+            except Exception as exc:
+                app.logger.error("Background processing error suggestion #%s: %s", suggestion_id, exc)
+                try:
+                    sug = Suggestion.query.get(suggestion_id)
+                    if sug and sug.status == "En attente":
+                        sug.status = "En étude"
+                        sug.title = (sug.original_text or "")[:200]
+                        db.session.commit()
+                        _sync_suggestion_archive(sug)
+                        db.session.commit()
+                except Exception:
+                    pass
 
     threading.Thread(target=_work, daemon=True).start()
+
+
+def _handle_split_in_background(suggestion, split_parts: list[str]):
+    """Scinde en plusieurs lignes : la 1re réutilise la suggestion, les suivantes = nouvelles entrées."""
+    original_full_text = suggestion.original_text or ""
+    session_vote = Vote.query.filter_by(suggestion_id=suggestion.id).first()
+    session_id = session_vote.session_id if session_vote else None
+
+    _log_activity(
+        "suggestion_split",
+        f"Suggestion #{suggestion.id} scindée en {len(split_parts)} parties",
+        detail="Original: " + original_full_text[:300] + "\n"
+        + "\n".join(f"Partie {i + 1}: {p}" for i, p in enumerate(split_parts)),
+    )
+
+    suggestion.original_text = split_parts[0]
+    suggestion.title = split_parts[0][:200]
+    db.session.commit()
+    _sync_suggestion_archive(suggestion)
+    db.session.commit()
+
+    extra_ids: list[int] = []
+    for part in split_parts[1:]:
+        sug = Suggestion(original_text=part, title=part[:200], status="En attente", vote_count=1)
+        db.session.add(sug)
+        db.session.flush()
+        if session_id:
+            db.session.add(Vote(suggestion_id=sug.id, session_id=session_id))
+            sug.vote_count = 1
+        db.session.commit()
+        _sync_suggestion_archive(sug)
+        db.session.commit()
+        extra_ids.append(sug.id)
+
+    _process_single_suggestion(suggestion)
+    for eid in extra_ids:
+        sug = Suggestion.query.get(eid)
+        if sug:
+            _process_single_suggestion(sug)
+
+
+def _process_single_suggestion(suggestion):
+    """Doublon (LLM) + pipeline IA pour une suggestion. Thread background."""
+    suggestion_id = suggestion.id
+    existing = _get_existing_suggestions()
+    match = ai.check_duplicate(suggestion.original_text, [e for e in existing if e["id"] != suggestion_id])
+    if match:
+        target = Suggestion.query.get(match["id"])
+        if target:
+            vote = Vote.query.filter_by(suggestion_id=suggestion.id).first()
+            if vote and not Vote.query.filter_by(suggestion_id=target.id, session_id=vote.session_id).first():
+                Vote.query.filter_by(suggestion_id=suggestion.id).delete()
+                db.session.add(Vote(suggestion_id=target.id, session_id=vote.session_id, original_text=suggestion.original_text))
+                target.vote_count = Vote.query.filter_by(suggestion_id=target.id).count()
+            Suggestion.query.filter_by(id=suggestion_id).delete()
+            db.session.commit()
+            _maybe_generate_subtitle(target.id)
+        return
+
+    locations = _get_locations_list()
+    result = ai.process(suggestion.original_text, locations)
+
+    suggestion.title = result["title"]
+    suggestion.keywords = ",".join(result["keywords"])
+    suggestion.category = result["category"]
+    if result.get("location_id"):
+        suggestion.location_id = result["location_id"]
+    suggestion.needs_debate = result.get("needs_debate", False)
+    suggestion.ai_needs_debate = result.get("needs_debate", False)
+    suggestion.ai_proportion = result.get("ai_proportion")
+    suggestion.ai_feasibility = result.get("ai_feasibility")
+    suggestion.ai_cost = result.get("ai_cost")
+    suggestion.status = "En étude"
+    db.session.commit()
+    _sync_suggestion_archive(suggestion)
+    db.session.commit()
+    _log_activity("suggestion_accepted", f"Suggestion #{suggestion_id} validée : « {suggestion.title[:50]} »")
 
 
 def _subtitle_like_threshold() -> int:

@@ -121,6 +121,7 @@ let currentCategory = "Toutes";
 let currentSort = "votes";
 let currentDebateFilter = false;
 let allSuggestions = [];
+let _pendingSuggestionIds = new Set();
 let officialProposal = null;
 let expanded = false;
 const INITIAL_SHOW = 4;
@@ -145,7 +146,6 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 const input = $("#suggestion-input");
 const submitBtn = $("#submit-btn");
-const understandBtn = $("#understand-btn");
 const charCount = $("#char-count");
 const suggestionsContainer = $("#suggestions-list");
 const emptyState = $("#empty-state");
@@ -192,6 +192,8 @@ let engagementBootstrap = null;
 let swipeDeckItems = [];
 /** Suggestions déjà passées en « suivant » (session onglet) — chaque id une seule fois */
 const SWIPE_CONSUMED_STORAGE_KEY = "swipe_consumed_suggestion_ids_v1";
+/** Carte courante du deck (restauration après poll / refresh) */
+const SWIPE_DECK_ANCHOR_KEY = "swipe_deck_anchor_v1";
 let swipeConsumedIds = new Set();
 try {
     const raw = sessionStorage.getItem(SWIPE_CONSUMED_STORAGE_KEY);
@@ -208,6 +210,51 @@ function saveSwipeConsumedIds() {
     } catch (e) {
         /* ignore */
     }
+}
+
+function swipeDeckAnchorFromItem(item) {
+    if (!item) return null;
+    if (item.kind === "suggestion") return { k: "s", id: item.id };
+    if (item.kind === "special") {
+        return { k: "x", t: item.type };
+    }
+    return null;
+}
+
+function findSwipeIndexForAnchor(anchor) {
+    if (!anchor || !swipeDeckItems.length) return -1;
+    return swipeDeckItems.findIndex((it) => {
+        if (anchor.k === "s" && it.kind === "suggestion") return it.id === anchor.id;
+        if (anchor.k === "x" && it.kind === "special") return it.type === anchor.t;
+        return false;
+    });
+}
+
+function persistSwipeDeckAnchor() {
+    try {
+        const it = swipeDeckItems[swipeIndex];
+        const a = swipeDeckAnchorFromItem(it);
+        if (a) sessionStorage.setItem(SWIPE_DECK_ANCHOR_KEY, JSON.stringify(a));
+    } catch (e) {
+        /* ignore */
+    }
+}
+
+function restoreSwipeIndexAfterDeckBuild() {
+    try {
+        const raw = sessionStorage.getItem(SWIPE_DECK_ANCHOR_KEY);
+        if (raw) {
+            const anchor = JSON.parse(raw);
+            const idx = findSwipeIndexForAnchor(anchor);
+            if (idx >= 0) {
+                swipeIndex = idx;
+                return;
+            }
+        }
+    } catch (e) {
+        /* ignore */
+    }
+    clampSwipeIndex();
 }
 const swipeGuessReveal = {};
 /** Morpion (carte spéciale) */
@@ -336,11 +383,7 @@ function computeSwipeDeckSig() {
     const done = (engagementBootstrap?.cards_done_today || []).slice().sort().join(",");
     const guessEl = (engagementBootstrap?.guess_eligible_ids || []).slice().sort((a, b) => a - b).join(",");
     const dlm = engagementBootstrap?.dilemma?.id ?? "";
-    const mpSig = (engagementBootstrap?.music_polls || [])
-        .map((p) => p.id)
-        .sort((a, b) => a - b)
-        .join(",");
-    return `${ids}|c:${consumed}|${done}|${guessEl}|${dlm}|mp:${mpSig}`;
+    return `${ids}|c:${consumed}|${done}|${guessEl}|${dlm}`;
 }
 
 /** Met à jour le compteur / texte sur la carte swipe courante sans recréer le DOM (évite reset du geste). */
@@ -396,7 +439,6 @@ async function checkSubmissionsStatus() {
         if (!submissionsOpen) {
             input.disabled = true;
             submitBtn.disabled = true;
-            if (understandBtn) understandBtn.disabled = true;
             if (!banner) {
                 banner = document.createElement("div");
                 banner.id = "submissions-closed-banner";
@@ -408,7 +450,6 @@ async function checkSubmissionsStatus() {
             input.disabled = false;
             const len = input.value.trim().length;
             submitBtn.disabled = len < 5 || len > 500;
-            understandBtn.disabled = len < 5 || len > 500;
             if (banner) banner.remove();
         }
     } catch (e) {
@@ -422,7 +463,6 @@ function setupEvents() {
         charCount.textContent = `${len} / 500`;
         const canSubmit = len >= 5 && len <= 500 && submissionsOpen;
         submitBtn.disabled = !canSubmit;
-        understandBtn.disabled = len < 5 || len > 500;
     });
 
     input.addEventListener("keydown", (e) => {
@@ -430,7 +470,6 @@ function setupEvents() {
     });
 
     submitBtn.addEventListener("click", () => handleSubmit());
-    understandBtn.addEventListener("click", handleUnderstand);
     $("#precision-yes")?.addEventListener("click", () => onPrecisionChoice(true));
     $("#precision-no")?.addEventListener("click", () => onPrecisionChoice(false));
     sortSelect.addEventListener("change", () => {
@@ -930,6 +969,17 @@ async function loadSuggestions(opts = {}) {
         const newSig = buildIdsSignature(proposal, suggestions);
         const prevProposal = officialProposal;
         const proposalChanged = (!!proposal !== !!prevProposal) || (proposal && prevProposal && proposal.id !== prevProposal.id);
+
+        const apiIds = new Set(suggestions.map((s) => s.id));
+        for (const pid of _pendingSuggestionIds) {
+            if (apiIds.has(pid)) {
+                _pendingSuggestionIds.delete(pid);
+            }
+        }
+        if (_pendingSuggestionIds.size > 0) {
+            const kept = allSuggestions.filter((s) => s._pending && _pendingSuggestionIds.has(s.id));
+            suggestions = [...kept, ...suggestions];
+        }
 
         allSuggestions = suggestions;
         officialProposal = proposal;
@@ -1791,8 +1841,7 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
             ${addArgPanelHtml}
             ${argsHtml}
             <div class="suggestion-meta">
-                <span class="badge badge-category">${s.category}</span>
-                <span class="badge badge-status" data-status="${s.status}">${s.status}</span>
+                ${s.status === "En attente" ? '<span class="badge badge-processing">⏳ En cours de traitement</span>' : `<span class="badge badge-category">${s.category}</span><span class="badge badge-status" data-status="${s.status}">${s.status}</span>`}
                 ${termTimer}
                 ${s.location_name ? `<span class="badge badge-votes badge-location">📍 ${escapeHtml(s.location_name)}</span>` : ""}
             </div>
@@ -1804,6 +1853,27 @@ function createSuggestionCard(s, index, totalVisible, withAnimation = true, tota
 function toggleExpand() {
     expanded = !expanded;
     $(".expand-arrow").textContent = expanded ? "↑" : "↓";
+    renderSuggestions();
+}
+
+// --------------- Pending card après envoi instantané ---------------
+
+function _injectPendingSuggestion(suggestion) {
+    const pending = {
+        id: suggestion.id,
+        title: suggestion.title || suggestion.original_text || "Suggestion en cours…",
+        original_text: suggestion.original_text || "",
+        category: null,
+        status: "En attente",
+        vote_count: suggestion.vote_count || 1,
+        needs_debate: false,
+        location_name: null,
+        has_voted: true,
+        my_vote: "for",
+        _pending: true,
+    };
+    _pendingSuggestionIds.add(suggestion.id);
+    allSuggestions.unshift(pending);
     renderSuggestions();
 }
 
@@ -1834,11 +1904,12 @@ async function handleSubmit(opts = {}) {
             }
             clearInput();
             let msg = data.message || "Votre suggestion a bien été soumise !";
-            if (data.detail_hint) {
-                msg += ` Pour l'enrichir : ${data.detail_hint}`;
-            }
             showFeedback(msg, "success");
-            loadSuggestions();
+            setLoading(false);
+            if (data.status === "submitted" && data.suggestion) {
+                _injectPendingSuggestion(data.suggestion);
+            }
+            loadSuggestions({ reason: "user" });
         } else {
             showFeedback(data.error || "Erreur lors de la soumission.", "error");
         }
@@ -1893,45 +1964,6 @@ async function onPrecisionChoice(isPrecision) {
         showFeedback("Erreur de connexion.", "error");
     }
     setLoading(false);
-}
-
-async function handleUnderstand() {
-    const text = input.value.trim();
-    if (!text || text.length < 5) return;
-
-    setUnderstandLoading(true);
-    hideFeedback();
-    setSuggestionsDisabled(true);
-
-    try {
-        const { data, status } = await API.post("/api/suggestions/understand", { text });
-
-        if (status === 429) {
-            showFeedback(data.error || "Trop de requêtes. Réessayez plus tard.", "error");
-            setUnderstandLoading(false);
-            setSuggestionsDisabled(false);
-            return;
-        }
-        if (status === 200) {
-            const icon = CATEGORY_ICONS[data.category] || "📌";
-            const msg = `L'IA comprend : « ${data.title} » — ${icon} ${data.category}${data.location_name ? ` (${data.location_name})` : ""}${data.needs_debate ? " — Débat possible" : ""}`;
-            showFeedback(msg, "success");
-        } else {
-            showFeedback(data.error || "Erreur lors de l'analyse.", "error");
-        }
-    } catch (err) {
-        showFeedback("Erreur de connexion au serveur.", "error");
-    }
-
-    setUnderstandLoading(false);
-    setSuggestionsDisabled(false);
-}
-
-function setUnderstandLoading(loading) {
-    if (!understandBtn) return;
-    understandBtn.disabled = loading;
-    understandBtn.querySelector(".btn-text").classList.toggle("hidden", loading);
-    understandBtn.querySelector(".btn-loader").classList.toggle("hidden", !loading);
 }
 
 function setSuggestionsDisabled(disabled) {
@@ -2351,13 +2383,6 @@ function buildEngagementGamePool(includeTtt) {
     if (!done.includes("mood")) pool.push({ kind: "special", type: "mood" });
     if (!done.includes("dilemma") && dlm && dlm.id) pool.push({ kind: "special", type: "dilemma" });
     if (includeTtt && !done.includes("ttt")) pool.push({ kind: "special", type: "ttt" });
-    const mps = engagementBootstrap?.music_polls || [];
-    for (const poll of mps) {
-        const ct = `music_${poll.id}`;
-        if (!done.includes(ct)) {
-            pool.push({ kind: "special", type: "music_poll", poll });
-        }
-    }
     return pool;
 }
 
@@ -2388,7 +2413,7 @@ function buildSwipeDeck() {
     }
 
     swipeDeckItems = deck;
-    clampSwipeIndex();
+    restoreSwipeIndexAfterDeckBuild();
 }
 
 async function engagementPingSwipe() {
@@ -2668,26 +2693,6 @@ function createSpecialCardHtml(item) {
             </div>
         </div>`;
     }
-    if (item.type === "music_poll") {
-        const poll = item.poll;
-        if (!poll || !poll.tracks || !poll.tracks.length) {
-            return `<div class="swipe-card swipe-card--special"><div class="swipe-card-inner"><p>—</p></div></div>`;
-        }
-        const lines = poll.tracks
-            .slice(0, 6)
-            .map((t) => `<li class="swipe-music-poll-track">${escapeHtml(t.title)} <span class="swipe-music-poll-artist">— ${escapeHtml(t.artist)}</span></li>`)
-            .join("");
-        return `
-        <div class="swipe-card swipe-card--dating swipe-card--special swipe-card--music-poll" data-special="1">
-            <div class="swipe-card-inner">
-                <span class="swipe-eng-badge">Sondage musique</span>
-                <p class="swipe-eng-title">${escapeHtml(poll.title)}</p>
-                <ul class="swipe-music-poll-tracks-ul">${lines}</ul>
-                <p class="swipe-eng-sub">Vote sur la liste des suggestions (section plus bas).</p>
-                <button type="button" class="btn btn-primary swipe-eng-continue" data-eng="music-poll-dismiss" data-pid="${poll.id}">OK</button>
-            </div>
-        </div>`;
-    }
     if (item.type === "ttt") {
         const cells = Array.from({ length: 9 }, (_, i) => `<button type="button" class="ttt-cell" data-idx="${i}" aria-label="Case ${i + 1}"></button>`).join("");
         if (item.emptyState) {
@@ -2764,8 +2769,7 @@ function createSwipeCardHtml(s) {
                     ${s.subtitle ? `<p class="suggestion-subtitle">${escapeHtml(s.subtitle)}</p>` : ""}
                 </div>
                 <div class="swipe-card-meta">
-                    <span class="badge badge-category">${escapeHtml(s.category)}</span>
-                    <span class="badge badge-status" data-status="${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
+                    ${s.status === "En attente" ? '<span class="badge badge-processing">⏳ En cours de traitement</span>' : `<span class="badge badge-category">${escapeHtml(s.category)}</span><span class="badge badge-status" data-status="${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>`}
                 </div>
                 <div class="swipe-card-footer">
                     <span class="swipe-card-votes-big${liked ? " swipe-card-votes-big--liked" : ""}">♥ ${s.vote_count}</span>
@@ -2815,6 +2819,16 @@ function wireSwipeCvlFromHTML(container) {
     });
 }
 
+/** Affiche la carte active avec une courte animation d’entrée (évite l’apparition brutale après swipe). */
+function injectSwipeActiveLayer(innerHtml) {
+    swipeDeckInner.innerHTML = `<div class="swipe-card-layer swipe-layer-entering" id="swipe-active-layer">${innerHtml}</div>`;
+    requestAnimationFrame(() => {
+        const el = document.getElementById("swipe-active-layer");
+        if (el) el.classList.add("swipe-layer-enter-active");
+    });
+    persistSwipeDeckAnchor();
+}
+
 function renderSwipeView() {
     if (!isTouchDevice()) return;
     syncPhoneUiChrome();
@@ -2848,7 +2862,7 @@ function renderSwipeView() {
         });
         const vdeb = document.getElementById("swipe-vdebate-labels");
         if (vdeb) vdeb.style.display = "none";
-        swipeDeckInner.innerHTML = `<div class="swipe-card-layer" id="swipe-active-layer">${createSpecialCardHtml(item)}</div>`;
+        injectSwipeActiveLayer(createSpecialCardHtml(item));
         if (item.type === "ttt") {
             requestAnimationFrame(() => initTttUi());
         }
@@ -2860,17 +2874,12 @@ function renderSwipeView() {
         return;
     }
     toggleSwipeModeHints(!!s.needs_debate, false);
-    swipeDeckInner.innerHTML = `<div class="swipe-card-layer" id="swipe-active-layer">${createSwipeCardHtml(s)}</div>`;
+    injectSwipeActiveLayer(createSwipeCardHtml(s));
 }
 
 function swipeGoNext() {
     const list = swipeDeckItems;
     if (list.length === 0) return;
-
-    const leaving = list[swipeIndex];
-    if (leaving && leaving.kind === "special" && leaving.type === "music_poll" && leaving.poll && leaving.poll.id) {
-        void API.post("/api/engagement/music-poll-dismiss", { poll_id: leaving.poll.id }).then(() => refreshEngagementBootstrap());
-    }
 
     if (swipeIndex >= list.length - 1) {
         const cur = list[swipeIndex];
@@ -2880,8 +2889,12 @@ function swipeGoNext() {
             showFeedback("Plus de nouvelles suggestions.", "info");
             buildSwipeDeck();
             lastSwipeDeckSig = computeSwipeDeckSig();
-            clampSwipeIndex();
             swipeIndex = 0;
+            try {
+                sessionStorage.removeItem(SWIPE_DECK_ANCHOR_KEY);
+            } catch (e) {
+                /* ignore */
+            }
             renderSwipeView();
             return;
         }
@@ -3129,6 +3142,13 @@ function attachSwipeDeckGestures() {
             }
 
             const commitHorizontal = () => {
+                const goNext = mx < 0;
+                if (!goNext && swipeIndex <= 0) {
+                    springLayer(layer);
+                    resetLabels();
+                    swipeLastTap = 0;
+                    return;
+                }
                 const w = window.innerWidth;
                 const exitX = mx < 0 ? -w * 1.1 : w * 1.1;
                 if (layer) {
@@ -3136,7 +3156,6 @@ function attachSwipeDeckGestures() {
                     layer.style.transform = `translateX(${exitX}px) rotate(${mx * 0.06}deg)`;
                 }
                 resetLabels();
-                const goNext = mx < 0;
                 setTimeout(() => {
                     if (goNext) swipeGoNext();
                     else swipeGoPrev();
@@ -3285,10 +3304,6 @@ async function handleEngagementClick(ev) {
     if (eng === "act-dismiss") {
         await API.post("/api/engagement/activity-card-dismiss", {});
         await refreshEngagementBootstrap();
-        swipeGoNext();
-        return;
-    }
-    if (eng === "music-poll-dismiss") {
         swipeGoNext();
         return;
     }

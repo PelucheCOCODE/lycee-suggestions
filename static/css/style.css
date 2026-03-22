@@ -258,20 +258,6 @@ th { font-weight: 600; color: var(--text-secondary); font-size: 0.82rem; text-tr
     flex-wrap: wrap;
 }
 
-.submit-actions #understand-btn {
-    padding: 10px 18px;
-    border-radius: 10px;
-    font-weight: 500;
-    border: 2px solid var(--border);
-    transition: all 0.2s ease;
-}
-.submit-actions #understand-btn:hover:not(:disabled) {
-    border-color: var(--primary);
-    background: var(--primary-light);
-    color: var(--primary);
-}
-.submit-actions #understand-btn .btn-loader { display: inline-flex; align-items: center; gap: 6px; }
-
 .char-count { font-size: 0.75rem; color: var(--text-muted); }
 
 /* =========================================
@@ -723,6 +709,17 @@ body.student-phone-ui .phone-swipe-content {
     touch-action: none;
     z-index: 3;
 }
+.swipe-card-layer.swipe-layer-entering {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+    will-change: opacity, transform;
+}
+.swipe-card-layer.swipe-layer-entering.swipe-layer-enter-active {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    transition: opacity 0.3s ease-out, transform 0.38s cubic-bezier(0.34, 1.25, 0.64, 1);
+}
+
 .swipe-card-layer {
     position: relative;
     width: 100%;
@@ -1690,6 +1687,8 @@ body.dark-theme .cvl-args-against,
 .badge-status[data-status="En cours de mise en place"] { background: #fff3e0; color: #e65100; }
 .badge-status[data-status="Terminée"] { background: #f3e5f5; color: #7b1fa2; }
 .badge-pending { background: #fff8e1; color: #f57c00; font-weight: 600; }
+.badge-processing { background: #fff3e0; color: #e65100; font-weight: 600; animation: badge-pulse 1.8s ease-in-out infinite; }
+@keyframes badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 
 /* =========================================
    SKELETON LOADER

@@ -316,6 +316,25 @@ def _generate_location_variants(name: str) -> list[str]:
     return list(set(v for v in variants if v))
 
 
+def _match_building_letter_from_text(text_norm: str, locations: list[dict]) -> int | None:
+    """Repère « bat C », « batiment c », etc. et associe à une entrée lieu du même type."""
+    m = re.search(r"\b(?:bat|bat\.|batiment|batiments)\s+([a-z])\b", text_norm)
+    if not m:
+        return None
+    letter = m.group(1).lower()
+    for loc in locations:
+        names_to_check = loc.get("names") or [loc["name"]]
+        for name in names_to_check:
+            if not name:
+                continue
+            n = unidecode(name.lower())
+            n = re.sub(r"[^a-z0-9\s]", " ", n)
+            n = re.sub(r"\s+", " ", n).strip()
+            if re.search(rf"\b(?:bat|batiment)\s+{re.escape(letter)}\b", n):
+                return loc["id"]
+    return None
+
+
 def detect_location(text: str, locations: list[dict]) -> int | None:
     """
     Detect if the text mentions a known location or placement.
@@ -347,7 +366,9 @@ def detect_location(text: str, locations: list[dict]) -> int | None:
                         best_len = len(v_clean)
                         best_match = loc["id"]
 
-    return best_match
+    if best_match:
+        return best_match
+    return _match_building_letter_from_text(text_norm, locations)
 
 
 def _match_location_by_name(llm_name: str, locations: list[dict]) -> int | None:
@@ -498,6 +519,7 @@ class AIEngine:
             category = llm_result.get("category") or classify_category(cleaned)
             keywords = llm_result.get("keywords") or extract_keywords(cleaned, category)
         else:
+            llm_result = None
             similar = self._find_similar_examples(cleaned)
             category = self._classify_with_training(cleaned, similar)
             keywords = extract_keywords(cleaned, category)
@@ -508,6 +530,23 @@ class AIEngine:
             location_id = detect_location(cleaned, locations)
             if not location_id and llm_result and llm_result.get("location_name"):
                 location_id = _match_location_by_name(llm_result["location_name"], locations)
+
+        tl = unidecode(cleaned.lower())
+        if category == "Infrastructure" and any(
+            x in tl for x in ("dessert", "desserts", "repas", "menu", "cantine", "self", "gouter")
+        ):
+            category = "Cantine"
+        if not location_id and locations and re.search(r"\bself\b", tl):
+            for loc in locations:
+                for nm in loc.get("names") or [loc["name"]]:
+                    if not nm:
+                        continue
+                    nn = unidecode(nm.lower().strip())
+                    if nn in ("self", "self-service", "self service"):
+                        location_id = loc["id"]
+                        break
+                if location_id:
+                    break
 
         needs_debate = False
         proportion = 0.0
