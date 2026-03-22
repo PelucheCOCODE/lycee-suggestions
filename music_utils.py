@@ -2,6 +2,7 @@
 import base64
 import re
 import time
+from urllib.parse import urlparse
 
 import requests
 from flask import current_app
@@ -253,3 +254,50 @@ def fetch_spotify_track_metadata(spotify_url: str, *, deezer_preview_fallback: b
             "preview_url": None,
             "spotify_url": f"https://open.spotify.com/track/{track_id}",
         }
+
+
+def preview_upstream_headers_for_url(target_url: str) -> dict:
+    """En-têtes pour télécharger un extrait MP3 (Spotify CDN ou Deezer) — aligné sur le proxy Flask."""
+    pr = urlparse(target_url)
+    netloc = (pr.netloc or "").lower()
+    h = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+    }
+    if netloc.endswith(".dzcdn.net"):
+        h["Referer"] = "https://www.deezer.com/"
+        h["Sec-Fetch-Dest"] = "audio"
+        h["Sec-Fetch-Mode"] = "no-cors"
+        h["Sec-Fetch-Site"] = "cross-site"
+    elif "scdn.co" in netloc or "spotifycdn.com" in netloc or netloc == "p.scdn.co":
+        h["Referer"] = "https://open.spotify.com/"
+    return h
+
+
+def download_preview_audio_bytes(url: str) -> bytes | None:
+    """
+    Télécharge l’extrait MP3 (pour cache disque). Les URLs Deezer expirent après quelques minutes.
+    Retourne None si échec.
+    """
+    u = (url or "").strip()
+    if not u.startswith("https://"):
+        return None
+    try:
+        r = requests.get(
+            u,
+            timeout=35,
+            headers=preview_upstream_headers_for_url(u),
+            proxies={"http": None, "https": None},
+        )
+        if not r.ok:
+            return None
+        data = r.content
+        if len(data) < 512 or len(data) > 5_000_000:
+            return None
+        return data
+    except Exception:
+        return None

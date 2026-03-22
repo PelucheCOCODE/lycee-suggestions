@@ -4139,6 +4139,9 @@ function datetimeLocalToIso(val) {
 function spotifyPreviewSrcForAdmin(url) {
     if (!url || typeof url !== "string") return "";
     const u = url.trim();
+    if (u.startsWith("/api/music-poll/preview-cached/")) {
+        return u;
+    }
     if (!u.startsWith("https://")) return u;
     try {
         const h = new URL(u).hostname.toLowerCase();

@@ -5,6 +5,7 @@ import io
 import json
 import zipfile
 import hmac
+import secrets
 import time
 import uuid
 import threading
@@ -24,7 +25,7 @@ from flask import (
     send_from_directory, send_file, Response, has_request_context, abort,
 )
 
-from sqlalchemy import func
+from sqlalchemy import func, event
 
 from models import (
     db, Suggestion, Vote, SuggestionArgument, Location, Placement, CalibrationExample, CalibrationDebat, CalibrationDetails, CalibrationRapport, CalibrationVerification, Announcement,
@@ -199,12 +200,54 @@ def _login_rate_limit() -> bool:
 
 UPLOAD_FOLDER = os.path.join(app.static_folder, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+MUSIC_PREVIEW_CACHE_DIR = os.path.join(UPLOAD_FOLDER, "music_previews")
+os.makedirs(MUSIC_PREVIEW_CACHE_DIR, exist_ok=True)
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "ogg"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
 
 def _allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _unlink_music_preview_cache(filename: str | None) -> None:
+    if not filename:
+        return
+    path = os.path.join(MUSIC_PREVIEW_CACHE_DIR, filename)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _track_preview_playback_url(t: MusicTrack) -> str | None:
+    if getattr(t, "preview_cache_filename", None):
+        return f"/api/music-poll/preview-cached/{t.id}"
+    u = (t.preview_url or "").strip()
+    return u or None
+
+
+def _ensure_music_track_preview_cached(t: MusicTrack) -> None:
+    """Télécharge l’extrait une fois sur disque (URLs Deezer / Spotify externes expirent ou sont bloquées)."""
+    if t.preview_cache_filename:
+        path = os.path.join(MUSIC_PREVIEW_CACHE_DIR, t.preview_cache_filename)
+        if os.path.isfile(path):
+            return
+        t.preview_cache_filename = None
+    if not t.preview_url:
+        return
+    data = music_utils.download_preview_audio_bytes(t.preview_url)
+    if not data:
+        return
+    fn = secrets.token_hex(16) + ".mp3"
+    path = os.path.join(MUSIC_PREVIEW_CACHE_DIR, fn)
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+        t.preview_cache_filename = fn
+    except OSError:
+        pass
 
 
 db.init_app(app)
@@ -1898,6 +1941,7 @@ def _music_track_to_public_dict(t: MusicTrack, visitor_id: str, vc: int | None =
     has_voted = (
         MusicVote.query.filter_by(track_id=t.id, session_id=visitor_id).first() is not None
     )
+    pb = _track_preview_playback_url(t)
     return {
         "id": t.id,
         "spotify_track_id": t.spotify_track_id,
@@ -1905,8 +1949,8 @@ def _music_track_to_public_dict(t: MusicTrack, visitor_id: str, vc: int | None =
         "artist": t.artist,
         "album": t.album or "",
         "thumbnail_url": t.thumbnail_url,
-        "preview_url": t.preview_url,
-        "preview_available": bool(t.preview_url),
+        "preview_url": pb,
+        "preview_available": bool(pb),
         "spotify_url": t.spotify_url or f"https://open.spotify.com/track/{t.spotify_track_id}",
         "vote_count": int(vc),
         "has_voted": has_voted,
@@ -1916,6 +1960,7 @@ def _music_track_to_public_dict(t: MusicTrack, visitor_id: str, vc: int | None =
 def _music_track_to_preview_dict(t: MusicTrack) -> dict:
     """Aperçu admin : mêmes champs que l’API publique, votes affichés mais sans interaction."""
     vc = db.session.query(func.count(MusicVote.id)).filter_by(track_id=t.id).scalar() or 0
+    pb = _track_preview_playback_url(t)
     return {
         "id": t.id,
         "spotify_track_id": t.spotify_track_id,
@@ -1923,8 +1968,8 @@ def _music_track_to_preview_dict(t: MusicTrack) -> dict:
         "artist": t.artist,
         "album": t.album or "",
         "thumbnail_url": t.thumbnail_url,
-        "preview_url": t.preview_url,
-        "preview_available": bool(t.preview_url),
+        "preview_url": pb,
+        "preview_available": bool(pb),
         "spotify_url": t.spotify_url or f"https://open.spotify.com/track/{t.spotify_track_id}",
         "vote_count": int(vc),
         "has_voted": False,
@@ -1950,6 +1995,7 @@ def _music_poll_serialize_admin(p: MusicPoll, include_tracks: bool = True) -> di
 
 def _music_track_to_admin_dict(t: MusicTrack) -> dict:
     vc = db.session.query(func.count(MusicVote.id)).filter_by(track_id=t.id).scalar() or 0
+    pb = _track_preview_playback_url(t)
     return {
         "id": t.id,
         "poll_id": t.poll_id,
@@ -1959,8 +2005,8 @@ def _music_track_to_admin_dict(t: MusicTrack) -> dict:
         "artist": t.artist,
         "album": t.album or "",
         "thumbnail_url": t.thumbnail_url,
-        "preview_url": t.preview_url,
-        "preview_available": bool(t.preview_url),
+        "preview_url": pb,
+        "preview_available": bool(pb),
         "vote_count": int(vc),
         "position": t.position or 0,
     }
@@ -1975,11 +2021,21 @@ def _music_poll_deezer_preview_fallback() -> bool:
 
 
 def _maybe_enrich_track_preview(t: MusicTrack) -> None:
-    """Si pas d’URL d’extrait en base, tente Spotify (+ secours Deezer si activé) ou Deezer seul sans Spotify."""
-    if t.preview_url:
-        return
+    """Enrichit preview_url si vide ; télécharge le cache disque quand une URL distante existe."""
     tid = int(t.id)
     now = time.time()
+    if t.preview_url:
+        need_cache = not t.preview_cache_filename
+        if t.preview_cache_filename:
+            pth = os.path.join(MUSIC_PREVIEW_CACHE_DIR, t.preview_cache_filename)
+            if not os.path.isfile(pth):
+                need_cache = True
+        if need_cache:
+            if now - _music_poll_preview_enrich_last.get(tid, 0.0) < 90:
+                return
+            _music_poll_preview_enrich_last[tid] = now
+            _ensure_music_track_preview_cached(t)
+        return
     if now - _music_poll_preview_enrich_last.get(tid, 0.0) < 300:
         return
     _music_poll_preview_enrich_last[tid] = now
@@ -1992,10 +2048,12 @@ def _maybe_enrich_track_preview(t: MusicTrack) -> None:
             pu = meta.get("preview_url")
             if pu:
                 t.preview_url = pu[:500]
+                _ensure_music_track_preview_cached(t)
         else:
             pu = music_utils.try_deezer_preview_for_track(t.artist or "", t.title or "", None)
             if pu:
                 t.preview_url = pu[:500]
+                _ensure_music_track_preview_cached(t)
     except Exception:
         pass
 
@@ -2377,6 +2435,9 @@ def admin_music_poll_add_track(poll_id):
     )
     db.session.add(t)
     db.session.commit()
+    if t.preview_url:
+        _ensure_music_track_preview_cached(t)
+        db.session.commit()
     return jsonify({"track": _music_track_to_admin_dict(t)})
 
 
@@ -2643,30 +2704,6 @@ def _music_preview_url_allowed(url: str) -> bool:
     return False
 
 
-def _preview_upstream_headers(target_url: str) -> dict:
-    """En-têtes proches d’un navigateur (les CDN Deezer / Spotify refusent souvent les clients génériques)."""
-    pr = urlparse(target_url)
-    netloc = (pr.netloc or "").lower()
-    h = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Accept": "*/*",
-        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    }
-    if netloc.endswith(".dzcdn.net"):
-        # Le CDN Deezer renvoie 403 si le client final n’est pas « vu » comme deezer.com
-        # (hotlink depuis un autre site). Ne pas rediriger le navigateur vers l’URL signée.
-        h["Referer"] = "https://www.deezer.com/"
-        h["Sec-Fetch-Dest"] = "audio"
-        h["Sec-Fetch-Mode"] = "no-cors"
-        h["Sec-Fetch-Site"] = "cross-site"
-    elif "scdn.co" in netloc or "spotifycdn.com" in netloc or netloc == "p.scdn.co":
-        h["Referer"] = "https://open.spotify.com/"
-    return h
-
-
 def _spotify_preview_proxy_response():
     """Proxy sécurisé pour les MP3 (CDN Spotify + extraits Deezer). Transmet Range pour compatibilité navigateurs."""
     import requests as req_lib
@@ -2680,7 +2717,7 @@ def _spotify_preview_proxy_response():
 
     netloc = urlparse(url).netloc.lower()
 
-    upstream_headers = _preview_upstream_headers(url)
+    upstream_headers = music_utils.preview_upstream_headers_for_url(url)
     rng = request.headers.get("Range")
     if rng:
         upstream_headers["Range"] = rng
@@ -2731,6 +2768,25 @@ def _spotify_preview_proxy_response():
 def music_poll_preview_audio():
     """Même proxy que l’admin pour la page élève (évite blocages referrer / CORP sur p.scdn.co)."""
     return _spotify_preview_proxy_response()
+
+
+@app.route("/api/music-poll/preview-cached/<int:track_id>", methods=["GET"])
+def music_poll_preview_cached(track_id):
+    """Sert l’extrait MP3 mis en cache sur le serveur (évite expiration des URLs Deezer / Spotify)."""
+    if get_setting("feature_music_poll_enabled", "true") != "true":
+        abort(404)
+    t = MusicTrack.query.get_or_404(track_id)
+    if not t.preview_cache_filename:
+        abort(404)
+    poll = MusicPoll.query.get(t.poll_id)
+    if not poll:
+        abort(404)
+    if not poll.is_active and not session.get("is_admin"):
+        abort(404)
+    path = os.path.join(MUSIC_PREVIEW_CACHE_DIR, t.preview_cache_filename)
+    if not os.path.isfile(path):
+        abort(404)
+    return send_file(path, mimetype="audio/mpeg", conditional=True)
 
 
 @app.route("/api/admin/spotify/preview-audio", methods=["GET"])
@@ -7991,6 +8047,11 @@ def _schedule_calibration_from_completed():
     threading.Thread(target=_loop, daemon=True).start()
 
 
+@event.listens_for(MusicTrack, "after_delete")
+def _music_track_after_delete(mapper, connection, target):
+    _unlink_music_preview_cache(getattr(target, "preview_cache_filename", None))
+
+
 # --------------- Init ---------------
 
 with app.app_context():
@@ -8016,6 +8077,7 @@ with app.app_context():
             # Anciennes BDD sans migration manuelle (sinon OperationalError sur /api/suggestions)
             "ALTER TABLE suggestions ADD COLUMN importance_score REAL DEFAULT 0",
             "ALTER TABLE suggestions ADD COLUMN subtitle_generated_at_support_count INTEGER DEFAULT 0",
+            "ALTER TABLE music_tracks ADD COLUMN preview_cache_filename VARCHAR(64)",
         ):
             try:
                 db.session.execute(_sql_text(stmt))

@@ -929,6 +929,7 @@ class MusicTrack(db.Model):
     album = db.Column(db.String(200), nullable=False, default="")
     thumbnail_url = db.Column(db.String(500), nullable=True)
     preview_url = db.Column(db.String(500), nullable=True)
+    preview_cache_filename = db.Column(db.String(64), nullable=True)
     vote_count = db.Column(db.Integer, default=0)
     position = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
