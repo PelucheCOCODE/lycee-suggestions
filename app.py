@@ -676,7 +676,9 @@ def _find_duplicate_match(text: str, existing: list, force_new: bool) -> dict | 
     return m
 
 
-def _apply_support_vote(suggestion: Suggestion, session_id: str, original_text: str) -> None:
+def _apply_support_vote(
+    suggestion: Suggestion, session_id: str, original_text: str, *, regenerate_subtitle: bool = True
+) -> None:
     """Un soutien avec texte (précision / formulation) pour agrégat subtitle."""
     vote = Vote(suggestion_id=suggestion.id, session_id=session_id, original_text=original_text)
     db.session.add(vote)
@@ -684,7 +686,8 @@ def _apply_support_vote(suggestion: Suggestion, session_id: str, original_text: 
     db.session.commit()
     suggestion.vote_count = Vote.query.filter_by(suggestion_id=suggestion.id).count()
     db.session.commit()
-    _maybe_generate_subtitle(suggestion.id)
+    if regenerate_subtitle:
+        _maybe_generate_subtitle(suggestion.id)
 
 
 def _submit_multipart_suggestions(parts: list[str], data: dict, session_id: str):
@@ -729,7 +732,7 @@ def _submit_multipart_suggestions(parts: list[str], data: dict, session_id: str)
                 if not proceed_with_match:
                     match = None
                 else:
-                    _apply_support_vote(sug, session_id, part)
+                    _apply_support_vote(sug, session_id, part, regenerate_subtitle=adds_precision)
                     if adds_precision:
                         notes.append(f"Précisions enregistrées pour « {sug.title[:52]} ».")
                     else:
@@ -1312,7 +1315,7 @@ def submit_suggestion():
                         "existing": suggestion.to_dict(),
                         "existing_title": suggestion.title,
                     }), 200
-                _apply_support_vote(suggestion, session_id, text)
+                _apply_support_vote(suggestion, session_id, text, regenerate_subtitle=False)
                 return jsonify({
                     "status": "duplicate_voted",
                     "message": "Cette suggestion existe déjà, votre soutien a été ajouté !",
@@ -1501,8 +1504,79 @@ def _effective_support_count(suggestion: Suggestion) -> int:
     return Vote.query.filter_by(suggestion_id=suggestion.id).count()
 
 
+def _subtitle_aggregate_texts(suggestion: Suggestion) -> list[str]:
+    """Textes agrégés pour le sous-titre IA (message initial, précisions des votes, arguments approuvés en débat)."""
+    original_texts: list[str] = []
+    o = (suggestion.original_text or "").strip()
+    if o:
+        original_texts.append(o)
+    votes = Vote.query.filter_by(suggestion_id=suggestion.id).order_by(Vote.id.asc()).all()
+    for v in votes:
+        t = (v.original_text or "").strip()
+        if t and t not in original_texts:
+            original_texts.append(t)
+    if getattr(suggestion, "needs_debate", False):
+        args = (
+            SuggestionArgument.query.filter_by(suggestion_id=suggestion.id, status="approved")
+            .order_by(SuggestionArgument.created_at.asc())
+            .all()
+        )
+        for a in args:
+            piece = ((a.summary or a.original_text or "").strip())
+            if not piece:
+                continue
+            label = f"[{a.side}] {piece}"
+            if label not in original_texts:
+                original_texts.append(label)
+    return [x for x in original_texts if x]
+
+
+def _subtitle_sources_for_admin_editor(suggestion: Suggestion) -> list[dict]:
+    """Blocs lisibles pour l’admin : origine, précisions distinctes, arguments débat."""
+    out: list[dict] = []
+    orig = (suggestion.original_text or "").strip()
+    seen: set[str] = set()
+    if orig:
+        out.append({"kind": "initial", "label": "Message d’origine", "text": orig})
+        seen.add(orig)
+    for v in Vote.query.filter_by(suggestion_id=suggestion.id).order_by(Vote.id.asc()).all():
+        t = (v.original_text or "").strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(
+            {
+                "kind": "precision",
+                "label": "Précision (soutien avec texte)",
+                "text": t,
+                "vote_id": v.id,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+            }
+        )
+    if getattr(suggestion, "needs_debate", False):
+        for a in (
+            SuggestionArgument.query.filter_by(suggestion_id=suggestion.id, status="approved")
+            .order_by(SuggestionArgument.created_at.asc())
+            .all()
+        ):
+            piece = (a.summary or a.original_text or "").strip()
+            if not piece:
+                continue
+            side_fr = "pour" if a.side == "for" else "contre"
+            out.append(
+                {
+                    "kind": "argument",
+                    "label": f"Argument ({side_fr})",
+                    "text": piece,
+                    "argument_id": a.id,
+                    "side": a.side,
+                }
+            )
+    return out
+
+
 def _maybe_generate_subtitle(suggestion_id: int):
-    """Résumé IA agrégé (champ subtitle) dès que le seuil de soutiens est atteint ; régénéré à chaque nouveau soutien."""
+    """Résumé IA agrégé (champ subtitle) dès que le seuil de soutiens est atteint ; mis à jour à chaque nouveau soutien (enrichissement)."""
     def _work():
         with app.app_context():
             suggestion = Suggestion.query.get(suggestion_id)
@@ -1521,23 +1595,16 @@ def _maybe_generate_subtitle(suggestion_id: int):
             if not llm_engine.is_available():
                 return
 
-            original_texts = [(suggestion.original_text or "").strip()]
-            votes = Vote.query.filter_by(suggestion_id=suggestion.id).all()
-            for v in votes:
-                t = (v.original_text or "").strip()
-                if t and t not in original_texts:
-                    original_texts.append(t)
-            if getattr(suggestion, "needs_debate", False):
-                args = SuggestionArgument.query.filter_by(suggestion_id=suggestion.id, status="approved").all()
-                for a in args:
-                    piece = ((a.summary or a.original_text or "").strip())
-                    if not piece:
-                        continue
-                    label = f"[{a.side}] {piece}"
-                    if label not in original_texts:
-                        original_texts.append(label)
+            original_texts = _subtitle_aggregate_texts(suggestion)
+            if not original_texts:
+                return
 
-            subtitle = llm_engine.generate_subtitle(suggestion.title, original_texts)
+            prev_sub = (suggestion.subtitle or "").strip() or None
+            subtitle = llm_engine.generate_subtitle(
+                suggestion.title,
+                original_texts,
+                previous_subtitle=prev_sub,
+            )
             if subtitle:
                 suggestion.subtitle = subtitle[:8000]
                 suggestion.subtitle_generated_at_support_count = eff
@@ -1690,7 +1757,6 @@ def _vote_simple_suggestion_locked(sid: int, suggestion: Suggestion, session_id:
             _increment_daily_activity(session_id, "like")
         except Exception:
             pass
-    _maybe_generate_subtitle(sid)
     return jsonify(_pack_vote_json(suggestion, session_id, False, my_vote=vote_type, has_voted=True))
 
 
@@ -1823,7 +1889,6 @@ def _vote_suggestion_locked(sid: int):
     for aid in pending_arg_ids:
         _process_suggestion_argument_background(aid)
 
-    _maybe_generate_subtitle(sid)
     resp = _pack_vote_json(suggestion, session_id, needs_debate, my_vote=vote_type, has_voted=True)
     return jsonify(resp)
 
@@ -3444,7 +3509,6 @@ def admin_add_vote(sid):
     db.session.commit()
     suggestion.vote_count = Vote.query.filter_by(suggestion_id=sid).count()
     db.session.commit()
-    _maybe_generate_subtitle(suggestion.id)
     return jsonify({"vote_count": suggestion.vote_count})
 
 
@@ -3922,9 +3986,88 @@ def update_suggestion_subtitle(sid):
     """Modifier ou supprimer le sous-titre (ex: corriger une erreur de l'IA)."""
     suggestion = Suggestion.query.get_or_404(sid)
     data = request.get_json() or {}
-    suggestion.subtitle = (data.get("subtitle") or "").strip()[:300]
+    suggestion.subtitle = (data.get("subtitle") or "").strip()[:8000]
     db.session.commit()
     return jsonify(suggestion.to_dict())
+
+
+@app.route("/api/admin/suggestions/<int:sid>/editor", methods=["GET"])
+@admin_required
+def admin_suggestion_editor(sid):
+    """Données pour la modale d’édition : titre, sous-titre, sources (origine + précisions + arguments)."""
+    suggestion = Suggestion.query.get_or_404(sid)
+    orig = (suggestion.original_text or "").strip()
+    sources = _subtitle_sources_for_admin_editor(suggestion)
+    precision_votes: list[dict] = []
+    for v in Vote.query.filter_by(suggestion_id=sid).order_by(Vote.id.asc()).all():
+        t = (v.original_text or "").strip()
+        if not t:
+            continue
+        precision_votes.append(
+            {
+                "id": v.id,
+                "text": t,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+            }
+        )
+    return jsonify(
+        {
+            "id": suggestion.id,
+            "title": suggestion.title or "",
+            "subtitle": (suggestion.subtitle or "").strip(),
+            "original_text": orig,
+            "sources": sources,
+            "source_count": len(sources),
+            "precision_votes": precision_votes,
+        }
+    )
+
+
+@app.route("/api/admin/suggestions/<int:sid>/editor", methods=["PUT"])
+@admin_required
+def admin_suggestion_editor_put(sid):
+    """Mettre à jour titre et description (sous-titre) depuis la modale admin."""
+    suggestion = Suggestion.query.get_or_404(sid)
+    data = request.get_json() or {}
+    title = (data.get("title") or "").strip()
+    if not title or len(title) < 3:
+        return jsonify({"error": "Titre trop court"}), 400
+    suggestion.title = title[:200]
+    suggestion.subtitle = (data.get("subtitle") or "").strip()[:8000]
+    _sync_suggestion_archive(suggestion)
+    db.session.commit()
+    return jsonify(suggestion.to_dict())
+
+
+@app.route("/api/admin/suggestions/<int:sid>/regenerate-subtitle", methods=["POST"])
+@admin_required
+def admin_regenerate_subtitle(sid):
+    """Régénère la description (sous-titre) par IA à partir des mêmes sources que la génération automatique."""
+    suggestion = Suggestion.query.get_or_404(sid)
+    import llm_engine
+
+    if not llm_engine.is_available():
+        return jsonify({"error": "Service IA indisponible."}), 503
+    texts = _subtitle_aggregate_texts(suggestion)
+    if not texts:
+        return jsonify({"error": "Aucun texte source pour générer une description."}), 400
+    payload = request.get_json(silent=True) or {}
+    draft_title = (payload.get("title") or "").strip()
+    title_for_llm = draft_title[:200] if len(draft_title) >= 3 else (suggestion.title or "")
+    title_for_llm = (title_for_llm or "")[:200]
+    if "subtitle" in payload:
+        prev = (payload.get("subtitle") or "").strip() or None
+    else:
+        prev = (suggestion.subtitle or "").strip() or None
+    subtitle = llm_engine.generate_subtitle(title_for_llm, texts, previous_subtitle=prev)
+    if not subtitle:
+        return jsonify({"error": "La génération n'a pas produit de texte exploitable."}), 500
+    suggestion.subtitle = subtitle[:8000]
+    eff = _effective_support_count(suggestion)
+    suggestion.subtitle_generated_at_support_count = eff
+    _sync_suggestion_archive(suggestion)
+    db.session.commit()
+    return jsonify({"subtitle": suggestion.subtitle, "suggestion": suggestion.to_dict()})
 
 
 @app.route("/api/admin/suggestions/<int:sid>/location", methods=["PUT"])

@@ -489,6 +489,7 @@ async function loadCategories() {
 
     ["Toutes", ...categories.filter((c) => c !== "Autre"), "Débat"].forEach((cat) => {
         const btn = document.createElement("button");
+        btn.type = "button";
         const isDebate = cat === "Débat";
         const isActive = isDebate ? currentDebateFilter : (cat === currentCategory && !currentDebateFilter);
         btn.className = `filter-chip${isActive ? " active" : ""}`;

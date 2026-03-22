@@ -70,6 +70,23 @@ let allCalibExamples = [];
 let calibFilter = "";
 let calibBatchFilter = "";
 
+/** Ne pas rafraîchir la liste des suggestions tant qu’une modale est ouverte (évite la « réactualisation » intempestive). */
+function adminModalBlocksSuggestionsPoll() {
+    const ids = [
+        "suggestion-editor-modal",
+        "history-modal",
+        "archive-detail-modal",
+        "backup-preview-modal",
+        "admin-command-palette",
+        "admin-shortcuts-modal",
+    ];
+    for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el && !el.classList.contains("hidden")) return true;
+    }
+    return false;
+}
+
 // ==================== Init ====================
 
 async function init() {
@@ -92,6 +109,12 @@ async function init() {
     setupSuggestionsHub();
     setupBackup();
     setupHistoryModal();
+    setupSuggestionEditorModal();
+    setupAdminSuggestionsListDelegation();
+    setupAdminCommandPalette();
+    setupAdminShortcutsHelp();
+    setupAdminQuickTiles();
+    setupAdminGlobalShortcuts();
     setupLogsSection();
     setupDilemmas();
     setupArchiveDetailModal();
@@ -107,7 +130,12 @@ async function init() {
     setInterval(loadPriorityBanner, 15000);
     setInterval(() => {
         const sug = document.getElementById("section-suggestions");
-        if (sug?.classList.contains("active")) loadAdminSuggestions();
+        if (!sug?.classList.contains("active")) return;
+        const listPanel = document.getElementById("sug-panel-list");
+        if (listPanel?.classList.contains("hidden")) return;
+        if (document.visibilityState !== "visible") return;
+        if (adminModalBlocksSuggestionsPoll()) return;
+        loadAdminSuggestions();
     }, 9000);
     setInterval(() => {
         const ann = document.getElementById("section-announcements");
@@ -122,8 +150,7 @@ async function init() {
 }
 
 const ADMIN_SECTION_LOADERS = {
-    suggestions: () => loadAdminSuggestions(),
-    logs: () => loadLogs(),
+    suggestions: () => loadSuggestionsSectionData(),
     locations: () => loadLocations(),
     dashboard: () => loadDashboard(),
     engagement: () => loadEngagement(),
@@ -142,7 +169,31 @@ const ADMIN_SECTION_LOADERS = {
     development: () => loadDevelopment(),
 };
 
+function applySuggestionsSubtab(tab) {
+    const t = ["list", "stream", "archive"].includes(tab) ? tab : "list";
+    document.querySelectorAll("#section-suggestions .logs-tab").forEach((btn) => {
+        const isActive = btn.dataset.logsTab === t;
+        btn.classList.toggle("active", isActive);
+        btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    });
+    document.getElementById("sug-panel-list")?.classList.toggle("hidden", t !== "list");
+    document.getElementById("logs-panel-stream")?.classList.toggle("hidden", t !== "stream");
+    document.getElementById("logs-panel-archive")?.classList.toggle("hidden", t !== "archive");
+}
+
+function loadSuggestionsSectionData() {
+    const tab = document.querySelector("#section-suggestions .logs-tab.active")?.dataset.logsTab || "list";
+    if (tab === "list") loadAdminSuggestions();
+    else if (tab === "stream") loadLogs();
+    else if (tab === "archive") loadSuggestionArchive();
+}
+
 function activateAdminSection(section) {
+    let subtabOverride = null;
+    if (section === "logs") {
+        section = "suggestions";
+        subtabOverride = "stream";
+    }
     const item = document.querySelector(`.nav-item[data-section="${section}"]`);
     const secEl = document.getElementById(`section-${section}`);
     if (!item || !secEl) return;
@@ -155,13 +206,31 @@ function activateAdminSection(section) {
     } catch (e) {
         /* private mode */
     }
+    if (section === "suggestions") {
+        let tab = subtabOverride;
+        if (tab == null) {
+            try {
+                tab = sessionStorage.getItem("admin_suggestions_subtab");
+                if (tab) sessionStorage.removeItem("admin_suggestions_subtab");
+            } catch (e) {
+                /* private mode */
+            }
+        }
+        if (!tab || !["list", "stream", "archive"].includes(tab)) tab = "list";
+        applySuggestionsSubtab(tab);
+    }
     const loader = ADMIN_SECTION_LOADERS[section];
     if (loader) loader();
 }
 
 function restoreAdminSectionFromStorage() {
     try {
-        const saved = sessionStorage.getItem("admin_active_section");
+        let saved = sessionStorage.getItem("admin_active_section");
+        if (!saved) return false;
+        if (saved === "logs") {
+            saved = "suggestions";
+            sessionStorage.setItem("admin_suggestions_subtab", "stream");
+        }
         if (saved && document.querySelector(`.nav-item[data-section="${saved}"]`)) {
             activateAdminSection(saved);
             return true;
@@ -177,6 +246,176 @@ function setupNavigation() {
         item.addEventListener("click", () => {
             activateAdminSection(item.dataset.section);
         });
+    });
+}
+
+/** Toutes les sections (menu « Aller à » + recherche). */
+const ADMIN_PALETTE_ENTRIES = [
+    { section: "dashboard", label: "Tableau de bord", hint: "Stats, graphiques, contrôles", kw: "accueil" },
+    { section: "engagement", label: "Engagement", hint: "Cartes spéciales, humeur, devinettes", kw: "stats" },
+    { section: "suggestions", label: "Suggestions", hint: "Liste, logs d’activité, archive", kw: "idées votes historique debug" },
+    { section: "dilemmas", label: "Dilemmes", hint: "Question swipe du jour", kw: "swipe" },
+    { section: "cvl-proposal", label: "Proposition officielle CVL", hint: "Texte affiché aux élèves", kw: "cvl" },
+    { section: "cvl-official-info", label: "Informations officielles CVL", hint: "Bandeaux info", kw: "cvl" },
+    { section: "announcements", label: "Annonces", hint: "Messages display", kw: "bandeau" },
+    { section: "locations", label: "Lieux", hint: "Salles et emplacements", kw: "salles" },
+    { section: "calibration", label: "Calibration IA", hint: "Exemples d’entraînement", kw: "prompt" },
+    { section: "trace", label: "Traçabilité IA", hint: "Traces de traitement", kw: "llm" },
+    { section: "calibration-verify", label: "Vérification calibration", hint: "Contrôle des corrections", kw: "validation" },
+    { section: "llm-resources", label: "Ressources IA", hint: "Modèles, limites", kw: "ollama" },
+    { section: "music-poll", label: "Sondage musique", hint: "Sonnerie, Spotify", kw: "audio" },
+    { section: "display-manager", label: "Affichage dynamique", hint: "Pages /tv", kw: "tv écran" },
+    { section: "bus", label: "Horaires bus", hint: "GTFS, lignes", kw: "transport" },
+    { section: "backup", label: "Backup & historique", hint: "Sauvegardes, archive", kw: "export" },
+    { section: "development", label: "Notes & idées", hint: "Bloc-notes admin", kw: "dev" },
+];
+
+let adminPaletteFiltered = [];
+let adminPaletteSelected = 0;
+
+function isAdminPaletteInputBlocked(target) {
+    if (!target || typeof target.nodeType !== "number") return false;
+    const tag = target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (target.closest?.("[contenteditable]")) return true;
+    if (target.closest?.(".ql-editor")) return true;
+    return false;
+}
+
+function updateAdminPaletteUi(filter) {
+    const listEl = document.getElementById("admin-command-palette-list");
+    if (!listEl) return;
+    const term = (filter || "").trim().toLowerCase();
+    adminPaletteFiltered = ADMIN_PALETTE_ENTRIES.filter((e) => {
+        if (!term) return true;
+        const hay = `${e.label} ${e.hint || ""} ${e.kw || ""}`.toLowerCase();
+        return hay.includes(term);
+    });
+    if (!adminPaletteFiltered.length) {
+        adminPaletteSelected = 0;
+        listEl.innerHTML = '<li class="admin-command-palette-empty"><span class="empty-msg">Aucune section ne correspond.</span></li>';
+        return;
+    }
+    if (adminPaletteSelected >= adminPaletteFiltered.length) {
+        adminPaletteSelected = Math.max(0, adminPaletteFiltered.length - 1);
+    }
+    listEl.innerHTML = adminPaletteFiltered
+        .map(
+            (e, i) => `
+        <li>
+            <button type="button" role="option" class="admin-command-palette-item${i === adminPaletteSelected ? " is-active" : ""}" data-idx="${i}">
+                <span class="admin-command-palette-item__label">${esc(e.label)}</span>
+                <span class="admin-command-palette-item__hint">${esc(e.hint || "")}</span>
+            </button>
+        </li>`
+        )
+        .join("");
+    listEl.querySelectorAll(".admin-command-palette-item").forEach((btn) => {
+        btn.addEventListener("click", () => applyAdminPaletteChoice(parseInt(btn.dataset.idx, 10)));
+    });
+}
+
+function applyAdminPaletteChoice(idx) {
+    const e = adminPaletteFiltered[idx];
+    if (!e) return;
+    closeAdminCommandPalette();
+    activateAdminSection(e.section);
+}
+
+function openAdminCommandPalette() {
+    const modal = document.getElementById("admin-command-palette");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    adminPaletteSelected = 0;
+    const input = document.getElementById("admin-command-palette-input");
+    if (input) {
+        input.value = "";
+        updateAdminPaletteUi("");
+        setTimeout(() => input.focus(), 10);
+    }
+}
+
+function closeAdminCommandPalette() {
+    document.getElementById("admin-command-palette")?.classList.add("hidden");
+}
+
+function setupAdminCommandPalette() {
+    const modal = document.getElementById("admin-command-palette");
+    const input = document.getElementById("admin-command-palette-input");
+    const backdrop = document.getElementById("admin-command-palette-backdrop");
+    document.getElementById("admin-jump-open")?.addEventListener("click", openAdminCommandPalette);
+    backdrop?.addEventListener("click", closeAdminCommandPalette);
+    input?.addEventListener("input", () => {
+        adminPaletteSelected = 0;
+        updateAdminPaletteUi(input.value);
+    });
+    input?.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown") {
+            if (!adminPaletteFiltered.length) return;
+            e.preventDefault();
+            adminPaletteSelected = Math.min(adminPaletteSelected + 1, adminPaletteFiltered.length - 1);
+            updateAdminPaletteUi(input.value);
+            return;
+        }
+        if (e.key === "ArrowUp") {
+            if (!adminPaletteFiltered.length) return;
+            e.preventDefault();
+            adminPaletteSelected = Math.max(adminPaletteSelected - 1, 0);
+            updateAdminPaletteUi(input.value);
+            return;
+        }
+        if (e.key === "Enter") {
+            if (!adminPaletteFiltered.length) return;
+            e.preventDefault();
+            applyAdminPaletteChoice(adminPaletteSelected);
+        }
+    });
+}
+
+function setupAdminShortcutsHelp() {
+    const modal = document.getElementById("admin-shortcuts-modal");
+    const close = () => modal?.classList.add("hidden");
+    document.getElementById("admin-shortcuts-help")?.addEventListener("click", () => modal?.classList.remove("hidden"));
+    document.getElementById("admin-shortcuts-modal-close")?.addEventListener("click", close);
+    document.getElementById("admin-shortcuts-modal-backdrop")?.addEventListener("click", close);
+}
+
+function setupAdminQuickTiles() {
+    document.getElementById("admin-quick-grid")?.addEventListener("click", (e) => {
+        const tile = e.target.closest(".admin-quick-tile");
+        const sec = tile?.dataset?.section;
+        if (sec) activateAdminSection(sec);
+    });
+}
+
+function setupAdminGlobalShortcuts() {
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+            const p = document.getElementById("admin-command-palette");
+            if (p && !p.classList.contains("hidden")) {
+                e.preventDefault();
+                closeAdminCommandPalette();
+                return;
+            }
+            const sh = document.getElementById("admin-shortcuts-modal");
+            if (sh && !sh.classList.contains("hidden")) {
+                e.preventDefault();
+                sh.classList.add("hidden");
+            }
+            return;
+        }
+        const mod = e.ctrlKey || e.metaKey;
+        if (mod && e.key.toLowerCase() === "k") {
+            e.preventDefault();
+            const p = document.getElementById("admin-command-palette");
+            if (p && !p.classList.contains("hidden")) closeAdminCommandPalette();
+            else openAdminCommandPalette();
+            return;
+        }
+        if (e.key === "/" && !mod && !isAdminPaletteInputBlocked(e.target)) {
+            e.preventDefault();
+            openAdminCommandPalette();
+        }
     });
 }
 
@@ -823,8 +1062,10 @@ async function loadLogs() {
 }
 
 async function pollLogs() {
-    const section = document.getElementById("section-logs");
+    const section = document.getElementById("section-suggestions");
     if (!section || !section.classList.contains("active")) return;
+    const streamPanel = document.getElementById("logs-panel-stream");
+    if (!streamPanel || streamPanel.classList.contains("hidden")) return;
     try {
         const logs = await API.get(`/api/admin/activity-logs?since_id=${logsLastId}&limit=50`);
         if (!logs.length) return;
@@ -978,19 +1219,12 @@ async function downloadArchiveExport(format) {
 }
 
 function setupLogsSection() {
-    document.querySelectorAll(".logs-tab").forEach((tab) => {
+    document.querySelectorAll("#section-suggestions .logs-tab").forEach((tab) => {
         tab.addEventListener("click", () => {
             const id = tab.dataset.logsTab;
-            document.querySelectorAll(".logs-tab").forEach((t) => {
-                t.classList.remove("active");
-                t.setAttribute("aria-selected", "false");
-            });
-            tab.classList.add("active");
-            tab.setAttribute("aria-selected", "true");
-            document.getElementById("logs-panel-stream")?.classList.toggle("hidden", id !== "stream");
-            document.getElementById("logs-panel-archive")?.classList.toggle("hidden", id !== "archive");
-            if (id === "stream") loadLogs();
-            if (id === "archive") loadSuggestionArchive();
+            if (!id) return;
+            applySuggestionsSubtab(id);
+            loadSuggestionsSectionData();
         });
     });
     const st = document.getElementById("archive-filter-status");
@@ -1243,20 +1477,21 @@ function renderAdminSuggestions() {
             </label>
         ` : "";
         return `<div class="admin-suggestion-card${isPending ? " admin-card-pending" : ""}">
-            <div class="admin-card-top"><span class="admin-card-title">${esc(s.title)}</span><button class="btn-icon edit-title-btn" data-id="${s.id}" title="Modifier le titre">✎</button><span class="badge badge-votes">${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}</span></div>
-            ${s.subtitle ? `<div class="admin-card-subtitle">${esc(s.subtitle)}<button class="btn-icon edit-subtitle-btn" data-id="${s.id}" title="Modifier le sous-titre">✎</button></div>` : ""}
+            <div class="admin-card-top"><span class="admin-card-title">${esc(s.title)}</span><span class="badge badge-votes">${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}</span></div>
+            <div class="admin-card-subtitle">${s.subtitle ? esc(s.subtitle) : "<span class=\"admin-card-subtitle-missing\">— pas de sous-titre —</span>"}</div>
             <div class="admin-card-original">"${esc(s.original_text)}"</div>
             ${aiEvalHtml}
             <div class="admin-card-actions">
                 <div class="admin-card-meta"><span class="badge badge-category">${s.category}</span><span class="badge badge-status" data-status="${s.status}">${s.status}</span>${isPending ? '<span class="badge badge-pending">En attente</span>' : ""}${debatToggle}</div>
-                ${isPending ? `<button class="btn btn-sm btn-primary process-single-btn" data-id="${s.id}">Traiter</button>` : ""}
+                ${isPending ? `<button type="button" class="btn btn-sm btn-primary process-single-btn" data-id="${s.id}">Traiter</button>` : ""}
                 <select class="status-select" data-id="${s.id}">${opts}</select>
                 <select class="location-select" data-id="${s.id}"><option value="">-- Lieu --</option></select>
-                <button class="btn btn-sm btn-ghost history-btn" data-id="${s.id}" data-type="suggestion" title="Historique">Historique</button>
+                <button type="button" class="btn btn-sm btn-primary edit-suggestion-btn" data-id="${s.id}" title="Ouvrir l’éditeur (titre, description, sources)">Éditer la fiche</button>
+                <button type="button" class="btn btn-sm btn-ghost history-btn" data-id="${s.id}" data-type="suggestion" title="Historique">Historique</button>
                 <a class="btn btn-sm btn-ghost pdf-btn" href="/api/admin/suggestions/${s.id}/pdf" data-id="${s.id}" download target="_blank" title="Télécharger PDF">PDF</a>
-                <button class="btn btn-sm btn-ghost add-vote-btn" data-id="${s.id}" title="Ajouter des soutiens (dev)">+1 vote</button>
-                <button class="btn btn-sm btn-ghost recalib-btn" data-id="${s.id}" title="Recalibrer">Calibrer</button>
-                <button class="delete-btn" data-id="${s.id}">Supprimer</button>
+                <button type="button" class="btn btn-sm btn-ghost add-vote-btn" data-id="${s.id}" title="Ajouter des soutiens (dev)">+1 vote</button>
+                <button type="button" class="btn btn-sm btn-ghost recalib-btn" data-id="${s.id}" title="Recalibrer">Calibrer</button>
+                <button type="button" class="delete-btn" data-id="${s.id}">Supprimer</button>
             </div></div>`;
     }).join("");
     c.querySelectorAll(".process-single-btn").forEach((btn) => {
@@ -1278,30 +1513,6 @@ function renderAdminSuggestions() {
     c.querySelectorAll(".status-select").forEach((sel) => { sel.addEventListener("change", async () => { await API.put(`/api/admin/suggestions/${sel.dataset.id}/status`, { status: sel.value }); loadAdminSuggestions(); }); });
     c.querySelectorAll(".location-select").forEach((sel) => { sel.addEventListener("change", async () => { await API.put(`/api/admin/suggestions/${sel.dataset.id}/location`, { location_id: sel.value ? parseInt(sel.value) : null }); }); });
     c.querySelectorAll(".delete-btn").forEach((btn) => { btn.addEventListener("click", async () => { if (confirm("Supprimer ?")) { await API.delete(`/api/admin/suggestions/${btn.dataset.id}`); loadAdminSuggestions(); } }); });
-    c.querySelectorAll(".edit-title-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-            const s = allSuggestions.find((x) => x.id === parseInt(btn.dataset.id));
-            const currentTitle = s ? s.title : "";
-            const newTitle = prompt("Nouveau titre :", currentTitle);
-            if (newTitle == null || !newTitle.trim()) return;
-            try {
-                await API.put(`/api/admin/suggestions/${btn.dataset.id}/title`, { title: newTitle.trim() });
-                loadAdminSuggestions();
-            } catch (e) { alert("Erreur"); }
-        });
-    });
-    c.querySelectorAll(".edit-subtitle-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-            const s = allSuggestions.find((x) => x.id === parseInt(btn.dataset.id));
-            const current = s ? (s.subtitle || "") : "";
-            const newVal = prompt("Sous-titre (laisser vide pour supprimer) :", current);
-            if (newVal == null) return;
-            try {
-                await API.put(`/api/admin/suggestions/${btn.dataset.id}/subtitle`, { subtitle: newVal.trim() });
-                loadAdminSuggestions();
-            } catch (e) { alert("Erreur"); }
-        });
-    });
     c.querySelectorAll(".recalib-btn").forEach((btn) => {
         btn.addEventListener("click", async () => {
             const s = allSuggestions.find((x) => x.id === parseInt(btn.dataset.id));
@@ -1556,8 +1767,8 @@ function renderCalibList() {
                     </select>
                 </div>
                 <div class="calib-card-btns">
-                    ${e.status === "pending" ? `<button class="btn btn-sm btn-primary calib-process-btn" data-id="${e.id}" title="Analyser avec IA">Analyser</button>` : ""}
-                    <button class="btn btn-sm btn-ghost calib-delete-btn" data-id="${e.id}" title="Supprimer">Suppr.</button>
+                    ${e.status === "pending" ? `<button type="button" class="btn btn-sm btn-primary calib-process-btn" data-id="${e.id}" title="Analyser avec IA">Analyser</button>` : ""}
+                    <button type="button" class="btn btn-sm btn-ghost calib-delete-btn" data-id="${e.id}" title="Supprimer">Suppr.</button>
                 </div>
             </div>
         </div>`;
@@ -2000,6 +2211,141 @@ function setupHistoryModal() {
     const backdrop = modal?.querySelector(".history-modal-backdrop");
     if (closeBtn) closeBtn.addEventListener("click", () => modal?.classList.add("hidden"));
     if (backdrop) backdrop.addEventListener("click", () => modal?.classList.add("hidden"));
+}
+
+/** Clic « Éditer » sur les cartes suggestions : délégation (stable après re-render de la liste). */
+function setupAdminSuggestionsListDelegation() {
+    const list = document.getElementById("admin-suggestions-list");
+    if (!list || list.dataset.editorDelegation === "1") return;
+    list.dataset.editorDelegation = "1";
+    list.addEventListener("click", (e) => {
+        const btn = e.target.closest(".edit-suggestion-btn");
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const id = parseInt(btn.dataset.id, 10);
+        if (Number.isFinite(id)) openSuggestionEditorModal(id);
+    });
+}
+
+function renderSuggestionEditorSources(sources) {
+    const grid = document.getElementById("suggestion-editor-sources");
+    const empty = document.getElementById("suggestion-editor-sources-empty");
+    const countEl = document.getElementById("suggestion-editor-source-count");
+    if (!grid || !empty || !countEl) return;
+    if (!sources || !sources.length) {
+        grid.innerHTML = "";
+        empty.classList.remove("hidden");
+        empty.textContent = "Aucun texte source enregistré pour cette fiche.";
+        countEl.textContent = "";
+        return;
+    }
+    empty.classList.add("hidden");
+    const n = sources.length;
+    countEl.textContent = n === 1 ? "1 texte d’origine" : `${n} textes d’origine`;
+    grid.innerHTML = sources
+        .map((s) => {
+            const kind = s.kind || "precision";
+            const mod = kind === "initial" ? "initial" : kind === "argument" ? "argument" : "precision";
+            return `<article class="suggestion-source-card suggestion-source-card--${mod}">
+                <span class="suggestion-source-badge">${esc(s.label || "")}</span>
+                <pre class="suggestion-source-text">${esc(s.text || "")}</pre>
+            </article>`;
+        })
+        .join("");
+}
+
+function setupSuggestionEditorModal() {
+    const modal = document.getElementById("suggestion-editor-modal");
+    const close = () => modal?.classList.add("hidden");
+    document.getElementById("suggestion-editor-close")?.addEventListener("click", close);
+    document.getElementById("suggestion-editor-cancel")?.addEventListener("click", close);
+    document.getElementById("suggestion-editor-backdrop")?.addEventListener("click", close);
+    document.getElementById("suggestion-editor-regenerate")?.addEventListener("click", async () => {
+        const idEl = document.getElementById("suggestion-editor-id");
+        const sid = idEl ? parseInt(idEl.value, 10) : 0;
+        const subIn = document.getElementById("suggestion-editor-subtitle-input");
+        const btn = document.getElementById("suggestion-editor-regenerate");
+        if (!sid || !subIn || !btn) return;
+        const prevLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Génération…";
+        try {
+            const titleIn = document.getElementById("suggestion-editor-title-input");
+            const { data, status } = await API.post(`/api/admin/suggestions/${sid}/regenerate-subtitle`, {
+                title: titleIn ? titleIn.value.trim() : "",
+                subtitle: subIn.value.trim(),
+            });
+            if (status >= 400) {
+                alert((data && data.error) || "Erreur de génération.");
+                return;
+            }
+            if (data.subtitle != null) subIn.value = data.subtitle;
+        } catch (e) {
+            alert((e && e.message) || "Erreur de génération.");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = prevLabel;
+        }
+    });
+    document.getElementById("suggestion-editor-save")?.addEventListener("click", async () => {
+        const idEl = document.getElementById("suggestion-editor-id");
+        const sid = idEl ? parseInt(idEl.value, 10) : 0;
+        const titleIn = document.getElementById("suggestion-editor-title-input");
+        const subIn = document.getElementById("suggestion-editor-subtitle-input");
+        if (!sid || !titleIn) return;
+        const title = titleIn.value.trim();
+        if (title.length < 3) {
+            alert("Le titre doit faire au moins 3 caractères.");
+            return;
+        }
+        try {
+            const { data, status } = await API.put(`/api/admin/suggestions/${sid}/editor`, {
+                title,
+                subtitle: (subIn && subIn.value) ? subIn.value.trim() : "",
+            });
+            if (status >= 400) {
+                alert((data && data.error) || "Erreur lors de l'enregistrement.");
+                return;
+            }
+            close();
+            loadAdminSuggestions();
+        } catch (e) {
+            alert((e && e.message) || "Erreur lors de l'enregistrement.");
+        }
+    });
+}
+
+async function openSuggestionEditorModal(sid) {
+    const modal = document.getElementById("suggestion-editor-modal");
+    const titleH = document.getElementById("suggestion-editor-heading");
+    const idEl = document.getElementById("suggestion-editor-id");
+    const titleIn = document.getElementById("suggestion-editor-title-input");
+    const subIn = document.getElementById("suggestion-editor-subtitle-input");
+    const grid = document.getElementById("suggestion-editor-sources");
+    const precEmpty = document.getElementById("suggestion-editor-sources-empty");
+    const countEl = document.getElementById("suggestion-editor-source-count");
+    if (!modal || !idEl || !titleIn || !subIn || !grid || !precEmpty || !countEl) return;
+    if (titleH) titleH.textContent = `Suggestion #${sid}`;
+    idEl.value = String(sid);
+    titleIn.value = "";
+    subIn.value = "";
+    grid.innerHTML = `<p class="empty-msg" style="padding:12px;margin:0;">Chargement des textes d’origine…</p>`;
+    precEmpty.classList.add("hidden");
+    countEl.textContent = "";
+    modal.classList.remove("hidden");
+    try {
+        const data = await API.get(`/api/admin/suggestions/${sid}/editor`);
+        titleIn.value = data.title || "";
+        subIn.value = data.subtitle || "";
+        const sources = data.sources || [];
+        renderSuggestionEditorSources(sources);
+    } catch (e) {
+        grid.innerHTML = "";
+        precEmpty.classList.remove("hidden");
+        precEmpty.textContent = `Erreur : ${esc(String(e.message || e))}`;
+        countEl.textContent = "";
+    }
 }
 
 async function openHistoryModal(type, id) {

@@ -172,21 +172,7 @@ Suggestion d'élève : "{text}"
 
 Réponds UNIQUEMENT par la question courte ou "non"."""
 
-SUBTITLE_PROMPT = """Tu rédiges le court texte affiché SOUS le titre sur la page élève (boîte à idées). Ce n'est pas un compte rendu administratif.
-
-{context}
-Titre affiché : "{title}"
-
-Textes des élèves (messages ou précisions) :
-{original_texts}
-
-Règles STRICTES :
-- Utilise UNIQUEMENT ce qui figure dans les textes ci-dessus (y compris [for]/[against] si présent)
-- N'invente rien : pas de chiffres, pas de "plusieurs élèves ont signalé", pas de "consigné pour intervention", pas de ton rapport ou de comité
-- Style : direct, simple, comme une note lycée — une ou deux phrases courtes, au plus trois si vraiment nécessaire
-- Évite le jargon : pas de "au sein de", "ont été constatés", "échanges informels", "faciliter une éventuelle intervention"
-- Longueur : environ 120 à 400 caractères (court et lisible sur mobile)
-- Réponds UNIQUEMENT avec ce texte, sans titre ni guillemets autour"""
+# Sous-titres : voir generate_subtitle() (première génération vs mise à jour incrémentale).
 
 PROPORTION_PROMPT = """Tu évalues une proposition de lycée pour décider si elle mérite un débat (arguments pour ET contre) ou seulement des soutiens.
 
@@ -952,16 +938,67 @@ def moderate_community_message_llm(text: str) -> tuple[bool, str]:
     return True, ""
 
 
-def generate_subtitle(title: str, original_texts: list[str]) -> str | None:
-    """Résumé agrégé IA (sous-titre long) à partir du titre et de tous les textes élèves / précisions."""
-    ctx = f"\nContexte de l'établissement : {_school_context}\n" if _school_context else ""
+def generate_subtitle(
+    title: str,
+    original_texts: list[str],
+    previous_subtitle: str | None = None,
+) -> str | None:
+    """
+    Résumé agrégé IA (sous-titre) : première fois à partir des textes ;
+    aux soutiens suivants, mise à jour incrémentale à partir du sous-titre déjà publié + nouveaux textes.
+    """
     texts = [t.strip() for t in (original_texts or []) if t and str(t).strip()]
     if not texts:
         return None
-    # Cap pour le prompt (évite les dépassements de contexte sur des listes énormes)
+    ctx = f"\nContexte de l'établissement : {_school_context}\n" if _school_context else ""
+    safe_title = ((title or "")[:400]).replace("\r", " ").replace("\n", " ")
     formatted = "\n".join(f'- "{t[:1200]}"' for t in texts[:80])
-    prompt = SUBTITLE_PROMPT.format(title=(title or "")[:400], original_texts=formatted, context=ctx)
-    result = _call_ollama(prompt, temperature=0.2, num_predict=380, timeout=90)
+    prev = (previous_subtitle or "").strip()
+
+    if prev:
+        prev_block = prev[:2000].replace("\r", " ").replace("\n", " ")
+        prompt = (
+            "Tu mets à jour le texte affiché SOUS le titre sur la page élève (boîte à idées).\n"
+            f"{ctx}"
+            f"Titre officiel (référence, déjà validé) : {safe_title}\n\n"
+            f"Sous-titre actuellement affiché (déjà publié) :\n{prev_block}\n\n"
+            "Messages / précisions (soutiens ou arguments) à prendre en compte pour cette mise à jour :\n"
+            f"{formatted}\n\n"
+            "Règles STRICTES :\n"
+            "- Mise à jour : pars du sous-titre actuel et enrichis-le avec les informations **nouvelles** ou utiles "
+            "issues des messages ci-dessus. Ne réécris pas tout depuis zéro si le sous-titre actuel reste juste ; "
+            "complète-le avec les précisions manquantes (lieu, contexte, sens).\n"
+            "- Le titre officiel fixe le sujet réel : ne réintroduis pas de plaisanteries, comparaisons absurdes ou "
+            "mentions non réalistes (ex. animaux préhistoriques, véhicules imaginaires, « vélociraptor », etc.) "
+            "même si elles figuraient dans les messages bruts — ignore-les pour le texte affiché.\n"
+            "- N'invente pas de chiffres ni de faits absents des textes ci-dessus (sauf si déjà dans le sous-titre actuel).\n"
+            "- Style : direct, court, environ 120 à 400 caractères.\n"
+            "- Réponds UNIQUEMENT avec le nouveau sous-titre, sans guillemets ni ligne de titre avant le texte."
+        )
+        temp = 0.15
+    else:
+        prompt = (
+            "Tu rédiges le court texte affiché SOUS le titre sur la page élève (boîte à idées). "
+            "Ce n'est pas un compte rendu administratif.\n"
+            f"{ctx}"
+            f"Titre affiché (formulation officielle, référence) : {safe_title}\n\n"
+            f"Textes des élèves (messages ou précisions) :\n{formatted}\n\n"
+            "Règles STRICTES :\n"
+            "- Reste aligné avec le titre : le titre indique le sujet réel. N'invente pas d'exemples absurdes.\n"
+            "- Ignore dans les messages bruts les plaisanteries évidentes, comparaisons absurdes ou mentions non réalistes "
+            "(ex. « vélociraptor », animaux préhistoriques, véhicules imaginaires) — ne les reproduis pas ; "
+            "ne retiens que le fond utile (ex. rappel sur vélo/trottinette dans le lycée).\n"
+            "- Utilise UNIQUEMENT ce qui figure dans les textes ci-dessus pour le fond utile "
+            "(y compris [for]/[against] si présent).\n"
+            "- N'invente rien : pas de chiffres, pas de « plusieurs élèves ont signalé », pas de ton administratif ou de comité.\n"
+            "- Style : direct, simple, une ou deux phrases courtes, au plus trois si nécessaire.\n"
+            "- Évite le jargon : pas de « au sein de », « ont été constatés », etc.\n"
+            "- Longueur : environ 120 à 400 caractères.\n"
+            "- Réponds UNIQUEMENT avec ce texte, sans guillemets ni titre avant le texte."
+        )
+        temp = 0.2
+
+    result = _call_ollama(prompt, temperature=temp, num_predict=380, timeout=90)
 
     if result:
         result = result.strip().strip('"').strip("'").strip("\u00ab\u00bb").strip()

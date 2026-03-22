@@ -20,49 +20,42 @@
             <h2>Boîte à Idées</h2>
             <span class="sidebar-badge">CVL</span>
         </div>
-        <nav class="sidebar-nav">
-            <details class="nav-group" open>
-                <summary class="nav-group-summary">Vue d’ensemble</summary>
+        <nav class="sidebar-nav" aria-label="Navigation principale">
+            <div class="admin-nav-block">
+                <div class="nav-group-label">Vue &amp; activité</div>
                 <button type="button" class="nav-item active" data-section="dashboard">Tableau de bord</button>
                 <button type="button" class="nav-item" data-section="engagement">Engagement</button>
-            </details>
-            <details class="nav-group" open>
-                <summary class="nav-group-summary">Participation</summary>
-                <button type="button" class="nav-item" data-section="dilemmas">Dilemmes</button>
-            </details>
-            <details class="nav-group" open>
-                <summary class="nav-group-summary">Gestion</summary>
-                <button type="button" class="nav-item" data-section="logs">Logs</button>
+            </div>
+            <div class="admin-nav-block">
+                <div class="nav-group-label">Suggestions &amp; suivi</div>
                 <button type="button" class="nav-item" data-section="suggestions">Suggestions</button>
-                <button type="button" class="nav-item" data-section="cvl-proposal">Proposition Officielle CVL</button>
-                <button type="button" class="nav-item" data-section="cvl-official-info">Information Officielle CVL</button>
-                <button type="button" class="nav-item" data-section="locations">Lieux</button>
+                <button type="button" class="nav-item" data-section="dilemmas">Dilemmes</button>
+            </div>
+            <div class="admin-nav-block">
+                <div class="nav-group-label">Communication &amp; lieux</div>
+                <button type="button" class="nav-item" data-section="cvl-proposal">Proposition officielle CVL</button>
+                <button type="button" class="nav-item" data-section="cvl-official-info">Informations officielles CVL</button>
                 <button type="button" class="nav-item" data-section="announcements">Annonces</button>
-            </details>
-            <details class="nav-group" open>
-                <summary class="nav-group-summary">Intelligence artificielle</summary>
-                <button type="button" class="nav-item" data-section="calibration">Calibration IA</button>
+                <button type="button" class="nav-item" data-section="locations">Lieux</button>
+            </div>
+            <div class="admin-nav-block">
+                <div class="nav-group-label">Intelligence artificielle</div>
+                <button type="button" class="nav-item" data-section="calibration">Calibration</button>
                 <button type="button" class="nav-item" data-section="trace">Traçabilité</button>
-                <button type="button" class="nav-item" data-section="calibration-verify">Calibration IA vérification</button>
+                <button type="button" class="nav-item" data-section="calibration-verify">Vérification calibration</button>
                 <button type="button" class="nav-item" data-section="llm-resources">Ressources IA</button>
-            </details>
-            <details class="nav-group" open>
-                <summary class="nav-group-summary">Sonnerie</summary>
+            </div>
+            <div class="admin-nav-block">
+                <div class="nav-group-label">Médias &amp; affichage</div>
                 <button type="button" class="nav-item" data-section="music-poll">Sondage musique</button>
-            </details>
-            <details class="nav-group" open>
-                <summary class="nav-group-summary">Affichage</summary>
                 <button type="button" class="nav-item" data-section="display-manager">Affichage dynamique</button>
                 <button type="button" class="nav-item" data-section="bus">Horaires bus</button>
-            </details>
-            <details class="nav-group" open>
-                <summary class="nav-group-summary">Développement</summary>
+            </div>
+            <div class="admin-nav-block">
+                <div class="nav-group-label">Système</div>
+                <button type="button" class="nav-item" data-section="backup">Backup &amp; historique</button>
                 <button type="button" class="nav-item" data-section="development">Notes &amp; idées</button>
-            </details>
-            <details class="nav-group" open>
-                <summary class="nav-group-summary">Système</summary>
-                <button type="button" class="nav-item" data-section="backup">Backup &amp; Historique</button>
-            </details>
+            </div>
         </nav>
         <div class="sidebar-footer">
             <a href="/" class="sidebar-link">Voir le site</a>
@@ -72,9 +65,29 @@
     </aside>
 
     <main class="admin-main">
+        <header class="admin-main-toolbar">
+            <button type="button" id="admin-jump-open" class="admin-jump-open" aria-haspopup="dialog" aria-controls="admin-command-palette" title="Ouvrir le menu d’accès rapide (Ctrl+K)">
+                <span class="admin-jump-open__icon" aria-hidden="true">🔎</span>
+                <span class="admin-jump-open__text">Aller à une section…</span>
+                <span class="admin-jump-kbd" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+            </button>
+            <button type="button" id="admin-shortcuts-help" class="admin-toolbar-link" title="Raccourcis clavier">?</button>
+        </header>
         <!-- Dashboard -->
         <section id="section-dashboard" class="admin-section active">
             <h1>Tableau de bord</h1>
+            <p class="admin-lead-hint">Astuce : <strong>Ctrl+K</strong> ouvre le menu pour aller n’importe où sans scroller la barre latérale.</p>
+            <div class="admin-quick-grid" id="admin-quick-grid" aria-label="Raccourcis vers les sections">
+                <button type="button" class="admin-quick-tile" data-section="suggestions"><span class="admin-quick-tile__t">Suggestions</span><span class="admin-quick-tile__d">Liste, logs, archive</span></button>
+                <button type="button" class="admin-quick-tile" data-section="dilemmas"><span class="admin-quick-tile__t">Dilemmes</span><span class="admin-quick-tile__d">Swipe du jour</span></button>
+                <button type="button" class="admin-quick-tile" data-section="engagement"><span class="admin-quick-tile__t">Engagement</span><span class="admin-quick-tile__d">Stats cartes spéciales</span></button>
+                <button type="button" class="admin-quick-tile" data-section="cvl-proposal"><span class="admin-quick-tile__t">Proposition CVL</span><span class="admin-quick-tile__d">Texte officiel</span></button>
+                <button type="button" class="admin-quick-tile" data-section="announcements"><span class="admin-quick-tile__t">Annonces</span><span class="admin-quick-tile__d">Bandeaux</span></button>
+                <button type="button" class="admin-quick-tile" data-section="music-poll"><span class="admin-quick-tile__t">Musique</span><span class="admin-quick-tile__d">Sondage sonnerie</span></button>
+                <button type="button" class="admin-quick-tile" data-section="calibration"><span class="admin-quick-tile__t">Calibration IA</span><span class="admin-quick-tile__d">Exemples &amp; prompts</span></button>
+                <button type="button" class="admin-quick-tile" data-section="display-manager"><span class="admin-quick-tile__t">Affichage TV</span><span class="admin-quick-tile__d">Pages /tv</span></button>
+                <button type="button" class="admin-quick-tile" data-section="backup"><span class="admin-quick-tile__t">Backup</span><span class="admin-quick-tile__d">Sauvegardes</span></button>
+            </div>
             <div class="stats-grid">
                 <div class="stat-card"><div class="stat-info"><span id="stat-total" class="stat-value">—</span><span class="stat-label">Suggestions</span></div></div>
                 <div class="stat-card"><div class="stat-info"><span id="stat-votes" class="stat-value">—</span><span class="stat-label">Votes totaux</span></div></div>
@@ -229,72 +242,27 @@
             <div id="dilemma-list" class="admin-dilemma-list"></div>
         </section>
 
-        <!-- Logs -->
-        <section id="section-logs" class="admin-section">
-            <div class="section-header">
-                <h1>Logs &amp; historique</h1>
-                <span class="context-hint">Événements en direct, débats CVL, exports — et copie de toutes les suggestions (y compris supprimées).</span>
-            </div>
-            <div class="logs-tabs" role="tablist">
-                <button type="button" class="logs-tab active" data-logs-tab="stream" role="tab" aria-selected="true">Logs en direct</button>
-                <button type="button" class="logs-tab" data-logs-tab="archive" role="tab" aria-selected="false">Historique suggestions</button>
-            </div>
-            <div id="logs-panel-stream" class="logs-panel logs-panel-active">
-                <div class="logs-export-bar">
-                    <label class="logs-export-label">Télécharger les logs</label>
-                    <select id="logs-export-preset" class="control-select logs-export-select">
-                        <option value="today">Aujourd'hui (UTC)</option>
-                        <option value="24h">Dernières 24 h</option>
-                        <option value="7d">7 derniers jours</option>
-                        <option value="custom">Plage personnalisée</option>
-                    </select>
-                    <input type="date" id="logs-export-day" class="logs-export-input" title="Journée (pour préréglage ou plage)">
-                    <input type="datetime-local" id="logs-export-from" class="logs-export-input hidden" aria-label="Du">
-                    <input type="datetime-local" id="logs-export-to" class="logs-export-input hidden" aria-label="Au">
-                    <button type="button" class="btn btn-secondary btn-sm" id="logs-export-csv">CSV</button>
-                    <button type="button" class="btn btn-secondary btn-sm" id="logs-export-json">JSON</button>
-                </div>
-                <div class="logs-container">
-                    <div id="logs-list" class="logs-list"></div>
-                </div>
-            </div>
-            <div id="logs-panel-archive" class="logs-panel hidden">
-                <div class="archive-toolbar">
-                    <input type="search" id="archive-search" class="logs-export-input archive-search" placeholder="Rechercher (titre, texte, n°)…">
-                    <select id="archive-filter-status" class="control-select">
-                        <option value="">Tous les statuts</option>
-                    </select>
-                    <label class="archive-cb"><input type="checkbox" id="archive-deleted-only"> Supprimées uniquement</label>
-                    <button type="button" class="btn btn-primary btn-sm" id="archive-refresh">Actualiser</button>
-                </div>
-                <div class="archive-export-bar">
-                    <span class="logs-export-label">Export</span>
-                    <input type="number" id="archive-export-sid" class="logs-export-input narrow" placeholder="N° suggestion" min="1">
-                    <input type="date" id="archive-export-day" class="logs-export-input">
-                    <input type="datetime-local" id="archive-export-from" class="logs-export-input">
-                    <input type="datetime-local" id="archive-export-to" class="logs-export-input">
-                    <button type="button" class="btn btn-secondary btn-sm" id="archive-export-csv">CSV</button>
-                    <button type="button" class="btn btn-secondary btn-sm" id="archive-export-json">JSON</button>
-                </div>
-                <div id="archive-list" class="archive-list"></div>
-            </div>
-        </section>
-
-        <!-- Suggestions -->
+        <!-- Suggestions (liste, logs, archive) -->
         <section id="section-suggestions" class="admin-section">
             <div class="section-header">
-                <h1>Gestion des suggestions</h1>
+                <h1>Suggestions &amp; suivi</h1>
+                <span class="context-hint">Liste en cours, journal d’activité, et copie complète des fiches (y compris supprimées).</span>
                 <div class="section-header-actions">
-                    <button id="process-pending-btn" class="btn btn-primary">Traiter les suggestions en attente</button>
+                    <button type="button" id="process-pending-btn" class="btn btn-primary">Traiter les suggestions en attente</button>
                 </div>
                 <div id="suggestion-focus-panel" class="suggestion-focus-panel hidden" aria-live="polite"></div>
+            </div>
+            <div class="logs-tabs" role="tablist">
+                <button type="button" class="logs-tab active" data-logs-tab="list" role="tab" aria-selected="true">Liste &amp; édition</button>
+                <button type="button" class="logs-tab" data-logs-tab="stream" role="tab" aria-selected="false">Logs en direct</button>
+                <button type="button" class="logs-tab" data-logs-tab="archive" role="tab" aria-selected="false">Historique &amp; export</button>
+            </div>
+            <div id="sug-panel-list" class="logs-panel logs-panel-active">
                 <div class="section-filters">
                     <select id="admin-filter-category"><option value="">Toutes les catégories</option></select>
                     <select id="admin-filter-status"><option value="">Tous les statuts</option></select>
                     <input type="search" id="admin-search" placeholder="Rechercher...">
                 </div>
-            </div>
-
             <div id="admin-suggestions-hub" class="admin-suggestions-hub">
                 <h2 class="admin-hub-title">Autres contenus visibles sur la page élève</h2>
                 <p class="context-hint admin-hub-lead">Activez ou désactivez l’affichage public. Les réglages détaillés restent dans chaque section dédiée.</p>
@@ -341,6 +309,46 @@
             </div>
 
             <div id="admin-suggestions-list" class="admin-suggestions-list"></div>
+            </div>
+            <div id="logs-panel-stream" class="logs-panel hidden">
+                <div class="logs-export-bar">
+                    <label class="logs-export-label">Télécharger les logs</label>
+                    <select id="logs-export-preset" class="control-select logs-export-select">
+                        <option value="today">Aujourd'hui (UTC)</option>
+                        <option value="24h">Dernières 24 h</option>
+                        <option value="7d">7 derniers jours</option>
+                        <option value="custom">Plage personnalisée</option>
+                    </select>
+                    <input type="date" id="logs-export-day" class="logs-export-input" title="Journée (pour préréglage ou plage)">
+                    <input type="datetime-local" id="logs-export-from" class="logs-export-input hidden" aria-label="Du">
+                    <input type="datetime-local" id="logs-export-to" class="logs-export-input hidden" aria-label="Au">
+                    <button type="button" class="btn btn-secondary btn-sm" id="logs-export-csv">CSV</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="logs-export-json">JSON</button>
+                </div>
+                <div class="logs-container">
+                    <div id="logs-list" class="logs-list"></div>
+                </div>
+            </div>
+            <div id="logs-panel-archive" class="logs-panel hidden">
+                <div class="archive-toolbar">
+                    <input type="search" id="archive-search" class="logs-export-input archive-search" placeholder="Rechercher (titre, texte, n°)…">
+                    <select id="archive-filter-status" class="control-select">
+                        <option value="">Tous les statuts</option>
+                    </select>
+                    <label class="archive-cb"><input type="checkbox" id="archive-deleted-only"> Supprimées uniquement</label>
+                    <button type="button" class="btn btn-primary btn-sm" id="archive-refresh">Actualiser</button>
+                </div>
+                <div class="archive-export-bar">
+                    <span class="logs-export-label">Export</span>
+                    <input type="number" id="archive-export-sid" class="logs-export-input narrow" placeholder="N° suggestion" min="1">
+                    <input type="date" id="archive-export-day" class="logs-export-input">
+                    <input type="datetime-local" id="archive-export-from" class="logs-export-input">
+                    <input type="datetime-local" id="archive-export-to" class="logs-export-input">
+                    <button type="button" class="btn btn-secondary btn-sm" id="archive-export-csv">CSV</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="archive-export-json">JSON</button>
+                </div>
+                <div id="archive-list" class="archive-list"></div>
+            </div>
         </section>
 
         <!-- Proposition Officielle CVL -->
@@ -1369,6 +1377,77 @@ Il y a un internat."></textarea>
                 <button type="button" class="btn btn-ghost" id="archive-detail-close">Fermer</button>
             </div>
             <div id="archive-detail-body" class="admin-modal-body"></div>
+        </div>
+    </div>
+
+    <div id="suggestion-editor-modal" class="admin-modal suggestion-editor-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="suggestion-editor-heading">
+        <div class="admin-modal-backdrop" id="suggestion-editor-backdrop"></div>
+        <div class="admin-modal-content admin-modal-content--xl suggestion-editor-popup">
+            <div class="suggestion-editor-popup-head">
+                <div>
+                    <p class="suggestion-editor-popup-kicker">Édition suggestion</p>
+                    <h2 id="suggestion-editor-heading" class="suggestion-editor-popup-title">—</h2>
+                </div>
+                <button type="button" class="btn btn-ghost suggestion-editor-popup-close" id="suggestion-editor-close" aria-label="Fermer">×</button>
+            </div>
+            <div class="admin-modal-body suggestion-editor-body">
+                <input type="hidden" id="suggestion-editor-id" value="">
+                <div class="form-group">
+                    <label for="suggestion-editor-title-input">Titre affiché</label>
+                    <input type="text" id="suggestion-editor-title-input" maxlength="220" autocomplete="off" class="suggestion-editor-title-field">
+                </div>
+                <div class="form-group">
+                    <label for="suggestion-editor-subtitle-input">Description (sous-titre sous le titre, page élève)</label>
+                    <div class="suggestion-editor-desc-block">
+                        <textarea id="suggestion-editor-subtitle-input" rows="5" maxlength="8000" placeholder="Résumé court affiché sous le titre…" class="suggestion-editor-subtitle-field"></textarea>
+                        <div class="suggestion-editor-desc-actions">
+                            <button type="button" class="btn btn-secondary btn-sm" id="suggestion-editor-regenerate" title="Recalculer avec la même logique que la génération automatique">Régénérer par IA</button>
+                            <span id="suggestion-editor-regenerate-hint" class="context-hint">À partir des textes listés ci-dessous (message d’origine, précisions, arguments débat).</span>
+                        </div>
+                    </div>
+                </div>
+                <section class="suggestion-editor-sources-section" aria-labelledby="suggestion-editor-sources-heading">
+                    <div class="suggestion-editor-sources-head">
+                        <h3 id="suggestion-editor-sources-heading" class="suggestion-editor-h3">Textes d’origine ayant nourri cette suggestion</h3>
+                        <span id="suggestion-editor-source-count" class="suggestion-editor-source-count" aria-live="polite"></span>
+                    </div>
+                    <p class="context-hint suggestion-editor-sources-lead">Message initial, puis précisions des soutiens avec texte, et arguments validés si la suggestion est en mode débat.</p>
+                    <div id="suggestion-editor-sources" class="suggestion-editor-sources-grid"></div>
+                    <p id="suggestion-editor-sources-empty" class="empty-msg suggestion-editor-sources-empty hidden">Aucun texte source enregistré pour cette fiche.</p>
+                </section>
+                <div class="suggestion-editor-actions">
+                    <button type="button" class="btn btn-primary" id="suggestion-editor-save">Enregistrer</button>
+                    <button type="button" class="btn btn-ghost" id="suggestion-editor-cancel">Fermer</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="admin-command-palette" class="admin-command-palette hidden" role="dialog" aria-modal="true" aria-labelledby="admin-command-palette-title">
+        <div class="admin-command-palette-backdrop" id="admin-command-palette-backdrop"></div>
+        <div class="admin-command-palette-box">
+            <label for="admin-command-palette-input" class="visually-hidden" id="admin-command-palette-title">Rechercher une section</label>
+            <input type="search" id="admin-command-palette-input" class="admin-command-palette-input" placeholder="Filtrer les sections…" autocomplete="off" spellcheck="false">
+            <ul id="admin-command-palette-list" class="admin-command-palette-list" role="listbox"></ul>
+            <p class="admin-command-palette-hint"><kbd>↑</kbd><kbd>↓</kbd> · <kbd>Entrée</kbd> · <kbd>Échap</kbd></p>
+        </div>
+    </div>
+
+    <div id="admin-shortcuts-modal" class="admin-modal hidden" role="dialog" aria-modal="true" aria-labelledby="admin-shortcuts-modal-title">
+        <div class="admin-modal-backdrop" id="admin-shortcuts-modal-backdrop"></div>
+        <div class="admin-modal-content admin-modal-content--lg">
+            <div class="admin-modal-header">
+                <h2 id="admin-shortcuts-modal-title">Raccourcis clavier</h2>
+                <button type="button" class="btn btn-ghost" id="admin-shortcuts-modal-close">Fermer</button>
+            </div>
+            <div class="admin-modal-body admin-shortcuts-body">
+                <ul class="admin-shortcuts-list">
+                    <li><span class="admin-shortcuts-keys"><kbd>Ctrl</kbd> + <kbd>K</kbd></span> Ouvrir « Aller à une section »</li>
+                    <li><span class="admin-shortcuts-keys"><kbd>/</kbd></span> Idem (hors champ de saisie)</li>
+                    <li><span class="admin-shortcuts-keys"><kbd>Échap</kbd></span> Fermer la fenêtre ouverte</li>
+                </ul>
+                <p class="context-hint">Désactivé pendant la saisie dans un champ, une zone de texte ou l’éditeur de notes.</p>
+            </div>
         </div>
     </div>
 
