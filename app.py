@@ -1970,12 +1970,12 @@ _music_poll_preview_enrich_last: dict[int, float] = {}
 
 
 def _music_poll_deezer_preview_fallback() -> bool:
-    """Si True, complète l’extrait MP3 via Deezer quand Spotify ne renvoie pas preview_url."""
-    return get_setting("music_poll_deezer_preview_fallback", "false").lower() in ("1", "true", "yes")
+    """Si True (défaut), complète l’extrait MP3 via Deezer quand Spotify ne renvoie pas preview_url — comme à l’origine."""
+    return get_setting("music_poll_deezer_preview_fallback", "true").lower() in ("1", "true", "yes")
 
 
 def _maybe_enrich_track_preview(t: MusicTrack) -> None:
-    """Si pas d’URL d’extrait en base, tente Spotify+Deezer ou Deezer seul (recherche)."""
+    """Si pas d’URL d’extrait en base, tente Spotify (+ secours Deezer si activé) ou Deezer seul sans Spotify."""
     if t.preview_url:
         return
     tid = int(t.id)
@@ -2183,7 +2183,7 @@ def admin_spotify_settings():
                 "client_secret_configured": bool(resolved_sec),
                 "client_secret_hint": _spotify_secret_hint(resolved_sec) if resolved_sec else None,
                 "configured": music_utils.spotify_credentials_configured(),
-                "music_poll_deezer_preview_fallback": get_setting("music_poll_deezer_preview_fallback", "false")
+                "music_poll_deezer_preview_fallback": get_setting("music_poll_deezer_preview_fallback", "true")
                 == "true",
                 "env_fallback_active": {
                     "client_id": bool(env_cid) and not dbcid,

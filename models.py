@@ -335,7 +335,7 @@ class SiteSettings(db.Model):
         "feature_cvl_official_info_enabled": "true",
         "feature_ringtone_banner_enabled": "false",
         "ringtone_selection_json": "",
-        "music_poll_deezer_preview_fallback": "false",
+        "music_poll_deezer_preview_fallback": "true",
     }
 
 

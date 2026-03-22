@@ -205,10 +205,10 @@ def _preview_url_from_spotify_track_data(data: dict, *, deezer_preview_fallback:
     return _deezer_preview_from_search(artists, title)
 
 
-def fetch_spotify_track_metadata(spotify_url: str, *, deezer_preview_fallback: bool = False) -> dict:
+def fetch_spotify_track_metadata(spotify_url: str, *, deezer_preview_fallback: bool = True) -> dict:
     """
     Retourne titre, artiste, album, pochette, preview_url.
-    preview_url provient de l’API Spotify sauf si deezer_preview_fallback=True et que Spotify ne fournit pas d’extrait.
+    Par défaut, si Spotify ne fournit pas preview_url, complète via Deezer (comportement historique).
     Ne plante jamais (fallbacks en cas d'erreur API).
     Lève ValueError uniquement si l'URL est invalide.
     """
