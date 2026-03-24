@@ -7783,10 +7783,25 @@ with app.app_context():
         for stmt in (
             "ALTER TABLE proposal_arguments ADD COLUMN reject_reason TEXT DEFAULT ''",
             "ALTER TABLE suggestions ADD COLUMN reject_reason TEXT DEFAULT ''",
-            # Anciennes BDD sans migration manuelle (sinon OperationalError sur /api/suggestions)
             "ALTER TABLE suggestions ADD COLUMN importance_score REAL DEFAULT 0",
             "ALTER TABLE suggestions ADD COLUMN subtitle_generated_at_support_count INTEGER DEFAULT 0",
             "ALTER TABLE music_tracks ADD COLUMN preview_cache_filename VARCHAR(64)",
+            # NFC-V2.4: colonnes NFC + hype
+            "ALTER TABLE suggestions ADD COLUMN nfc_location_id INTEGER REFERENCES nfc_locations(id)",
+            "ALTER TABLE suggestions ADD COLUMN source VARCHAR(10) DEFAULT 'web'",
+            "ALTER TABLE suggestions ADD COLUMN confirmation_count INTEGER DEFAULT 0",
+            "ALTER TABLE suggestions ADD COLUMN last_confirmed_at DATETIME",
+            "ALTER TABLE suggestions ADD COLUMN resolved_by_admin INTEGER DEFAULT 0",
+            "ALTER TABLE suggestions ADD COLUMN admin_reply TEXT",
+            "ALTER TABLE suggestions ADD COLUMN admin_reply_at DATETIME",
+            "ALTER TABLE suggestions ADD COLUMN support_count INTEGER DEFAULT 0",
+            "ALTER TABLE suggestions ADD COLUMN reopened_at DATETIME",
+            "ALTER TABLE suggestions ADD COLUMN hype_count INTEGER DEFAULT 0",
+            "ALTER TABLE nfc_locations ADD COLUMN pause_suggestions INTEGER DEFAULT 0",
+            "ALTER TABLE nfc_locations ADD COLUMN pause_confirmations INTEGER DEFAULT 0",
+            "ALTER TABLE nfc_locations ADD COLUMN base_location_id INTEGER REFERENCES locations(id)",
+            "ALTER TABLE nfc_locations ADD COLUMN sub_location VARCHAR(200)",
+            "ALTER TABLE nfc_locations ADD COLUMN custom_detail VARCHAR(200)",
         ):
             try:
                 db.session.execute(_sql_text(stmt))
