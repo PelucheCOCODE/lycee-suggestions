@@ -759,8 +759,33 @@ body.student-phone-ui .phone-swipe-content {
 .swipe-card-layer.swipe-layer-entering.swipe-layer-enter-active {
     opacity: 1;
     transform: translateY(0) scale(1);
-    /* FIX-FINAL-5: entrée carte suivante — courbe un peu plus douce (mobile) */
     transition: opacity 0.36s cubic-bezier(0.22, 1, 0.36, 1), transform 0.44s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── Directional swipe transitions (TikTok/Insta style) ──────────── */
+.swipe-card-layer.swipe-enter-from-right {
+    opacity: 0; transform: translateX(38%) scale(0.94); will-change: opacity, transform;
+}
+.swipe-card-layer.swipe-enter-from-left {
+    opacity: 0; transform: translateX(-38%) scale(0.94); will-change: opacity, transform;
+}
+.swipe-card-layer.swipe-enter-active {
+    opacity: 1; transform: translateX(0) scale(1);
+    transition: opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1), transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.swipe-card-layer.swipe-exit-to-left {
+    animation: swipe-fly-left 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+.swipe-card-layer.swipe-exit-to-right {
+    animation: swipe-fly-right 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+@keyframes swipe-fly-left {
+    0%   { opacity: 1; transform: translateX(0) scale(1) rotate(0deg); }
+    100% { opacity: 0; transform: translateX(-45%) scale(0.92) rotate(-4deg); }
+}
+@keyframes swipe-fly-right {
+    0%   { opacity: 1; transform: translateX(0) scale(1) rotate(0deg); }
+    100% { opacity: 0; transform: translateX(45%) scale(0.92) rotate(4deg); }
 }
 
 .swipe-card-layer {
@@ -987,14 +1012,10 @@ body.st-phone-swipe .swipe-counter-wrap {
     right: 0;
     top: 0;
     pointer-events: none;
-    transform: scale(0.96);
-    opacity: 0.92;
-    filter: saturate(0.95);
     z-index: 1;
+    visibility: hidden;
 }
 .swipe-card-slot-2 {
-    transform: scale(0.92);
-    opacity: 0.78;
     z-index: 0;
 }
 .swipe-card-slot-0 {
@@ -1617,8 +1638,13 @@ body.student-phone-ui.st-phone-list .suggestions-grid {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .swipe-card-layer.swipe-layer-entering.swipe-layer-enter-active {
+    .swipe-card-layer.swipe-layer-entering.swipe-layer-enter-active,
+    .swipe-card-layer.swipe-enter-active {
         transition: opacity 0.18s ease;
+    }
+    .swipe-card-layer.swipe-exit-to-left,
+    .swipe-card-layer.swipe-exit-to-right {
+        animation-duration: 0.12s;
     }
 }
 .suggestions-depop .suggestion-card,
@@ -1938,6 +1964,30 @@ body.student-phone-ui.st-phone-list .suggestion-card:not(.suggestion-card-debate
 }
 @media (max-width: 640px) {
     .hype-btn { padding: 0.35rem 0.6rem; font-size: 0.9rem; }
+}
+
+/* ── Mood result card (liked view) ────────────────────────────────── */
+.mood-result-card {
+    border-radius: 18px; padding: 1.1rem 1.2rem; margin-bottom: 0.8rem;
+    background: linear-gradient(135deg, #f0e6ff 0%, #e8f4ff 100%);
+    border: 1.5px solid rgba(139,92,246,.18);
+}
+.mood-result-inner { text-align: center; }
+.mood-result-badge {
+    display: inline-block; font-size: .7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; background: rgba(139,92,246,.15); color: #7c3aed;
+    padding: 2px 10px; border-radius: 99px; margin-bottom: .45rem;
+}
+.mood-result-title { font-size: 1rem; font-weight: 700; margin: .35rem 0 .65rem; color: #1e1b4b; }
+.mood-result-grid { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.mood-result-btn {
+    padding: .4rem .75rem; border-radius: 12px; font-size: .85rem; font-weight: 600;
+    background: rgba(255,255,255,.7); color: #64748b; border: 1.5px solid transparent;
+    transition: all .2s ease;
+}
+.mood-result-btn--selected {
+    background: #7c3aed; color: #fff; border-color: #7c3aed;
+    box-shadow: 0 2px 10px rgba(124,58,237,.3);
 }
 
 .suggestion-vote-wrap {

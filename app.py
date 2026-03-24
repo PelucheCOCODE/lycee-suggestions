@@ -857,6 +857,7 @@ def engagement_bootstrap():
     pct, connected, my_score = _percentile_rank_today(session_id)
     row = DailySessionActivity.query.filter_by(session_id=session_id, day=day).first()
     done = [x.card_type for x in EngagementCardDone.query.filter_by(session_id=session_id, day=day).all()]
+    my_mood_row = DailyMood.query.filter_by(session_id=session_id, day=day).first()
     guessed_sids = {g.suggestion_id for g in EngagementGuess.query.filter_by(session_id=session_id).all()}
     query = Suggestion.query.filter(
         Suggestion.status != "En attente",
@@ -872,6 +873,7 @@ def engagement_bootstrap():
         "swipes_today": row.swipe_count if row else 0,
         "likes_today": row.like_count if row else 0,
         "cards_done_today": done,
+        "my_mood": my_mood_row.mood if my_mood_row else None,
         "guess_eligible_ids": guess_eligible_ids,
         "dilemma": _dilemma_payload_for_session(session_id, day),
         "music_polls": [mp] if mp else [],
@@ -9243,6 +9245,7 @@ def nfc_follow(slug):
     return jsonify({"ok": True, "following": True})
 
 
+@app.route("/api/notifications", methods=["GET"])
 @app.route("/api/nfc/notifications", methods=["GET"])
 def nfc_notifications():
     """NFC-V2.2-ADMIN: notifications pour la session courante."""
@@ -9250,18 +9253,27 @@ def nfc_notifications():
     session_id = get_session_id()
     notifs = NfcNotification.query.filter_by(session_id=session_id).order_by(
         NfcNotification.created_at.desc()
-    ).limit(50).all()
-    unread = sum(1 for n in notifs if not n.is_read)
+    ).limit(100).all()
+    # NFC-V2.4: deduplicate — keep only the latest notification per suggestion
+    seen_sids = {}
+    deduped = []
+    for n in notifs:
+        key = n.suggestion_id or n.id
+        if key not in seen_sids:
+            seen_sids[key] = True
+            deduped.append(n)
+    unread = sum(1 for n in deduped if not n.is_read)
     return jsonify({
         "notifications": [{
             "id": n.id, "type": n.notif_type, "message": n.message,
             "suggestion_id": n.suggestion_id, "is_read": n.is_read,
             "created_at": n.created_at.isoformat() if n.created_at else None,
-        } for n in notifs],
+        } for n in deduped[:50]],
         "unread_count": unread,
     })
 
 
+@app.route("/api/notifications/read", methods=["POST"])
 @app.route("/api/nfc/notifications/read", methods=["POST"])
 def nfc_notifications_read():
     """NFC-V2.2-ADMIN: marquer des notifications comme lues."""

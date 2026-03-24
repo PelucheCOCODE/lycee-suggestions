@@ -1594,6 +1594,11 @@ function renderSuggestions(withAnimation = true) {
     }
     emptyState.classList.add("hidden");
 
+    if (isTouchDevice() && phoneUiMode === "list" && phoneListLikedOnly) {
+        const myMood = engagementBootstrap?.my_mood;
+        if (myMood) html += createMoodResultCard(myMood);
+    }
+
     const showCount = expanded ? listSource.length : Math.min(INITIAL_SHOW, listSource.length);
     const visible = listSource.slice(0, showCount);
     html += visible.map((s, i) => createSuggestionCard(s, i, showCount, withAnimation, listSource.length)).join("");
@@ -2816,6 +2821,15 @@ function initTttUi() {
     }
 }
 
+const MOOD_LABELS = { bien: "😄 Bien", bof: "😐 Bof", fatigue: "😴 Fatigué", stresse: "😤 Stressé" };
+function createMoodResultCard(myMood) {
+    const btns = Object.entries(MOOD_LABELS).map(([k, label]) => {
+        const sel = k === myMood ? " mood-result-btn--selected" : "";
+        return `<span class="mood-result-btn${sel}">${label}</span>`;
+    }).join("");
+    return `<div class="mood-result-card"><div class="mood-result-inner"><span class="mood-result-badge">Humeur</span><p class="mood-result-title">Ton humeur aujourd'hui</p><div class="mood-result-grid">${btns}</div></div></div>`;
+}
+
 function createSpecialCardHtml(item) {
     const b = engagementBootstrap || {};
     const connected = b.connected_today ?? 0;
@@ -3177,13 +3191,21 @@ function createEndCardHtml(item) {
     </div>`;
 }
 
+/** Direction de la dernière transition : "next" | "prev" | null */
+let _swipeTransitionDir = null;
+let _swipeAnimating = false;
+
 /** FIX-3: pile 3 slots — slot0 interactif, 1–2 en arrière-plan (CSS pointer-events: none) */
 function injectSwipeStackSlots(html0, html1, html2) {
-    // FIX-FINAL-2: avant remplacement DOM — drag / lock / double-tap / labels
     if (typeof swipeGestureReset === "function") swipeGestureReset();
     const empty = `<div class="swipe-card-slot-empty" aria-hidden="true"></div>`;
+    const dir = _swipeTransitionDir;
+    _swipeTransitionDir = null;
+    const enterCls = dir === "next" ? "swipe-enter-from-right"
+        : dir === "prev" ? "swipe-enter-from-left"
+        : "swipe-layer-entering";
     const w0 = html0
-        ? `<div id="swipe-active-layer" class="swipe-card-layer swipe-layer-entering">${html0}</div>`
+        ? `<div id="swipe-active-layer" class="swipe-card-layer ${enterCls}">${html0}</div>`
         : empty;
     const w1 = html1 ? `<div class="swipe-card-layer swipe-card-layer--back">${html1}</div>` : empty;
     const w2 = html2 ? `<div class="swipe-card-layer swipe-card-layer--back">${html2}</div>` : empty;
@@ -3196,10 +3218,24 @@ function injectSwipeStackSlots(html0, html1, html2) {
     requestAnimationFrame(() => {
         requestAnimationFrame(() => {
             const el = document.getElementById("swipe-active-layer");
-            if (el) el.classList.add("swipe-layer-enter-active");
+            if (!el) return;
+            if (dir === "next") el.classList.replace("swipe-enter-from-right", "swipe-enter-active");
+            else if (dir === "prev") el.classList.replace("swipe-enter-from-left", "swipe-enter-active");
+            else el.classList.add("swipe-layer-enter-active");
         });
     });
     persistSwipeDeckAnchor();
+}
+
+function _animateSwipeExit(dir, cb) {
+    const layer = swipeDeckInner?.querySelector("#swipe-active-layer");
+    if (!layer) { cb(); return; }
+    _swipeAnimating = true;
+    const cls = dir === "next" ? "swipe-exit-to-left" : "swipe-exit-to-right";
+    layer.classList.add(cls);
+    const done = () => { _swipeAnimating = false; cb(); };
+    layer.addEventListener("animationend", done, { once: true });
+    setTimeout(done, 360);
 }
 
 function renderSwipeView() {
@@ -3264,62 +3300,63 @@ function renderSwipeView() {
     injectSwipeStackSlots(htmlForSwipeDeckItem(item), htmlForSwipeDeckItem(next), htmlForSwipeDeckItem(next2));
 }
 
-function swipeGoNext() {
+function _swipeGoNextImmediate() {
     const list = swipeDeckItems;
     if (list.length === 0) return;
 
     if (swipeIndex >= list.length - 1) {
         const cur = list[swipeIndex];
-        if (cur && cur.kind === "suggestion") {
+        if (cur && cur.kind === 'end') return;
+        if (cur && cur.kind === 'suggestion') {
             swipeConsumedIds.add(cur.id);
             saveSwipeConsumedIds();
             SwipeHistory.markSeen(String(cur.id));
-            showFeedback("Plus de nouvelles suggestions.", "info");
-            buildSwipeDeck();
-            lastSwipeDeckSig = computeSwipeDeckSig();
-            swipeIndex = 0;
-            try {
-                sessionStorage.removeItem(SWIPE_DECK_ANCHOR_KEY);
-            } catch (e) {
-                /* ignore */
-            }
-            renderSwipeView();
-            return;
         }
-        /* Dernière carte = engagement / jeu : enchaîner sur l’écran d’accès likes / liste / ignorés (les cartes `end` explicites restent gérées par les boutons) */
-        if (cur && cur.kind === "special") {
-            swipeDeckItems = [{ kind: "end", type: "session_done" }];
-            swipeIndex = 0;
-            try {
-                sessionStorage.removeItem(SWIPE_DECK_ANCHOR_KEY);
-            } catch (e) {
-                /* ignore */
-            }
-            renderSwipeView();
-            return;
+        if (!list.some(it => it.kind === 'end')) {
+            swipeDeckItems.push({ kind: 'end', type: 'session_done' });
         }
-        showFeedback("Plus de nouvelles suggestions.", "info");
+        swipeIndex = swipeDeckItems.length - 1;
+        _swipeTransitionDir = 'next';
+        renderSwipeView();
         return;
     }
 
     const cur = list[swipeIndex];
-    if (cur && cur.kind === "suggestion") {
+    if (cur && cur.kind === 'suggestion') {
         swipeConsumedIds.add(cur.id);
         saveSwipeConsumedIds();
         SwipeHistory.markSeen(String(cur.id));
     }
     swipeIndex++;
     engagementPingSwipe();
+    _swipeTransitionDir = 'next';
     renderSwipeView();
 }
 
+function swipeGoNext() {
+    if (_swipeAnimating) return;
+    const layer = swipeDeckInner ? swipeDeckInner.querySelector('#swipe-active-layer') : null;
+    const m = layer && layer.style.transform ? layer.style.transform.match(/translateX\(([^)]+)\)/) : null;
+    const tx = m ? parseFloat(m[1]) : 0;
+    if (Math.abs(tx) > 60) { _swipeGoNextImmediate(); return; }
+    _animateSwipeExit('next', _swipeGoNextImmediate);
+}
+
 function swipeGoPrev() {
+    if (_swipeAnimating) return;
     const list = swipeDeckItems;
-    if (list.length === 0) return;
-    if (swipeIndex <= 0) return;
-    swipeIndex--;
-    engagementPingSwipe();
-    renderSwipeView();
+    if (list.length === 0 || swipeIndex <= 0) return;
+    const layer = swipeDeckInner ? swipeDeckInner.querySelector('#swipe-active-layer') : null;
+    const m = layer && layer.style.transform ? layer.style.transform.match(/translateX\(([^)]+)\)/) : null;
+    const tx = m ? parseFloat(m[1]) : 0;
+    const doRender = () => {
+        swipeIndex--;
+        engagementPingSwipe();
+        _swipeTransitionDir = 'prev';
+        renderSwipeView();
+    };
+    if (Math.abs(tx) > 60) { doRender(); return; }
+    _animateSwipeExit('prev', doRender);
 }
 
 function attachSwipeDeckGestures() {
@@ -3442,10 +3479,6 @@ function attachSwipeDeckGestures() {
                 return;
             }
             const curIt = swipeDeckItems[swipeIndex];
-            if (curIt && curIt.kind === "end") {
-                tracking = false;
-                return;
-            }
             const layer = getLayer();
             if (!layer) return;
             const t = e.touches[0];
@@ -3492,9 +3525,12 @@ function attachSwipeDeckGestures() {
             const { nope, yep, up, down } = labelEls();
 
             const k = gestureLocked?.kind;
+            const _isEndCard = item && item.kind === "end";
             if (k === "h") {
-                const rot = mx * GESTURE_CONFIG.ROT_X_FACTOR;
-                layer.style.transform = `translateX(${mx}px) translateZ(0) rotate(${rot}deg)`;
+                let effMx = mx;
+                if (_isEndCard && mx < 0) effMx = mx * 0.18;
+                const rot = effMx * GESTURE_CONFIG.ROT_X_FACTOR;
+                layer.style.transform = `translateX(${effMx}px) translateZ(0) rotate(${rot}deg)`;
                 const p = Math.min(1, Math.abs(mx) / 100);
                 if (nope && yep) {
                     if (mx < 0) {
@@ -3565,6 +3601,13 @@ function attachSwipeDeckGestures() {
 
             const commitHorizontal = () => {
                 const goNext = mx < 0;
+                const isEnd = item && item.kind === "end";
+                if (goNext && isEnd) {
+                    springLayer(layer);
+                    resetLabels();
+                    swipeLastTap = 0;
+                    return;
+                }
                 if (!goNext && swipeIndex <= 0) {
                     springLayer(layer);
                     resetLabels();
