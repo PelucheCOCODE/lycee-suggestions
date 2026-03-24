@@ -54,6 +54,7 @@ def main():
         "display.js",
         "tv.js",
         "displaybus.js",
+        "nfc.js",
     ]:
         p = os.path.join(STATIC, "js", name)
         if os.path.exists(p):

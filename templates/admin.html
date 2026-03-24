@@ -8,6 +8,10 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
     <link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
+    <!-- NFC-V2.3-UI: Cropper.js + QRCode.js -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4/dist/chart.umd.min.js"></script>
 </head>
 <body class="admin-body">
@@ -44,6 +48,11 @@
                 <button type="button" class="nav-item" data-section="trace">Traçabilité</button>
                 <button type="button" class="nav-item" data-section="calibration-verify">Vérification calibration</button>
                 <button type="button" class="nav-item" data-section="llm-resources">Ressources IA</button>
+            </div>
+            <!-- NFC-V2: section dédiée maintenance terrain -->
+            <div class="admin-nav-block">
+                <div class="nav-group-label">Terrain &amp; NFC</div>
+                <button type="button" class="nav-item" data-section="nfc">NFC / Signalements</button>
             </div>
             <div class="admin-nav-block">
                 <div class="nav-group-label">Médias &amp; affichage</div>
@@ -93,6 +102,14 @@
                 <div class="stat-card"><div class="stat-info"><span id="stat-votes" class="stat-value">—</span><span class="stat-label">Votes totaux</span></div></div>
                 <div class="stat-card"><div class="stat-info"><span id="stat-accepted" class="stat-value">—</span><span class="stat-label">Acceptées</span></div></div>
                 <div class="stat-card"><div class="stat-info"><span id="stat-pending" class="stat-value">—</span><span class="stat-label">En attente</span></div></div>
+            </div>
+
+            <div class="admin-messages-today-card" id="admin-section-messages">
+                <h2 class="admin-messages-today-h2">💬 Messages du jour (carte swipe)</h2>
+                <p class="context-hint">Messages libres envoyés depuis la carte « Message aux autres » (modérés).</p>
+                <div id="admin-messages-today" class="admin-messages-today-list">
+                    <p class="admin-loading">Chargement…</p>
+                </div>
             </div>
 
             <div class="admin-controls-card">
@@ -245,24 +262,29 @@
         <!-- Suggestions (liste, logs, archive) -->
         <section id="section-suggestions" class="admin-section">
             <div class="section-header">
-                <h1>Suggestions &amp; suivi</h1>
-                <span class="context-hint">Liste en cours, journal d’activité, et copie complète des fiches (y compris supprimées).</span>
-                <div class="section-header-actions">
-                    <button type="button" id="process-pending-btn" class="btn btn-primary">Traiter les suggestions en attente</button>
-                </div>
+                <h1>Gestion des suggestions</h1>
+                <span class="context-hint">Consultez, modifiez et suivez les suggestions des élèves.</span>
+                
                 <div id="suggestion-focus-panel" class="suggestion-focus-panel hidden" aria-live="polite"></div>
             </div>
             <div class="logs-tabs" role="tablist">
-                <button type="button" class="logs-tab active" data-logs-tab="list" role="tab" aria-selected="true">Liste &amp; édition</button>
-                <button type="button" class="logs-tab" data-logs-tab="stream" role="tab" aria-selected="false">Logs en direct</button>
-                <button type="button" class="logs-tab" data-logs-tab="archive" role="tab" aria-selected="false">Historique &amp; export</button>
+                <button type="button" class="logs-tab active" data-logs-tab="list" role="tab" aria-selected="true">Suggestions</button>
+                <button type="button" class="logs-tab" data-logs-tab="stream" role="tab" aria-selected="false">Journal</button>
+                <button type="button" class="logs-tab" data-logs-tab="archive" role="tab" aria-selected="false">Archives</button>
             </div>
             <div id="sug-panel-list" class="logs-panel logs-panel-active">
-                <div class="section-filters">
-                    <select id="admin-filter-category"><option value="">Toutes les catégories</option></select>
-                    <select id="admin-filter-status"><option value="">Tous les statuts</option></select>
-                    <input type="search" id="admin-search" placeholder="Rechercher...">
+                <div class="asg-status-bar" id="asg-status-bar">
+                    <button class="asg-status-tab asg-status-tab--active" data-asg-status="accepted">Acceptées</button>
+                    <button class="asg-status-tab" data-asg-status="pending">En attente</button>
+                    <button class="asg-status-tab" data-asg-status="refused">Refusées</button>
+                    <button class="asg-status-tab" data-asg-status="all">Tout voir</button>
                 </div>
+                <div class="asg-filter-bar">
+                    <select id="admin-filter-category"><option value="">Toutes catégories</option></select>
+                    <input type="search" id="admin-search" placeholder="Rechercher une suggestion...">
+                    <span class="asg-count" id="asg-count"></span>
+                </div>
+                <select id="admin-filter-status" hidden><option value="">Tous les statuts</option></select>
             <div id="admin-suggestions-hub" class="admin-suggestions-hub">
                 <h2 class="admin-hub-title">Autres contenus visibles sur la page élève</h2>
                 <p class="context-hint admin-hub-lead">Activez ou désactivez l’affichage public. Les réglages détaillés restent dans chaque section dédiée.</p>
@@ -1048,6 +1070,278 @@ Il y a un internat."></textarea>
                     <p id="ringtone-active-poll-empty" class="context-hint hidden">Aucun sondage actif. Activez un sondage dans l’onglet Sondage.</p>
                     <div id="ringtone-poll-results-clickable" class="music-poll-results-admin"></div>
                 </div>
+            </div>
+        </section>
+
+        <!-- NFC-V2.3-UI: Section admin dédiée NFC -->
+        <section id="section-nfc" class="admin-section">
+            <div class="section-header">
+                <h1>NFC / Signalements terrain</h1>
+            </div>
+
+            <!-- NFC-V2.3-UI: onglets internes -->
+            <div class="admin-nfc-tabs" id="admin-nfc-tabs">
+                <button class="admin-nfc-tab admin-nfc-tab--active" data-nfc-tab="overview">Vue d'ensemble</button>
+                <button class="admin-nfc-tab" data-nfc-tab="locations">Lieux</button>
+                <button class="admin-nfc-tab" data-nfc-tab="history">Historique</button>
+                <button class="admin-nfc-tab" data-nfc-tab="logs">Logs</button>
+                <button class="admin-nfc-tab" data-nfc-tab="settings">Réglages</button>
+                <button class="admin-nfc-tab" data-nfc-tab="guide">Guide</button>
+            </div>
+
+            <!-- NFC-V2.3-UI: Onglet Vue d'ensemble -->
+            <div class="admin-nfc-tabcontent" id="admin-nfc-tab-overview">
+                <div class="admin-nfc-dashboard" id="admin-nfc-dashboard"></div>
+                <h3 class="admin-nfc-section-title">Activité récente <small>(auto-refresh 15s)</small></h3>
+                <div class="admin-nfc-feed" id="admin-nfc-feed">
+                    <p class="admin-nfc-loading">Chargement…</p>
+                </div>
+            </div>
+
+            <!-- NFC-V2.3-UI: Onglet Lieux — formulaire structuré -->
+            <div class="admin-nfc-tabcontent" id="admin-nfc-tab-locations" hidden>
+                <h3 class="admin-nfc-section-title">Ajouter un lieu NFC</h3>
+                <div class="admin-nfc-create-form" id="admin-nfc-create-form">
+                    <!-- NFC-V2.4: formulaire basé sur lieux existants -->
+                    <div class="admin-nfc-form-grid">
+                        <div class="admin-nfc-form-group">
+                            <label class="admin-nfc-form-label" for="nfc-new-base-location">Lieu principal existant</label>
+                            <span class="admin-nfc-form-hint">Sélectionnez un lieu depuis « Communication & lieux »</span>
+                            <select id="nfc-new-base-location" class="admin-nfc-form-input">
+                                <option value="">— Chargement… —</option>
+                            </select>
+                        </div>
+                        <div class="admin-nfc-form-group">
+                            <label class="admin-nfc-form-label" for="nfc-new-sub-location">Sous-emplacement</label>
+                            <select id="nfc-new-sub-location" class="admin-nfc-form-input">
+                                <option value="">— Aucun —</option>
+                            </select>
+                        </div>
+                        <div class="admin-nfc-form-group">
+                            <label class="admin-nfc-form-label" for="nfc-new-custom-detail">Détail personnalisé</label>
+                            <span class="admin-nfc-form-hint">Optionnel : « Petit self », « Toilette gauche »…</span>
+                            <input type="text" id="nfc-new-custom-detail" class="admin-nfc-form-input" placeholder="ex : Coin casiers 2">
+                        </div>
+                        <div class="admin-nfc-form-group">
+                            <label class="admin-nfc-form-label" for="nfc-new-name">Nom du lieu NFC</label>
+                            <input type="text" id="nfc-new-name" class="admin-nfc-form-input" placeholder="ex : Toilettes B2">
+                        </div>
+                        <div class="admin-nfc-form-group">
+                            <label class="admin-nfc-form-label" for="nfc-new-category">Catégorie</label>
+                            <select id="nfc-new-category" class="admin-nfc-form-input">
+                                <option value="Général">Général</option>
+                                <option value="Sanitaire">Sanitaire</option>
+                                <option value="Salle de cours">Salle de cours</option>
+                                <option value="Cantine">Cantine</option>
+                                <option value="CDI">CDI</option>
+                                <option value="Hall">Hall</option>
+                                <option value="Couloir">Couloir</option>
+                                <option value="Extérieur">Extérieur</option>
+                                <option value="Autre">Autre</option>
+                            </select>
+                        </div>
+                        <div class="admin-nfc-form-group">
+                            <label class="admin-nfc-form-label" for="nfc-new-floor">Étage</label>
+                            <input type="text" id="nfc-new-floor" class="admin-nfc-form-input" placeholder="ex : 2e étage">
+                        </div>
+                        <div class="admin-nfc-form-group admin-nfc-form-group--full">
+                            <label class="admin-nfc-form-label" for="nfc-new-description">Description</label>
+                            <span class="admin-nfc-form-hint">Optionnel — aide les élèves à identifier le lieu</span>
+                            <input type="text" id="nfc-new-description" class="admin-nfc-form-input" placeholder="ex : Sanitaires garçons à côté du hall principal">
+                        </div>
+                        <div class="admin-nfc-form-actions">
+                            <button class="btn btn-primary" id="nfc-create-btn">Créer le lieu</button>
+                        </div>
+                    </div>
+                </div>
+                <h3 class="admin-nfc-section-title">Lieux NFC</h3>
+                <div class="admin-nfc-location-grid" id="admin-nfc-locations"></div>
+            </div>
+
+            <!-- NFC-V2.3-UI: Onglet Historique -->
+            <div class="admin-nfc-tabcontent" id="admin-nfc-tab-history" hidden>
+                <div class="admin-nfc-history-filters">
+                    <select id="nfc-history-status" class="admin-nfc-form-input">
+                        <option value="">Tous les statuts</option>
+                        <option value="open">Ouverts</option>
+                        <option value="in_progress">En cours</option>
+                        <option value="resolved">Résolus</option>
+                        <option value="deleted">Supprimés</option>
+                    </select>
+                    <button class="btn btn-sm" id="nfc-history-load">Charger</button>
+                </div>
+                <div id="admin-nfc-history-list"></div>
+                <div id="admin-nfc-history-pagination" class="admin-nfc-pagination"></div>
+            </div>
+
+            <!-- NFC-V2.3-UI: Onglet Logs -->
+            <div class="admin-nfc-tabcontent" id="admin-nfc-tab-logs" hidden>
+                <div class="admin-nfc-history-filters">
+                    <select id="nfc-logs-days" class="admin-nfc-form-input">
+                        <option value="3">3 derniers jours</option>
+                        <option value="7" selected>7 derniers jours</option>
+                        <option value="30">30 derniers jours</option>
+                    </select>
+                    <button class="btn btn-sm" id="nfc-logs-load">Charger</button>
+                    <button class="btn btn-sm btn-secondary" id="nfc-logs-export" style="margin-left:auto">Exporter CSV</button>
+                </div>
+                <div id="admin-nfc-logs-content"></div>
+            </div>
+
+            <!-- NFC-V2.3-UI: Onglet Réglages -->
+            <div class="admin-nfc-tabcontent" id="admin-nfc-tab-settings" hidden>
+                <div id="admin-nfc-settings-form" class="admin-nfc-settings-grid"></div>
+                <button class="btn btn-primary" id="nfc-settings-save" style="margin-top:1rem">Enregistrer</button>
+            </div>
+
+            <!-- NFC-V2.4: Onglet Guide -->
+            <div class="admin-nfc-tabcontent" id="admin-nfc-tab-guide" hidden>
+                <div class="admin-nfc-guide">
+                    <h3 class="admin-nfc-guide-title">Comment fonctionne le système NFC ?</h3>
+                    <p class="admin-nfc-guide-intro">
+                        Ce module permet aux élèves de signaler des problèmes dans le lycée en scannant
+                        des <b>tags NFC</b> (ou QR codes) placés à des endroits précis. Voici le fonctionnement de A à Z.
+                    </p>
+
+                    <details class="admin-nfc-guide-section" open>
+                        <summary>1. Les lieux NFC — c'est quoi ?</summary>
+                        <p>
+                            Un <b>lieu NFC</b> est un endroit physique du lycée (toilettes, cantine, couloir…)
+                            auquel on associe un <b>tag NFC</b> ou un <b>QR code</b> collé sur place.
+                        </p>
+                        <p>
+                            Quand un élève scanne le tag avec son téléphone, il arrive sur une page dédiée
+                            à ce lieu, où il peut voir les problèmes déjà signalés et en ajouter de nouveaux.
+                        </p>
+                    </details>
+
+                    <details class="admin-nfc-guide-section">
+                        <summary>2. Comment créer un lieu ?</summary>
+                        <p>
+                            Allez dans l'onglet <b>Lieux</b>, remplissez le formulaire (nom, bâtiment, étage, catégorie…)
+                            et cliquez <b>Créer le lieu</b>. Le système génère automatiquement un lien unique et un QR code.
+                        </p>
+                        <p>
+                            Vous pouvez optionnellement relier le lieu à un emplacement existant de la section
+                            « Communication & lieux » pour garder la cohérence.
+                        </p>
+                    </details>
+
+                    <details class="admin-nfc-guide-section">
+                        <summary>3. Tags NFC et QR codes</summary>
+                        <p>
+                            Chaque lieu possède un <b>QR code</b> téléchargeable (cliquez sur un lieu → QR Code → Télécharger).
+                            Imprimez-le et collez-le à l'endroit concerné. Les élèves peuvent le scanner avec l'appareil photo de leur téléphone.
+                        </p>
+                        <p>
+                            Pour les <b>tags NFC</b>, procurez-vous des pastilles NFC vierges (quelques euros en ligne),
+                            programmez-les avec le lien du lieu (visible dans les détails du lieu), et collez-les sur place.
+                            Les élèves scannent en approchant leur téléphone du tag.
+                        </p>
+                    </details>
+
+                    <details class="admin-nfc-guide-section">
+                        <summary>4. Comment les élèves signalent un problème ?</summary>
+                        <p>
+                            L'élève scanne le tag ou QR code → il arrive sur la page du lieu →
+                            il décrit le problème en quelques mots → l'IA reformule et catégorise automatiquement
+                            le signalement → le problème apparaît dans le tableau de bord.
+                        </p>
+                        <p>
+                            L'élève peut aussi <b>confirmer</b> un problème déjà signalé par quelqu'un d'autre
+                            (il faut être sur place avec le tag), ce qui augmente sa priorité.
+                        </p>
+                    </details>
+
+                    <details class="admin-nfc-guide-section">
+                        <summary>5. Confirmer vs Soutenir — quelle différence ?</summary>
+                        <p>
+                            <b>Confirmer</b> 🔥 — L'élève est <em>physiquement sur place</em> (il a scanné le tag NFC).
+                            C'est un signal fort : +10 points de chaleur. Cela prouve que le problème est réel et toujours présent.
+                        </p>
+                        <p>
+                            <b>Soutenir</b> 👍 — L'élève voit le problème dans la liste générale, sans être sur place.
+                            C'est un signal plus faible : +3 points de chaleur. Ça montre un intérêt mais ne confirme pas
+                            la présence du problème.
+                        </p>
+                    </details>
+
+                    <details class="admin-nfc-guide-section">
+                        <summary>6. Le score de chaleur (heat score)</summary>
+                        <p>
+                            Chaque signalement a un <b>score de chaleur</b> qui reflète son urgence.
+                            Il augmente avec les confirmations terrain (+10), les soutiens (+3),
+                            et l'activité récente.
+                        </p>
+                        <ul>
+                            <li><b>≥ 80 points + ≥ 3 confirmations</b> → <span style="color:#dc2626">⚠️ Urgent</span> — à traiter en priorité</li>
+                            <li><b>≥ 50 points + ≥ 2 confirmations</b> → <span style="color:#d97706">🔶 Important</span> — à surveiller</li>
+                            <li>En dessous → Normal</li>
+                        </ul>
+                    </details>
+
+                    <details class="admin-nfc-guide-section">
+                        <summary>7. Gérer les signalements</summary>
+                        <p>
+                            Dans la <b>Vue d'ensemble</b>, vous voyez les KPI en haut (urgents, lieux actifs, problèmes ouverts…).
+                            Cliquez sur un chiffre pour voir le détail.
+                        </p>
+                        <p>
+                            Chaque signalement peut être passé en :
+                        </p>
+                        <ul>
+                            <li><b>En cours</b> — vous avez pris connaissance du problème</li>
+                            <li><b>Résolu</b> — le problème est réglé</li>
+                            <li><b>Supprimé</b> — signalement non pertinent</li>
+                        </ul>
+                        <p>
+                            Vous pouvez aussi <b>répondre</b> à un signalement — la réponse sera visible par les élèves
+                            sur la page du lieu.
+                        </p>
+                    </details>
+
+                    <details class="admin-nfc-guide-section">
+                        <summary>8. Désactiver ou supprimer un lieu</summary>
+                        <p>
+                            <b>Désactiver</b> — Le lieu reste dans la base mais n'accepte plus de nouveaux signalements.
+                            Utile pendant les vacances ou des travaux.
+                        </p>
+                        <p>
+                            <b>Supprimer</b> — Si le lieu a des signalements liés, il sera d'abord désactivé.
+                            Vous pouvez forcer la suppression : les signalements seront conservés mais détachés du lieu.
+                        </p>
+                    </details>
+
+                    <details class="admin-nfc-guide-section">
+                        <summary>9. L'IA et les catégories</summary>
+                        <p>
+                            Quand un élève envoie un signalement via NFC, l'IA reformule le texte et attribue
+                            une <b>catégorie de problème</b> (nettoyage, dégradation, équipement…).
+                        </p>
+                        <p>
+                            Le <b>lieu</b>, le <b>bâtiment</b> et l'<b>étage</b> sont toujours ceux du tag NFC scanné —
+                            l'IA ne peut pas les modifier. Elle ne fait que classifier le <em>type</em> de problème.
+                        </p>
+                    </details>
+                </div>
+            </div>
+
+            <!-- NFC-V2.3-UI: Modal détail lieu -->
+            <div class="admin-nfc-detail-modal" id="admin-nfc-detail-modal" hidden>
+                <div class="admin-nfc-detail-panel" id="admin-nfc-detail-panel">
+                    <button type="button" class="admin-nfc-detail-close" id="admin-nfc-detail-close">&times;</button>
+                    <div id="admin-nfc-detail-content"></div>
+                </div>
+            </div>
+
+            <!-- NFC-V2.3-UI: Drawer latéral pour détails KPI / activité -->
+            <div class="admin-nfc-drawer-backdrop" id="admin-nfc-drawer-backdrop" hidden></div>
+            <div class="admin-nfc-drawer" id="admin-nfc-drawer" hidden>
+                <div class="admin-nfc-drawer-header">
+                    <h3 class="admin-nfc-drawer-title" id="admin-nfc-drawer-title"></h3>
+                    <button class="admin-nfc-drawer-close" id="admin-nfc-drawer-close">&times;</button>
+                </div>
+                <div class="admin-nfc-drawer-body" id="admin-nfc-drawer-body"></div>
             </div>
         </section>
 

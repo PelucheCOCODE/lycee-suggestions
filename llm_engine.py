@@ -235,19 +235,26 @@ Suggestion originale : "{text}"
 
 TÂCHE 1 - REFORMULATION : Une phrase courte, directe, comme un élève la dirait : verbe à l'infinitif + idée (ex. « Ajouter… », « Rajouter… », « Mettre… », « Réparer… »). Corrige l'argot / SMS (pr→pour, psk/pcq→parce que, chill→détente ou calme, etc.) sans sur-polir. Conserve les lieux/objets concrets déjà dans le texte ; n'invente rien.
 
+IMPORTANT — Conserve le DÉTAIL du problème : le symptôme, la panne, le manque. Ne résume pas à l'action seule.
+MAUVAIS : « Réparer la porte de l'escalier » (on ne sait pas ce qu'elle a)
+BON : « Réparer la porte de l'escalier qui ne s'ouvre plus »
+MAUVAIS : « Réparer le robinet des toilettes »
+BON : « Réparer le robinet des toilettes qui fuit »
+
 INTERDIT — ton « rapport » ou administratif : « Proposer l'acquisition de », « Il serait souhaitable de », « Il conviendrait de », « procéder à », « mettre en œuvre » quand un verbe simple suffit.
 
 BON : « Rajouter du ketchup à la cantine » — pas « Proposer l'acquisition de ketchup pour la cantine ».
 BON : « Ajouter davantage de prises électriques » — pas « Il serait souhaitable d'ajouter davantage de prises électriques ».
 
-Maximum 18 mots. Pas de nom de personne.
+Maximum 22 mots. Pas de nom de personne. N'ajoute PAS de lieu qui n'est pas dans le texte original.
 
 TÂCHE 2 - CATÉGORIE : Classe dans UNE catégorie parmi : Cantine, Infrastructure, Vie scolaire, Pédagogie, Numérique, Bien-être, Autre
 Règles : repas, desserts, menus, boissons, self, cantine, goûter → **Cantine** (pas Infrastructure). Radiateurs, fenêtres, salles de classe, bâtiments → Infrastructure. Musique d'ambiance, événements, clubs (hors cours) → souvent **Vie scolaire** ou **Bien-être** selon le sens.
 
 TÂCHE 3 - MOTS-CLÉS : Liste 3 à 6 mots-clés pertinents, séparés par des virgules.
 
-TÂCHE 4 - LIEU : Si la suggestion mentionne un lieu précis (bâtiment A/B/C…, salle nommée, self, cantine, CDI, gymnase, etc.), écris le nom tel que compris (ex: "Bâtiment C", "Self"). Sinon écris "Aucun". N'invente pas un lieu absent du texte.
+TÂCHE 4 - LIEU : Si la suggestion mentionne EXPLICITEMENT un lieu précis (bâtiment A/B/C…, salle nommée, self, cantine, CDI, gymnase, etc.), écris le nom tel que compris (ex: "Bâtiment C", "Self"). Sinon écris "Aucun".
+INTERDIT : inventer ou déduire un lieu que l'élève n'a PAS écrit. « Organiser un concours de danse » → LIEU: Aucun (pas "amphithéâtre" ou "gymnase"). Seuls les lieux LITTÉRALEMENT présents dans le texte comptent.
 
 Réponds EXACTEMENT dans ce format (4 lignes) :
 TITRE: <phrase reformulée>
@@ -571,12 +578,38 @@ def check_rapport_precision(
     return (has_rapport, is_precision)
 
 
-def process_suggestion(text: str) -> dict | None:
+# NFC-V2.2-AI: prompt additionnel injecté quand la suggestion vient d'un lieu NFC.
+NFC_CONTEXT_BLOCK = """IMPORTANT — Cette suggestion provient d'un scan NFC au lieu suivant :
+- Nom du lieu : {loc_name}
+- Catégorie du lieu : {loc_category}
+- Bâtiment : {loc_building}
+- Étage : {loc_floor}
+- Description du lieu : {loc_description}
+
+RÈGLES NFC :
+1. La CATÉGORIE et le LIEU de ta réponse DOIVENT être cohérents avec ce lieu NFC.
+2. Ne déduis PAS un lieu différent de celui indiqué, sauf si le texte de l'élève mentionne explicitement un autre endroit.
+3. Conserve le SYMPTÔME / DÉTAIL du problème dans le titre. Ne résume pas à « Réparer X » si l'élève dit ce qui ne va pas.
+4. Pour LIEU, utilise le nom du lieu NFC ci-dessus.
+"""
+
+
+def process_suggestion(text: str, nfc_context: dict | None = None) -> dict | None:
     """
     All-in-one processing: reformulate + classify + keywords in a single LLM call.
     Returns dict with title, category, keywords or None if LLM unavailable.
+    nfc_context: optional dict with loc_name, loc_category, loc_building, loc_floor, loc_description.
     """
     ctx = f"\nContexte : {_school_context}\n" if _school_context else ""
+    # NFC-V2.2-AI: inject NFC location context into the prompt so the LLM respects the physical location.
+    if nfc_context:
+        ctx += "\n" + NFC_CONTEXT_BLOCK.format(
+            loc_name=nfc_context.get("loc_name") or "—",
+            loc_category=nfc_context.get("loc_category") or "—",
+            loc_building=nfc_context.get("loc_building") or "—",
+            loc_floor=nfc_context.get("loc_floor") or "—",
+            loc_description=nfc_context.get("loc_description") or "—",
+        )
     prompt = PROCESS_PROMPT.format(text=text, context=ctx)
     result = _call_ollama(prompt, temperature=0.2, num_predict=150, timeout=45)
 
@@ -881,34 +914,6 @@ def summarize_news(title: str, text: str) -> str | None:
         if result and len(result) < 400:
             return result[0].upper() + result[1:]
     return text[:300] + ("..." if len(text) > 300 else "")
-
-
-def suggest_detail_hint(text: str, calibration_details: list[dict] | None = None) -> str | None:
-    """Rapide : suggère une question pour enrichir une suggestion vague. Timeout court pour prioriser la rapidité."""
-    if not text or len(text) < 10:
-        return None
-    calib_block = ""
-    if calibration_details:
-        lines = []
-        for ex in calibration_details[:12]:
-            s = (ex.get("suggestion_text") or "")[:80]
-            h = ex.get("hint")
-            lines.append(f'- "{s}" → {h if h else "non"}')
-        if lines:
-            calib_block = "Exemples de calibration (respecte ces décisions) :\n" + "\n".join(lines) + "\n\n"
-    prompt = DETAIL_HINT_PROMPT.format(text=text[:200], calibration_examples=calib_block)
-    result = _call_ollama(prompt, temperature=0.1, num_predict=25, timeout=2)
-    if not result:
-        return None
-    result = result.strip().strip('"').strip("'").strip().rstrip(".")
-    if not result or len(result) < 3:
-        return None
-    rl = result.lower()
-    if rl == "non" or rl.startswith("non ") or "non." in rl:
-        return None
-    if len(result) > 80:
-        return None
-    return result[0].upper() + result[1:]
 
 
 MODERATE_COMMUNITY_PROMPT = """Tu modères un court message public entre élèves. Tu ne réécris pas le message.

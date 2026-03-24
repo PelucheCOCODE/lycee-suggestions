@@ -457,10 +457,6 @@ class AIEngine:
         self.duplicate_detector = DuplicateDetector()
         self._training_examples: list[dict] = []
 
-    def load_training_data(self, examples: list[dict]):
-        """Load validated calibration examples for learning."""
-        self._training_examples = examples
-
     def reload_training_data(self):
         """Reload from database (called from app context)."""
         from models import CalibrationExample
@@ -500,12 +496,14 @@ class AIEngine:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [ex for _, ex in scored[:max_examples]]
 
-    def process(self, text: str, locations: list[dict] | None = None) -> dict:
+    def process(self, text: str, locations: list[dict] | None = None, nfc_context: dict | None = None) -> dict:
         """Process a suggestion: reformulate, classify, extract keywords, detect location.
-        Uses the all-in-one LLM call first, falls back to individual calls."""
+        Uses the all-in-one LLM call first, falls back to individual calls.
+        nfc_context: optional NFC location metadata forwarded to the LLM prompt."""
         cleaned = _clean_text(text)
 
-        llm_result = llm_engine.process_suggestion(cleaned)
+        # NFC-V2.2-AI: pass NFC context so the LLM prompt constrains category/location to the physical tag.
+        llm_result = llm_engine.process_suggestion(cleaned, nfc_context=nfc_context)
         if llm_result and llm_result.get("title"):
             # IA de vérification : cohérence, syntaxe, français (avec exemples de calibration)
             calib_verify = []

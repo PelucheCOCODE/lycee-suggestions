@@ -165,6 +165,8 @@ const ADMIN_SECTION_LOADERS = {
     "cvl-official-info": () => loadCvlOfficialInfo(),
     bus: () => loadBusSettings(),
     "music-poll": () => loadMusicPollAdmin(),
+    // NFC-V2: section admin NFC
+    nfc: () => loadNfcAdmin(),
     backup: () => loadBackup(),
     development: () => loadDevelopment(),
 };
@@ -263,6 +265,8 @@ const ADMIN_PALETTE_ENTRIES = [
     { section: "trace", label: "Traçabilité IA", hint: "Traces de traitement", kw: "llm" },
     { section: "calibration-verify", label: "Vérification calibration", hint: "Contrôle des corrections", kw: "validation" },
     { section: "llm-resources", label: "Ressources IA", hint: "Modèles, limites", kw: "ollama" },
+    // NFC-V2: entrée palette de commandes
+    { section: "nfc", label: "NFC / Signalements", hint: "Lieux NFC, maintenance terrain", kw: "nfc tag terrain signalement" },
     { section: "music-poll", label: "Sondage musique", hint: "Sonnerie, Spotify", kw: "audio" },
     { section: "display-manager", label: "Affichage dynamique", hint: "Pages /tv", kw: "tv écran" },
     { section: "bus", label: "Horaires bus", hint: "GTFS, lignes", kw: "transport" },
@@ -434,27 +438,29 @@ function setupLocations() {
     document.getElementById("location-name-input").addEventListener("keydown", (e) => { if (e.key === "Enter") addLocation(); });
 }
 
+let _asgStatusFilter = "accepted";
 function setupSuggestionProcessing() {
-    document.getElementById("process-pending-btn").addEventListener("click", async () => {
-        const btn = document.getElementById("process-pending-btn");
-        btn.disabled = true;
-        btn.textContent = "Traitement en cours...";
-        try {
-            const { data } = await API.post("/api/admin/suggestions/process-pending");
-            btn.textContent = `${data.processed} traitee(s)`;
-            setTimeout(() => { btn.textContent = "Traiter les suggestions en attente"; btn.disabled = false; }, 2000);
-            loadAdminSuggestions();
-        } catch (e) {
-            btn.textContent = "Erreur";
-            setTimeout(() => { btn.textContent = "Traiter les suggestions en attente"; btn.disabled = false; }, 2000);
-        }
+    const bar = document.getElementById("asg-status-bar");
+    if (!bar) return;
+    bar.addEventListener("click", (e) => {
+        const tab = e.target.closest(".asg-status-tab");
+        if (!tab) return;
+        _asgStatusFilter = tab.dataset.asgStatus;
+        bar.querySelectorAll(".asg-status-tab").forEach(t => t.classList.toggle("asg-status-tab--active", t === tab));
+        renderAdminSuggestions();
     });
 }
 
 // ==================== Dashboard ====================
 
 async function loadDashboard() {
-    try { const stats = await API.get("/api/admin/stats"); renderDashboard(stats); } catch (e) { console.error(e); }
+    try {
+        const stats = await API.get("/api/admin/stats");
+        renderDashboard(stats);
+    } catch (e) {
+        console.error(e);
+    }
+    await loadTodayMessages();
 }
 let lastDashboardStats = null;
 function renderDashboard(stats) {
@@ -510,6 +516,33 @@ function renderTopVoted(s) {
     const c = document.getElementById("top-voted-list");
     if (!s.length) { c.innerHTML = '<p class="empty-msg">Aucune suggestion</p>'; return; }
     c.innerHTML = s.map((x) => `<div class="mini-suggestion-item"><span class="mini-suggestion-title">${esc(x.title)}</span><span class="mini-suggestion-votes">♥ ${x.vote_count}</span></div>`).join("");
+}
+
+// FIX-ADMIN-1: messages « carte swipe » (CommunityMessage, jour Paris)
+async function loadTodayMessages() {
+    const container = document.getElementById("admin-messages-today");
+    if (!container) return;
+    try {
+        const data = await API.get("/api/admin/community-messages-today");
+        if (!Array.isArray(data) || !data.length) {
+            container.innerHTML = '<p class="admin-empty">Aucun message aujourd’hui.</p>';
+            return;
+        }
+        container.innerHTML = data
+            .map(
+                (m) => `
+        <div class="admin-message-item">
+            <span class="admin-message-time">${new Date(m.timestamp).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span>
+            <span class="admin-message-name">${esc(m.display_name || "")}</span>
+            <span class="admin-message-text">${esc(m.message || "")}</span>
+            ${m.session_id ? `<span class="admin-message-meta">${esc(String(m.session_id).slice(0, 12))}…</span>` : ""}
+        </div>`,
+            )
+            .join("");
+    } catch (err) {
+        console.error("[FIX-ADMIN-1] loadTodayMessages", err);
+        container.innerHTML = '<p class="admin-empty">Erreur de chargement.</p>';
+    }
 }
 
 let chartEngMood = null;
@@ -1445,96 +1478,87 @@ function setupSuggestionsHub() {
         await loadSuggestionsHub();
     });
 }
+function _asgFilterByStatus(list) {
+    const ACCEPTED = ["Approuvée", "En cours", "Planifiée"];
+    const PENDING  = ["En attente"];
+    const REFUSED  = ["Refusée"];
+    if (_asgStatusFilter === "accepted") return list.filter(s => ACCEPTED.includes(s.status) || (s.status !== "Refusée" && s.status !== "En attente"));
+    if (_asgStatusFilter === "pending")  return list.filter(s => PENDING.includes(s.status));
+    if (_asgStatusFilter === "refused")  return list.filter(s => REFUSED.includes(s.status));
+    return list;
+}
+
 function renderAdminSuggestions() {
     const cf = document.getElementById("admin-filter-category").value;
     const sf = document.getElementById("admin-filter-status").value;
     const q = document.getElementById("admin-search").value.toLowerCase();
     let f = allSuggestions;
-    if (cf) f = f.filter((s) => s.category === cf);
-    if (sf) f = f.filter((s) => s.status === sf);
-    if (q) f = f.filter((s) => s.title.toLowerCase().includes(q) || s.original_text.toLowerCase().includes(q));
+    f = _asgFilterByStatus(f);
+    if (cf) f = f.filter(s => s.category === cf);
+    if (sf) f = f.filter(s => s.status === sf);
+    if (q) f = f.filter(s => s.title.toLowerCase().includes(q) || s.original_text.toLowerCase().includes(q));
+
+    const countEl = document.getElementById("asg-count");
+    if (countEl) countEl.textContent = `${f.length} suggestion${f.length !== 1 ? "s" : ""}`;
+
+    const pendingN = allSuggestions.filter(s => s.status === "En attente").length;
+    const pendingTab = document.querySelector('[data-asg-status="pending"]');
+    if (pendingTab) pendingTab.textContent = pendingN > 0 ? `En attente (${pendingN})` : "En attente";
+
     const c = document.getElementById("admin-suggestions-list");
-    if (!f.length) { c.innerHTML = '<p class="empty-msg">Aucune suggestion trouvée</p>'; return; }
-    c.innerHTML = f.map((s) => {
-        const opts = STATUSES.map((st) => `<option value="${st}"${st === s.status ? " selected" : ""}>${st}</option>`).join("");
+    if (!f.length) {
+        const msgs = { accepted: "Aucune suggestion acceptée", pending: "Aucune suggestion en attente", refused: "Aucune suggestion refusée", all: "Aucune suggestion" };
+        c.innerHTML = `<div class="asg-empty"><p>${msgs[_asgStatusFilter] || msgs.all}</p></div>`;
+        return;
+    }
+
+    c.innerHTML = f.map(s => {
+        const opts = STATUSES.map(st => `<option value="${st}"${st === s.status ? " selected" : ""}>${st}</option>`).join("");
         const isPending = s.status === "En attente";
-        const imp = s.ai_proportion != null ? Math.round((s.ai_proportion || 0) * 100) : null;
-        const fais = s.ai_feasibility != null ? Math.round((s.ai_feasibility || 0.5) * 100) : null;
-        const cout = s.ai_cost != null ? Math.round((s.ai_cost || 0.5) * 100) : null;
-        const aiDebat = imp != null ? (s.ai_needs_debate ? "Oui" : "Non") : null;
-        const aiEvalHtml = imp != null ? `
-            <div class="admin-ai-eval">
-                <span title="Impact">Impact ${imp}%</span>
-                <span title="Faisabilité">Fais. ${fais}%</span>
-                <span title="Coût">Coût ${cout}%</span>
-                <span class="admin-ai-debat">Débat IA: ${aiDebat}</span>
+        const isRefused = s.status === "Refusée";
+        const nfcBadge = s.source === "nfc" ? '<span class="asg-badge asg-badge--nfc">NFC</span>' : "";
+        const debatBadge = s.needs_debate ? '<span class="asg-badge asg-badge--debat">Débat</span>' : "";
+        const locName = s.location_name ? `<span class="asg-loc">${esc(s.location_name)}</span>` : "";
+
+        return `<div class="asg-card${isPending ? " asg-card--pending" : ""}${isRefused ? " asg-card--refused" : ""}">
+            <div class="asg-card-head">
+                <span class="asg-card-id">#${s.id}</span>
+                <span class="asg-card-title">${esc(s.title)}</span>
+                <span class="asg-card-votes">${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}</span>
             </div>
-        ` : "";
-        const debatToggle = !isPending ? `
-            <label class="admin-debat-toggle">
-                <input type="checkbox" class="admin-debat-cb" data-id="${s.id}" ${s.needs_debate ? "checked" : ""}>
-                Forcer débat
-            </label>
-        ` : "";
-        return `<div class="admin-suggestion-card${isPending ? " admin-card-pending" : ""}">
-            <div class="admin-card-top"><span class="admin-card-title">${esc(s.title)}</span><span class="badge badge-votes">${s.vote_count} soutien${s.vote_count !== 1 ? "s" : ""}</span></div>
-            <div class="admin-card-subtitle">${s.subtitle ? esc(s.subtitle) : "<span class=\"admin-card-subtitle-missing\">— pas de sous-titre —</span>"}</div>
-            <div class="admin-card-original">"${esc(s.original_text)}"</div>
-            ${aiEvalHtml}
-            <div class="admin-card-actions">
-                <div class="admin-card-meta"><span class="badge badge-category">${s.category}</span><span class="badge badge-status" data-status="${s.status}">${s.status}</span>${isPending ? '<span class="badge badge-pending">En attente</span>' : ""}${debatToggle}</div>
-                ${isPending ? `<button type="button" class="btn btn-sm btn-primary process-single-btn" data-id="${s.id}">Traiter</button>` : ""}
-                <select class="status-select" data-id="${s.id}">${opts}</select>
-                <select class="location-select" data-id="${s.id}"><option value="">-- Lieu --</option></select>
-                <button type="button" class="btn btn-sm btn-primary edit-suggestion-btn" data-id="${s.id}" title="Ouvrir l’éditeur (titre, description, sources)">Éditer la fiche</button>
-                <button type="button" class="btn btn-sm btn-ghost history-btn" data-id="${s.id}" data-type="suggestion" title="Historique">Historique</button>
-                <a class="btn btn-sm btn-ghost pdf-btn" href="/api/admin/suggestions/${s.id}/pdf" data-id="${s.id}" download target="_blank" title="Télécharger PDF">PDF</a>
-                <button type="button" class="btn btn-sm btn-ghost add-vote-btn" data-id="${s.id}" title="Ajouter des soutiens (dev)">+1 vote</button>
-                <button type="button" class="btn btn-sm btn-ghost recalib-btn" data-id="${s.id}" title="Recalibrer">Calibrer</button>
-                <button type="button" class="delete-btn" data-id="${s.id}">Supprimer</button>
-            </div></div>`;
+            ${s.subtitle ? `<p class="asg-card-desc">${esc(s.subtitle)}</p>` : ""}
+            <div class="asg-card-origin"><span>Message original :</span> ${esc(s.original_text)}</div>
+            <div class="asg-card-tags">
+                <span class="asg-badge asg-badge--cat">${esc(s.category)}</span>
+                <span class="asg-badge asg-badge--status" data-status="${esc(s.status)}">${esc(s.status)}</span>
+                ${nfcBadge}${debatBadge}${locName}
+            </div>
+            <div class="asg-card-toolbar">
+                <select class="asg-select status-select" data-id="${s.id}" title="Changer le statut">${opts}</select>
+                <select class="asg-select location-select" data-id="${s.id}" title="Lieu"><option value="">Lieu</option></select>
+                <div class="asg-card-actions">
+                    ${isPending ? `<button class="asg-btn asg-btn--primary process-single-btn" data-id="${s.id}">Traiter</button>` : ""}
+                    <button class="asg-btn asg-btn--secondary edit-suggestion-btn" data-id="${s.id}">Éditer</button>
+                    <a class="asg-btn asg-btn--ghost pdf-btn" href="/api/admin/suggestions/${s.id}/pdf" download target="_blank">PDF</a>
+                    <button class="asg-btn asg-btn--ghost history-btn" data-id="${s.id}" data-type="suggestion">Historique</button>
+                    <button class="asg-btn asg-btn--danger delete-btn" data-id="${s.id}">Supprimer</button>
+                </div>
+            </div>
+        </div>`;
     }).join("");
-    c.querySelectorAll(".process-single-btn").forEach((btn) => {
+
+    c.querySelectorAll(".process-single-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
             btn.disabled = true; btn.textContent = "...";
             await API.post(`/api/admin/suggestions/${btn.dataset.id}/process`);
             loadAdminSuggestions();
         });
     });
-    c.querySelectorAll(".add-vote-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-            const count = parseInt(prompt("Nombre de soutiens a ajouter :", "1"));
-            if (!count || count < 1) return;
-            btn.disabled = true; btn.textContent = "...";
-            await API.post(`/api/admin/suggestions/${btn.dataset.id}/add-vote`, { count });
-            loadAdminSuggestions();
-        });
-    });
-    c.querySelectorAll(".status-select").forEach((sel) => { sel.addEventListener("change", async () => { await API.put(`/api/admin/suggestions/${sel.dataset.id}/status`, { status: sel.value }); loadAdminSuggestions(); }); });
-    c.querySelectorAll(".location-select").forEach((sel) => { sel.addEventListener("change", async () => { await API.put(`/api/admin/suggestions/${sel.dataset.id}/location`, { location_id: sel.value ? parseInt(sel.value) : null }); }); });
-    c.querySelectorAll(".delete-btn").forEach((btn) => { btn.addEventListener("click", async () => { if (confirm("Supprimer ?")) { await API.delete(`/api/admin/suggestions/${btn.dataset.id}`); loadAdminSuggestions(); } }); });
-    c.querySelectorAll(".recalib-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-            const s = allSuggestions.find((x) => x.id === parseInt(btn.dataset.id));
-            if (s && confirm(`Ajouter "${s.title}" à la calibration ?`)) {
-                await API.post(`/api/admin/suggestions/${s.id}/recalibrate`, { title: s.title, keywords: s.keywords, category: s.category, location: s.location_name || "" });
-                alert("Ajouté à la calibration !");
-            }
-        });
-    });
-    c.querySelectorAll(".history-btn").forEach((btn) => {
+    c.querySelectorAll(".status-select").forEach(sel => { sel.addEventListener("change", async () => { await API.put(`/api/admin/suggestions/${sel.dataset.id}/status`, { status: sel.value }); loadAdminSuggestions(); }); });
+    c.querySelectorAll(".location-select").forEach(sel => { sel.addEventListener("change", async () => { await API.put(`/api/admin/suggestions/${sel.dataset.id}/location`, { location_id: sel.value ? parseInt(sel.value) : null }); }); });
+    c.querySelectorAll(".delete-btn").forEach(btn => { btn.addEventListener("click", async () => { if (confirm("Supprimer cette suggestion ?")) { await API.delete(`/api/admin/suggestions/${btn.dataset.id}`); loadAdminSuggestions(); } }); });
+    c.querySelectorAll(".history-btn").forEach(btn => {
         btn.addEventListener("click", () => openHistoryModal("suggestion", parseInt(btn.dataset.id)));
-    });
-    c.querySelectorAll(".admin-debat-cb").forEach((cb) => {
-        cb.addEventListener("change", async () => {
-            const id = parseInt(cb.dataset.id);
-            const needsDebate = cb.checked;
-            try {
-                await API.put(`/api/admin/suggestions/${id}/needs-debate`, { needs_debate: needsDebate });
-                const s = allSuggestions.find((x) => x.id === id);
-                if (s) s.needs_debate = needsDebate;
-            } catch (e) { alert("Erreur"); }
-        });
     });
     loadLocations();
 }
@@ -5141,4 +5165,1060 @@ async function deleteMusicPollTrack(trackId) {
 
 function esc(str) { if (!str) return ""; const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// NFC-V2.3-UI: Admin panel NFC / Signalements terrain — complete UI overhaul
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let nfcLocations = [];
+let nfcDashboard = null;
+let _nfcFeedTimer = null;
+let _nfcFeedData = [];
+let _nfcBaseLocations = null;
+let _nfcLocViewMode = "cards";
+
+// NFC-V2.4: formatage temps depuis activité
+function _nfcTimeAgo(minutes) {
+    if (minutes == null) return "";
+    if (minutes < 1) return "à l'instant";
+    if (minutes < 60) return `il y a ${minutes} min`;
+    if (minutes < 1440) return `il y a ${Math.floor(minutes / 60)}h`;
+    return `il y a ${Math.floor(minutes / 1440)}j`;
+}
+// NFC-V2.4: badge de niveau
+function _nfcLevelBadge(level) {
+    if (level === "urgent") return '<span class="nfc-badge nfc-badge--urgent">⚠️ Urgent</span>';
+    if (level === "important") return '<span class="nfc-badge nfc-badge--important">🔶 Important</span>';
+    return "";
+}
+// NFC-V2.4: refresh global après changement de statut
+async function _nfcRefreshAll() {
+    await Promise.all([loadNfcDashboard(), loadNfcFeed()]);
+    const histEl = document.getElementById("admin-nfc-history-list");
+    if (histEl && histEl.innerHTML.trim() && !histEl.querySelector(".admin-nfc-loading")) {
+        loadNfcHistory(_nfcCurrentHistoryPage || 1);
+    }
+}
+let _nfcCurrentHistoryPage = 1;
+
+async function loadNfcAdmin() {
+    wireNfcTabs();
+    wireNfcDrawer();
+    await Promise.all([loadNfcDashboard(), loadNfcLocations(), loadNfcFeed()]);
+    wireNfcCreate();
+    wireNfcDetailModal();
+    wireNfcHistory();
+    wireNfcLogs();
+    wireNfcSettings();
+    // NFC-V2.3-UI: auto-refresh feed toutes les 15s
+    clearInterval(_nfcFeedTimer);
+    _nfcFeedTimer = setInterval(loadNfcFeed, 15000);
+}
+
+// NFC-V2.3-UI: onglets internes
+function wireNfcTabs() {
+    const tabs = document.querySelectorAll("[data-nfc-tab]");
+    if (!tabs.length) return;
+    tabs.forEach(t => {
+        if (t.dataset.wiredTab === "1") return;
+        t.dataset.wiredTab = "1";
+        t.addEventListener("click", () => {
+            tabs.forEach(x => x.classList.remove("admin-nfc-tab--active"));
+            t.classList.add("admin-nfc-tab--active");
+            document.querySelectorAll(".admin-nfc-tabcontent").forEach(c => c.hidden = true);
+            const target = document.getElementById(`admin-nfc-tab-${t.dataset.nfcTab}`);
+            if (target) target.hidden = false;
+        });
+    });
+}
+
+function _nfcSwitchTab(tabName) {
+    const tab = document.querySelector(`[data-nfc-tab="${tabName}"]`);
+    if (tab) tab.click();
+}
+
+// ── NFC-V2.3-UI: Drawer (side panel) ──────────────────────────────────────
+
+function wireNfcDrawer() {
+    const backdrop = document.getElementById("admin-nfc-drawer-backdrop");
+    const closeBtn = document.getElementById("admin-nfc-drawer-close");
+    if (closeBtn) closeBtn.addEventListener("click", closeNfcDrawer);
+    if (backdrop) backdrop.addEventListener("click", closeNfcDrawer);
+}
+
+function openNfcDrawer(title, bodyHtml) {
+    const drawer = document.getElementById("admin-nfc-drawer");
+    const backdrop = document.getElementById("admin-nfc-drawer-backdrop");
+    const titleEl = document.getElementById("admin-nfc-drawer-title");
+    const bodyEl = document.getElementById("admin-nfc-drawer-body");
+    if (!drawer) return;
+    if (titleEl) titleEl.textContent = title;
+    if (bodyEl) bodyEl.innerHTML = bodyHtml;
+    drawer.hidden = false;
+    if (backdrop) backdrop.hidden = false;
+    requestAnimationFrame(() => {
+        drawer.classList.add("admin-nfc-drawer--open");
+        if (backdrop) backdrop.classList.add("admin-nfc-drawer-backdrop--visible");
+    });
+}
+
+function closeNfcDrawer() {
+    const drawer = document.getElementById("admin-nfc-drawer");
+    const backdrop = document.getElementById("admin-nfc-drawer-backdrop");
+    if (!drawer) return;
+    drawer.classList.remove("admin-nfc-drawer--open");
+    if (backdrop) backdrop.classList.remove("admin-nfc-drawer-backdrop--visible");
+    setTimeout(() => {
+        drawer.hidden = true;
+        if (backdrop) backdrop.hidden = true;
+    }, 300);
+}
+
+// ── NFC-V2.3-UI: Dashboard KPI ────────────────────────────────────────────
+
+async function loadNfcDashboard() {
+    try {
+        nfcDashboard = await API.get("/api/admin/nfc/dashboard");
+    } catch { nfcDashboard = null; }
+    renderNfcDashboard();
+}
+
+function renderNfcDashboard() {
+    const el = document.getElementById("admin-nfc-dashboard");
+    if (!el || !nfcDashboard) return;
+    const d = nfcDashboard;
+
+    // NFC-V2.3-UI: clickable KPI cards with data-kpi for click routing
+    const kpis = [];
+    if (d.urgent_count > 0) {
+        kpis.push({ key: "urgent", icon: "⚠️", value: d.urgent_count, label: "Urgent(s)", cls: "admin-nfc-stat--urgent" });
+    }
+    kpis.push(
+        { key: "locations", icon: "📍", value: `${d.active_locations}/${d.total_locations}`, label: "Lieux actifs" },
+        { key: "open", icon: "🔴", value: d.total_open, label: "Problèmes ouverts" },
+        { key: "resolved", icon: "✅", value: d.total_resolved, label: "Résolus" },
+        { key: "new", icon: "🆕", value: d.new_24h, label: "Nouveaux (24h)" },
+        { key: "confirms24", icon: "🔥", value: d.confirms_24h, label: "Confirmations (24h)" },
+        { key: "confirms7", icon: "📊", value: d.confirms_7d, label: "Confirmations (7j)" },
+        { key: "avgres", icon: "⏱", value: d.avg_resolution_hours != null ? d.avg_resolution_hours + "h" : "—", label: "Résolution moy." },
+    );
+
+    el.innerHTML = kpis.map(k => `
+        <div class="admin-nfc-stat ${k.cls || ""}" data-kpi="${k.key}" tabindex="0" role="button">
+            <span class="admin-nfc-stat-arrow">→</span>
+            <span class="admin-nfc-stat-value">${k.icon} ${k.value}</span>
+            <span class="admin-nfc-stat-label">${esc(k.label)}</span>
+        </div>
+    `).join("");
+
+    // NFC-V2.3-UI: click handlers on KPI cards
+    el.querySelectorAll("[data-kpi]").forEach(card => {
+        card.addEventListener("click", () => _nfcKpiClick(card.dataset.kpi));
+        card.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); _nfcKpiClick(card.dataset.kpi); } });
+    });
+
+    // NFC-V2.3-UI: nav badge for urgent
+    const navBtn = document.querySelector('[data-section="nfc"]');
+    if (navBtn && d.urgent_count > 0) {
+        if (!navBtn.querySelector(".nfc-nav-badge")) {
+            const b = document.createElement("span");
+            b.className = "nfc-nav-badge";
+            b.style.cssText = "background:#ef4444;color:#fff;font-size:0.65rem;padding:1px 5px;border-radius:8px;margin-left:6px;font-weight:700";
+            b.textContent = d.urgent_count;
+            navBtn.appendChild(b);
+        }
+    } else if (navBtn) {
+        navBtn.querySelector(".nfc-nav-badge")?.remove();
+    }
+}
+
+function _nfcKpiClick(key) {
+    const d = nfcDashboard;
+    if (!d) return;
+
+    // NFC-V2.4: drawer entry renderer with heat + level + last_activity
+    const _drawerEntry = (s, urgent) => `
+        <div class="admin-nfc-drawer-entry${urgent ? " admin-nfc-drawer-entry--urgent" : ""}">
+            <div class="admin-nfc-drawer-entry-title">${esc(s.title)}</div>
+            <div class="admin-nfc-drawer-entry-meta">
+                🔥 ${s.confirmation_count} conf. · 📍 ${esc(s.location_name)}
+                ${s.heat_score != null ? ` · <b>${s.heat_score}</b>pts` : ""}
+                ${_nfcTimeAgo(s.last_activity_minutes) ? ` · ${_nfcTimeAgo(s.last_activity_minutes)}` : ""}
+            </div>
+            ${_nfcLevelBadge(s.heat_level)}
+            <div class="admin-nfc-drawer-entry-actions">
+                <button class="admin-nfc-btn admin-nfc-btn-resolve" onclick="(async()=>{await API.put('/api/admin/nfc/suggestions/${s.id}/status',{status:'resolved'});closeNfcDrawer();_nfcRefreshAll();})()">Résolu</button>
+                <button class="admin-nfc-btn admin-nfc-btn-progress" onclick="(async()=>{await API.put('/api/admin/nfc/suggestions/${s.id}/status',{status:'in_progress'});closeNfcDrawer();_nfcRefreshAll();})()">En cours</button>
+            </div>
+        </div>`;
+
+    if (key === "urgent") {
+        const items = (d.top_confirmed || []).filter(s => s.is_urgent);
+        openNfcDrawer(`⚠️ ${items.length} signalement(s) urgent(s)`, items.length
+            ? items.map(s => _drawerEntry(s, true)).join("")
+            : '<p class="admin-nfc-empty">Aucun signalement urgent.</p>');
+    } else if (key === "locations") {
+        _nfcSwitchTab("locations");
+    } else if (key === "open") {
+        _nfcSwitchTab("history");
+        const sel = document.getElementById("nfc-history-status");
+        if (sel) sel.value = "open";
+        loadNfcHistory(1);
+    } else if (key === "resolved") {
+        _nfcSwitchTab("history");
+        const sel = document.getElementById("nfc-history-status");
+        if (sel) sel.value = "resolved";
+        loadNfcHistory(1);
+    } else if (key === "new") {
+        const items = (d.top_confirmed || []).slice(0, 10);
+        openNfcDrawer(`🆕 Signalements récents`, items.length
+            ? items.map(s => _drawerEntry(s, s.is_urgent)).join("")
+            : '<p class="admin-nfc-empty">Aucun signalement récent.</p>');
+    }
+}
+
+// ── NFC-V2.3-UI: Location cards ───────────────────────────────────────────
+
+async function loadNfcLocations() {
+    try {
+        nfcLocations = await API.get("/api/admin/nfc/locations");
+    } catch { nfcLocations = []; }
+    renderNfcLocations();
+}
+
+let _nfcBuildingFilter = "";
+
+function renderNfcLocations() {
+    const el = document.getElementById("admin-nfc-locations");
+    if (!el) return;
+    if (!nfcLocations.length) {
+        el.innerHTML = '<p class="admin-nfc-empty">Aucun lieu NFC créé.</p>';
+        return;
+    }
+
+    // Collect unique buildings for filter
+    const buildings = [...new Set(nfcLocations.map(l => l.building).filter(Boolean))].sort();
+    const filtered = _nfcBuildingFilter
+        ? nfcLocations.filter(l => l.building === _nfcBuildingFilter)
+        : nfcLocations;
+
+    // Toolbar: view toggle + building filter
+    const buildingOpts = buildings.map(b =>
+        `<option value="${esc(b)}"${b === _nfcBuildingFilter ? " selected" : ""}>${esc(b)}</option>`
+    ).join("");
+    const toolbarHtml = `<div class="admin-nfc-loc-toolbar">
+        <div class="admin-nfc-view-toggle">
+            <button class="admin-nfc-view-btn${_nfcLocViewMode === "cards" ? " admin-nfc-view-btn--active" : ""}" data-view="cards">Cartes</button>
+            <button class="admin-nfc-view-btn${_nfcLocViewMode === "list" ? " admin-nfc-view-btn--active" : ""}" data-view="list">Liste</button>
+        </div>
+        ${buildings.length > 1 ? `<select class="admin-nfc-building-filter" id="admin-nfc-building-filter">
+            <option value="">Tous les bâtiments (${nfcLocations.length})</option>
+            ${buildingOpts}
+        </select>` : ""}
+        <span class="admin-nfc-loc-count">${filtered.length} lieu${filtered.length > 1 ? "x" : ""}</span>
+    </div>`;
+
+    if (_nfcLocViewMode === "list") {
+        const rows = filtered.map(loc => {
+            const active = loc.is_active;
+            return `<tr class="admin-nfc-list-row${active ? "" : " admin-nfc-list-row--inactive"}" data-loc-id="${loc.id}" tabindex="0" role="button">
+                <td class="admin-nfc-list-cell-name">
+                    <span class="admin-nfc-list-name">${esc(loc.name)}</span>
+                    ${loc.base_location_name ? `<span class="admin-nfc-list-base">↳ ${esc(loc.base_location_name)}</span>` : ""}
+                </td>
+                <td><span class="admin-nfc-list-badge-cat">${esc(loc.category || "Général")}</span></td>
+                <td>${esc(loc.building || "—")}</td>
+                <td>${esc(loc.floor || "—")}</td>
+                <td class="admin-nfc-list-cell-status">${active ? '<span class="admin-nfc-dot admin-nfc-dot--on"></span>' : '<span class="admin-nfc-dot admin-nfc-dot--off"></span>'}</td>
+                <td class="admin-nfc-list-cell-stats">
+                    ${loc.open_count ? `<span class="admin-nfc-list-stat-open">${loc.open_count}</span>` : "0"} / ${loc.total_suggestions}
+                </td>
+                <td class="admin-nfc-list-actions">
+                    <a href="/nfc/${esc(loc.slug)}?s=1" target="_blank" class="admin-nfc-list-action" onclick="event.stopPropagation()" title="Ouvrir">↗</a>
+                    <button class="admin-nfc-list-action admin-nfc-qr-btn" data-slug="${esc(loc.slug)}" data-name="${esc(loc.name)}" onclick="event.stopPropagation()" title="QR">⊞</button>
+                </td>
+            </tr>`;
+        }).join("");
+        el.innerHTML = toolbarHtml + `<div class="admin-nfc-list-wrap"><table class="admin-nfc-list-table"><thead><tr>
+            <th>Nom</th><th>Catégorie</th><th>Bâtiment</th><th>Étage</th><th>État</th><th>Signalements</th><th></th>
+        </tr></thead><tbody>${rows}</tbody></table></div>`;
+    } else {
+        el.innerHTML = toolbarHtml + `<div class="admin-nfc-loc-grid-inner">${filtered.map(loc => {
+            const cls = loc.is_active ? "" : " admin-nfc-loc-card--inactive";
+            const badges = [];
+            if (!loc.is_active) badges.push('<span class="admin-nfc-loc-badge admin-nfc-loc-badge--off">Désactivé</span>');
+            if (loc.pause_suggestions) badges.push('<span class="admin-nfc-loc-badge admin-nfc-loc-badge--warn">Sugg. suspendues</span>');
+            if (loc.pause_confirmations) badges.push('<span class="admin-nfc-loc-badge admin-nfc-loc-badge--warn">Conf. suspendues</span>');
+            return `
+            <div class="admin-nfc-loc-card${cls}" data-loc-id="${loc.id}" tabindex="0" role="button">
+                <div class="admin-nfc-loc-card-header">
+                    <span class="admin-nfc-loc-card-cat">${esc(loc.category || "Général")}</span>
+                    ${loc.is_active ? '<span class="admin-nfc-dot admin-nfc-dot--on" title="Actif"></span>' : '<span class="admin-nfc-dot admin-nfc-dot--off" title="Désactivé"></span>'}
+                </div>
+                <div class="admin-nfc-loc-name">${esc(loc.name)}</div>
+                <div class="admin-nfc-loc-meta">${[loc.building, loc.floor].filter(Boolean).map(esc).join(" · ") || "—"}</div>
+                ${loc.base_location_name ? `<div class="admin-nfc-loc-base">↳ ${esc(loc.base_location_name)}</div>` : ""}
+                ${badges.length ? '<div class="admin-nfc-loc-badges">' + badges.join("") + '</div>' : ""}
+                <div class="admin-nfc-loc-stats">
+                    <span class="admin-nfc-loc-stat-open" title="Signalements ouverts">${loc.open_count} ouvert${loc.open_count > 1 ? "s" : ""}</span>
+                    <span class="admin-nfc-loc-stat-total">${loc.total_suggestions} total</span>
+                </div>
+                <div class="admin-nfc-loc-foot">
+                    <code class="admin-nfc-loc-slug">${esc(loc.slug)}</code>
+                    <div class="admin-nfc-loc-actions">
+                        <a href="/nfc/${esc(loc.slug)}?s=1" target="_blank" class="admin-nfc-loc-action" onclick="event.stopPropagation()" title="Ouvrir la page">↗</a>
+                        <button class="admin-nfc-loc-action admin-nfc-qr-btn" data-slug="${esc(loc.slug)}" data-name="${esc(loc.name)}" onclick="event.stopPropagation()" title="QR Code">⊞</button>
+                    </div>
+                </div>
+            </div>`;
+        }).join("")}</div>`;
+    }
+
+    // Toolbar handlers
+    el.querySelectorAll(".admin-nfc-view-btn").forEach(btn => {
+        btn.addEventListener("click", () => { _nfcLocViewMode = btn.dataset.view; renderNfcLocations(); });
+    });
+    document.getElementById("admin-nfc-building-filter")?.addEventListener("change", e => {
+        _nfcBuildingFilter = e.target.value;
+        renderNfcLocations();
+    });
+
+    el.querySelectorAll(".admin-nfc-qr-btn").forEach(btn => {
+        btn.addEventListener("click", e => {
+            e.stopPropagation();
+            _nfcShowQr(btn.dataset.slug, btn.dataset.name);
+        });
+    });
+}
+
+// ── NFC-V2.3-UI: QR Code generation ──────────────────────────────────────
+
+function _nfcShowQr(slug, name) {
+    const url = `${location.origin}/nfc/${slug}?s=1`;
+    const html = `
+        <div class="admin-nfc-qr-container">
+            <h4 class="admin-nfc-qr-title">${esc(name)}</h4>
+            <p class="admin-nfc-qr-subtitle">Scannez ce code pour accéder au lieu NFC</p>
+            <div class="admin-nfc-qr-canvas" id="nfc-qr-render"></div>
+            <div class="admin-nfc-qr-url">${esc(url)}</div>
+            <div class="admin-nfc-qr-actions">
+                <button class="btn btn-sm btn-primary" id="nfc-qr-download">Télécharger</button>
+                <button class="btn btn-sm btn-secondary" id="nfc-qr-copy">Copier le lien</button>
+                <a href="/nfc/${esc(slug)}?s=1" target="_blank" class="btn btn-sm btn-secondary">Ouvrir la page</a>
+            </div>
+        </div>`;
+    openNfcDrawer("QR Code — " + name, html);
+
+    // NFC-V2.3-UI: render QR using QRCode.js
+    setTimeout(() => {
+        const container = document.getElementById("nfc-qr-render");
+        if (container && typeof QRCode !== "undefined") {
+            container.innerHTML = "";
+            new QRCode(container, { text: url, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.M });
+        } else if (container) {
+            container.innerHTML = '<p style="color:#94a3b8;font-size:0.85rem">QRCode.js non chargé</p>';
+        }
+
+        document.getElementById("nfc-qr-download")?.addEventListener("click", () => {
+            const canvas = container?.querySelector("canvas");
+            if (!canvas) return;
+            const a = document.createElement("a");
+            a.download = `qr-${slug}.png`;
+            a.href = canvas.toDataURL("image/png");
+            a.click();
+        });
+
+        document.getElementById("nfc-qr-copy")?.addEventListener("click", () => {
+            navigator.clipboard?.writeText(url).then(() => {
+                const btn = document.getElementById("nfc-qr-copy");
+                if (btn) { btn.textContent = "Copié !"; setTimeout(() => btn.textContent = "Copier le lien", 1500); }
+            });
+        });
+    }, 50);
+}
+
+// ── NFC-V2.3-UI: Activity Feed ────────────────────────────────────────────
+
+async function loadNfcFeed() {
+    const el = document.getElementById("admin-nfc-feed");
+    if (!el) return;
+    try {
+        const data = await API.get("/api/admin/nfc/activity?limit=40");
+        _nfcFeedData = Array.isArray(data) ? data : [];
+        if (!_nfcFeedData.length) {
+            el.innerHTML = '<p class="admin-nfc-empty">Aucune activité récente.</p>';
+            return;
+        }
+        // NFC-V2.3-UI: clickable feed items with data-sid
+        el.innerHTML = _nfcFeedData.map(item => {
+            const icon = item.type === "confirmation" ? "🔥" : item.type === "resolved" ? "✅" : "🆕";
+            const label = item.type === "confirmation"
+                ? `Confirmation — ${esc(item.title)}`
+                : item.type === "resolved"
+                ? `Résolu — ${esc(item.title)}`
+                : `Nouveau — ${esc(item.title)}`;
+            const time = item.at ? new Date(item.at).toLocaleString("fr-FR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }) : "";
+            return `
+            <div class="admin-nfc-feed-item" data-sid="${item.suggestion_id || ""}" tabindex="0" role="button">
+                <span class="admin-nfc-feed-icon">${icon}</span>
+                <span class="admin-nfc-feed-text">${label} <small style="color:#94a3b8">(${esc(item.location_name)})</small></span>
+                <span class="admin-nfc-feed-time">${time}</span>
+            </div>`;
+        }).join("");
+
+        // NFC-V2.3-UI: feed item click → open drawer with detail
+        el.querySelectorAll(".admin-nfc-feed-item[data-sid]").forEach(item => {
+            const handler = () => _nfcFeedItemClick(item.dataset.sid);
+            item.addEventListener("click", handler);
+            item.addEventListener("keydown", e => { if (e.key === "Enter") handler(); });
+        });
+    } catch {
+        el.innerHTML = '<p class="admin-nfc-empty">Erreur de chargement.</p>';
+    }
+}
+
+function _nfcFeedItemClick(sid) {
+    if (!sid) return;
+    const item = _nfcFeedData.find(f => String(f.suggestion_id) === String(sid));
+    if (!item) return;
+
+    const icon = item.type === "confirmation" ? "🔥" : item.type === "resolved" ? "✅" : "🆕";
+    const typeLabel = item.type === "confirmation" ? "Confirmation" : item.type === "resolved" ? "Résolu" : "Nouveau signalement";
+    const time = item.at ? new Date(item.at).toLocaleString("fr-FR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+
+    // NFC-V2.4: enrichir le drawer avec heat + last activity
+    const html = `
+        <div style="margin-bottom:1.5rem">
+            <div style="font-size:0.78rem;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">${icon} ${esc(typeLabel)}</div>
+            <h4 style="font-size:1.1rem;font-weight:700;margin:0 0 0.5rem">${esc(item.title)}</h4>
+            <div style="display:flex;gap:0.75rem;flex-wrap:wrap;font-size:0.85rem;color:#475569">
+                <span>📍 ${esc(item.location_name)}</span>
+                <span>🕐 ${time}</span>
+            </div>
+        </div>
+        <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
+            <button class="admin-nfc-btn admin-nfc-btn-resolve" onclick="(async()=>{await API.put('/api/admin/nfc/suggestions/${sid}/status',{status:'resolved'});closeNfcDrawer();_nfcRefreshAll();})()">Résolu</button>
+            <button class="admin-nfc-btn admin-nfc-btn-progress" onclick="(async()=>{await API.put('/api/admin/nfc/suggestions/${sid}/status',{status:'in_progress'});closeNfcDrawer();_nfcRefreshAll();})()">En cours</button>
+            <button class="admin-nfc-btn admin-nfc-btn-delete" onclick="(async()=>{await API.put('/api/admin/nfc/suggestions/${sid}/status',{status:'deleted'});closeNfcDrawer();_nfcRefreshAll();})()">Supprimer</button>
+        </div>`;
+    openNfcDrawer(item.title, html);
+}
+
+// ── NFC-V2.3-UI: Create location ──────────────────────────────────────────
+
+async function wireNfcCreate() {
+    const btn = document.getElementById("nfc-create-btn");
+    if (!btn || btn.dataset.wired === "1") return;
+    btn.dataset.wired = "1";
+
+    // NFC-V2.4: charger les lieux existants pour le sélecteur
+    const baseSel = document.getElementById("nfc-new-base-location");
+    const subSel = document.getElementById("nfc-new-sub-location");
+    if (baseSel && !_nfcBaseLocations) {
+        try { _nfcBaseLocations = await API.get("/api/admin/nfc/base-locations"); } catch { _nfcBaseLocations = []; }
+        baseSel.innerHTML = '<option value="">— Aucun (lieu libre) —</option>' +
+            _nfcBaseLocations.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
+        baseSel.addEventListener("change", () => {
+            const id = parseInt(baseSel.value);
+            const loc = _nfcBaseLocations?.find(l => l.id === id);
+            if (subSel) {
+                subSel.innerHTML = '<option value="">— Aucun —</option>' +
+                    (loc?.placements || []).map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
+                subSel.closest(".admin-nfc-form-group").hidden = !(loc?.placements?.length);
+            }
+        });
+        if (subSel) subSel.closest(".admin-nfc-form-group").hidden = true;
+    }
+
+    btn.addEventListener("click", async () => {
+        const name = document.getElementById("nfc-new-name")?.value.trim();
+        if (!name) return;
+        const category = document.getElementById("nfc-new-category")?.value || "Général";
+        const floor = document.getElementById("nfc-new-floor")?.value.trim();
+        const description = document.getElementById("nfc-new-description")?.value.trim();
+        const baseLocId = document.getElementById("nfc-new-base-location")?.value || null;
+        const baseLoc = baseLocId ? _nfcBaseLocations?.find(l => l.id === parseInt(baseLocId)) : null;
+        const building = baseLoc ? baseLoc.name : "";
+        const sub_location = document.getElementById("nfc-new-sub-location")?.value.trim() || null;
+        const custom_detail = document.getElementById("nfc-new-custom-detail")?.value.trim() || null;
+        btn.disabled = true;
+        try {
+            const resp = await API.post("/api/admin/nfc/locations", {
+                name, category, building, floor, description,
+                base_location_id: baseLocId, sub_location, custom_detail
+            });
+            if (resp.status >= 400) throw new Error((resp.data && resp.data.error) || "Erreur");
+            const slug = resp.data.slug;
+            document.getElementById("nfc-new-name").value = "";
+            document.getElementById("nfc-new-floor").value = "";
+            document.getElementById("nfc-new-description").value = "";
+            if (document.getElementById("nfc-new-custom-detail")) document.getElementById("nfc-new-custom-detail").value = "";
+            await loadNfcLocations();
+            await loadNfcDashboard();
+            _nfcShowQr(slug, name);
+        } catch (err) {
+            alert(err.message || "Erreur");
+        }
+        btn.disabled = false;
+    });
+}
+
+// ── NFC-V2.3-UI: Location Detail Modal ────────────────────────────────────
+
+function wireNfcDetailModal() {
+    const modal = document.getElementById("admin-nfc-detail-modal");
+    const closeBtn = document.getElementById("admin-nfc-detail-close");
+    if (!modal) return;
+    if (closeBtn) closeBtn.addEventListener("click", () => { modal.hidden = true; modal.classList.remove("admin-nfc-modal--visible"); });
+    modal.addEventListener("click", e => { if (e.target === modal) { modal.hidden = true; modal.classList.remove("admin-nfc-modal--visible"); } });
+
+    // NFC-V2.4: handle both card and list row clicks
+    document.getElementById("admin-nfc-locations")?.addEventListener("click", async e => {
+        const card = e.target.closest(".admin-nfc-loc-card") || e.target.closest(".admin-nfc-list-row");
+        if (!card) return;
+        const locId = parseInt(card.dataset.locId, 10);
+        const loc = nfcLocations.find(l => l.id === locId);
+        if (!loc) return;
+        await openNfcLocDetail(loc);
+    });
+}
+
+async function openNfcLocDetail(loc) {
+    const modal = document.getElementById("admin-nfc-detail-modal");
+    const content = document.getElementById("admin-nfc-detail-content");
+    if (!modal || !content) return;
+
+    content.innerHTML = '<p class="admin-nfc-loading">Chargement…</p>';
+    modal.hidden = false;
+    modal.classList.add("admin-nfc-modal--visible");
+
+    let suggestions = [];
+    try {
+        suggestions = await API.get(`/api/admin/nfc/locations/${loc.id}/suggestions`);
+    } catch { /* ignore */ }
+
+    // NFC-V2.3-UI: image with crop support
+    const imgHtml = loc.image_url
+        ? `<div id="nfc-crop-container">
+             <img id="nfc-crop-img" src="${esc(loc.image_url)}" style="width:100%;max-height:300px;border-radius:12px">
+           </div>
+           <div style="display:flex;gap:0.4rem;margin:0.5rem 0 0.75rem">
+             <button class="btn btn-sm btn-secondary" id="nfc-crop-start">Recadrer</button>
+             <button class="btn btn-sm" id="nfc-crop-save" style="background:#dcfce7;color:#166534" hidden>Valider le recadrage</button>
+             <button class="btn btn-sm" id="nfc-crop-cancel" hidden>Annuler</button>
+           </div>`
+        : "";
+    const uploadId = `nfc-img-upload-${loc.id}`;
+    const cats = ["Général","Sanitaire","Salle de cours","Cantine","CDI","Hall","Couloir","Extérieur","Autre"];
+    const catOpts = cats.map(c => `<option value="${c}" ${c === loc.category ? "selected" : ""}>${c}</option>`).join("");
+
+    // NFC-V2.3-UI: full edit form + QR + suspension controls
+    content.innerHTML = `
+        ${imgHtml}
+        <h2 class="admin-nfc-modal-title">${esc(loc.name)}</h2>
+        <a href="/nfc/${esc(loc.slug)}?s=1" target="_blank" class="admin-nfc-modal-link">Ouvrir la page NFC ↗</a>
+
+        <details class="admin-nfc-edit-details">
+            <summary>Modifier ce lieu</summary>
+            <div class="admin-nfc-edit-grid">
+                <label>Nom<input type="text" id="nfc-edit-name" value="${esc(loc.name)}"></label>
+                <label>Slug<input type="text" id="nfc-edit-slug" value="${esc(loc.slug)}"></label>
+                <label>Catégorie<select id="nfc-edit-category">${catOpts}</select></label>
+                <label>UID NFC<input type="text" id="nfc-edit-nfcuid" value="${esc(loc.nfc_uid || "")}"></label>
+                <label>Lieu principal rattaché
+                    <select id="nfc-edit-base-location"><option value="">— Aucun —</option></select>
+                </label>
+                <label>Sous-emplacement
+                    <select id="nfc-edit-sub-location"><option value="">— Aucun —</option></select>
+                </label>
+                <label>Détail personnalisé<input type="text" id="nfc-edit-custom-detail" value="${esc(loc.custom_detail || "")}"></label>
+                <label>Étage<input type="text" id="nfc-edit-floor" value="${esc(loc.floor || "")}"></label>
+                <label style="grid-column:1/-1">Description<textarea id="nfc-edit-desc" rows="2" style="resize:vertical;font-family:inherit">${esc(loc.description || "")}</textarea></label>
+            </div>
+            <div style="padding:0 0.85rem 0.85rem"><button class="btn btn-primary btn-sm" id="nfc-edit-save">Sauvegarder</button></div>
+        </details>
+
+        <div style="margin:0.75rem 0">
+            <label class="admin-nfc-form-label">Photo du lieu</label>
+            <input type="file" id="${uploadId}" accept="image/*" style="font-size:0.82rem;margin-top:0.25rem">
+        </div>
+
+        <!-- NFC-V2.3-UI: QR code section in modal -->
+        <div class="admin-nfc-qr-container" id="nfc-modal-qr">
+            <h4 class="admin-nfc-qr-title">QR Code</h4>
+            <p class="admin-nfc-qr-subtitle">Imprimez et placez à côté du tag NFC</p>
+            <div class="admin-nfc-qr-canvas" id="nfc-modal-qr-render"></div>
+            <div class="admin-nfc-qr-actions">
+                <button class="btn btn-sm btn-primary" id="nfc-modal-qr-download">Télécharger</button>
+                <button class="btn btn-sm btn-secondary" id="nfc-modal-qr-copy">Copier le lien</button>
+            </div>
+        </div>
+
+        <div class="admin-nfc-modal-actions">
+            <button class="btn btn-sm btn-secondary" id="nfc-toggle-active-${loc.id}">${loc.is_active ? "Désactiver" : "Activer"}</button>
+            <button class="btn btn-sm admin-nfc-btn${loc.pause_suggestions ? " admin-nfc-btn-resolve" : " admin-nfc-btn-open"}" id="nfc-pause-sugg-${loc.id}">${loc.pause_suggestions ? "Reprendre suggestions" : "Suspendre suggestions"}</button>
+            <button class="btn btn-sm admin-nfc-btn${loc.pause_confirmations ? " admin-nfc-btn-resolve" : " admin-nfc-btn-open"}" id="nfc-pause-conf-${loc.id}">${loc.pause_confirmations ? "Reprendre confirmations" : "Suspendre confirmations"}</button>
+            <button class="btn btn-sm admin-nfc-btn-delete" id="nfc-delete-loc-${loc.id}">Supprimer</button>
+        </div>
+
+        <div class="admin-nfc-modal-section">
+            <h4 class="admin-nfc-modal-section-title">Problèmes (${suggestions.length})</h4>
+            <div id="nfc-detail-problems"></div>
+        </div>
+    `;
+
+    // NFC-V2.3-UI: render QR code in modal
+    setTimeout(() => {
+        const qrEl = document.getElementById("nfc-modal-qr-render");
+        const qrUrl = `${location.origin}/nfc/${loc.slug}?s=1`;
+        if (qrEl && typeof QRCode !== "undefined") {
+            qrEl.innerHTML = "";
+            new QRCode(qrEl, { text: qrUrl, width: 180, height: 180, correctLevel: QRCode.CorrectLevel.M });
+        }
+        document.getElementById("nfc-modal-qr-download")?.addEventListener("click", () => {
+            const canvas = qrEl?.querySelector("canvas");
+            if (!canvas) return;
+            const a = document.createElement("a");
+            a.download = `qr-${loc.slug}.png`;
+            a.href = canvas.toDataURL("image/png");
+            a.click();
+        });
+        document.getElementById("nfc-modal-qr-copy")?.addEventListener("click", () => {
+            navigator.clipboard?.writeText(qrUrl).then(() => {
+                const btn = document.getElementById("nfc-modal-qr-copy");
+                if (btn) { btn.textContent = "Copié !"; setTimeout(() => btn.textContent = "Copier le lien", 1500); }
+            });
+        });
+    }, 50);
+
+    // NFC-V2.3-UI: render problems
+    const probContainer = document.getElementById("nfc-detail-problems");
+    if (!suggestions.length) {
+        probContainer.innerHTML = '<p class="admin-nfc-empty">Aucun signalement.</p>';
+    } else {
+        probContainer.innerHTML = suggestions.map(s => {
+            const replyHtml = s.admin_reply
+                ? `<div class="admin-nfc-modal-reply-preview">💬 ${esc(s.admin_reply).substring(0, 80)}${s.admin_reply.length > 80 ? "…" : ""}</div>`
+                : "";
+            const statusBadge = `<span class="admin-nfc-badge-status admin-nfc-badge-status--${s.status}">${esc(s.status)}</span>`;
+            const statusActions = [];
+            if (s.status !== "resolved") statusActions.push(`<button class="admin-nfc-btn admin-nfc-btn-resolve" data-sid="${s.id}" data-action="resolved">Résolu</button>`);
+            if (s.status === "open") statusActions.push(`<button class="admin-nfc-btn admin-nfc-btn-progress" data-sid="${s.id}" data-action="in_progress">En cours</button>`);
+            if (s.status === "resolved" || s.status === "deleted") statusActions.push(`<button class="admin-nfc-btn admin-nfc-btn-progress" data-sid="${s.id}" data-action="open">Rouvrir</button>`);
+            if (s.status !== "deleted") statusActions.push(`<button class="admin-nfc-btn admin-nfc-btn-delete" data-sid="${s.id}" data-action="deleted">Suppr.</button>`);
+            return `
+            <div class="admin-nfc-problem-row${s.is_urgent ? " admin-nfc-problem-row--urgent" : ""}" data-sid="${s.id}">
+                <div class="admin-nfc-problem-info">
+                    <span class="admin-nfc-problem-title">${s.is_urgent ? "⚠️ " : ""}${esc(s.title)}${s.is_recurring ? " 🔄" : ""}</span>
+                    <div class="admin-nfc-problem-meta">
+                        <span>🔥 ${s.confirmation_count}${s.support_count ? ` · 👍 ${s.support_count}` : ""}</span>
+                        ${s.heat_score != null ? `<span><b>${s.heat_score}</b>pts</span>` : ""}
+                        ${statusBadge}
+                        ${_nfcLevelBadge(s.heat_level)}
+                    </div>
+                    ${replyHtml}
+                </div>
+                <div class="admin-nfc-problem-actions">${statusActions.join("")}
+                    <button class="admin-nfc-btn admin-nfc-btn-reply" data-sid="${s.id}" title="Répondre">💬</button>
+                </div>
+            </div>`;
+        }).join("");
+    }
+
+    // NFC-V2.4: populate base-location selector in edit form
+    const editBaseSel = document.getElementById("nfc-edit-base-location");
+    const editSubSel = document.getElementById("nfc-edit-sub-location");
+    if (editBaseSel) {
+        if (!_nfcBaseLocations) {
+            try { _nfcBaseLocations = await API.get("/api/admin/nfc/base-locations"); } catch { _nfcBaseLocations = []; }
+        }
+        editBaseSel.innerHTML = '<option value="">— Aucun —</option>' +
+            _nfcBaseLocations.map(l => `<option value="${l.id}"${l.id === loc.base_location_id ? " selected" : ""}>${esc(l.name)}</option>`).join("");
+        const populateSubs = () => {
+            const id = parseInt(editBaseSel.value);
+            const bl = _nfcBaseLocations?.find(l => l.id === id);
+            if (editSubSel) {
+                editSubSel.innerHTML = '<option value="">— Aucun —</option>' +
+                    (bl?.placements || []).map(p => `<option value="${esc(p.name)}"${p.name === loc.sub_location ? " selected" : ""}>${esc(p.name)}</option>`).join("");
+            }
+        };
+        populateSubs();
+        editBaseSel.addEventListener("change", populateSubs);
+    }
+
+    document.getElementById("nfc-edit-save")?.addEventListener("click", async () => {
+        const btn = document.getElementById("nfc-edit-save");
+        btn.disabled = true;
+        try {
+            const baseLocId = document.getElementById("nfc-edit-base-location")?.value || null;
+            const baseLoc = baseLocId ? _nfcBaseLocations?.find(l => l.id === parseInt(baseLocId)) : null;
+            const payload = {
+                name: document.getElementById("nfc-edit-name")?.value.trim(),
+                slug: document.getElementById("nfc-edit-slug")?.value.trim(),
+                category: document.getElementById("nfc-edit-category")?.value,
+                nfc_uid: document.getElementById("nfc-edit-nfcuid")?.value.trim(),
+                building: baseLoc ? baseLoc.name : "",
+                floor: document.getElementById("nfc-edit-floor")?.value.trim(),
+                description: document.getElementById("nfc-edit-desc")?.value.trim(),
+                base_location_id: baseLocId,
+                sub_location: document.getElementById("nfc-edit-sub-location")?.value.trim() || null,
+                custom_detail: document.getElementById("nfc-edit-custom-detail")?.value.trim() || null,
+            };
+            const r = await API.put(`/api/admin/nfc/locations/${loc.id}`, payload);
+            if (r.status >= 400) throw new Error(r.data?.error || "Erreur");
+            Object.assign(loc, payload);
+            await loadNfcLocations();
+            openNfcLocDetail(loc);
+        } catch (err) { alert(err.message); }
+        btn.disabled = false;
+    });
+
+    // NFC-V2.3-UI: upload image
+    document.getElementById(uploadId)?.addEventListener("change", async e => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const fd = new FormData();
+        fd.append("file", file);
+        try {
+            const r = await fetch(`/api/admin/nfc/locations/${loc.id}/image`, { method: "POST", credentials: "same-origin", body: fd });
+            const data = await r.json();
+            if (r.ok && data.image_url) { loc.image_url = data.image_url; openNfcLocDetail(loc); }
+        } catch { /* ignore */ }
+    });
+
+    // NFC-V2.3-UI: crop with Cropper.js
+    let _cropper = null;
+    document.getElementById("nfc-crop-start")?.addEventListener("click", () => {
+        const img = document.getElementById("nfc-crop-img");
+        if (!img || typeof Cropper === "undefined") return;
+        if (_cropper) return;
+        _cropper = new Cropper(img, { aspectRatio: 16 / 9, viewMode: 1, responsive: true, background: false });
+        document.getElementById("nfc-crop-save").hidden = false;
+        document.getElementById("nfc-crop-cancel").hidden = false;
+        document.getElementById("nfc-crop-start").hidden = true;
+    });
+    document.getElementById("nfc-crop-cancel")?.addEventListener("click", () => {
+        if (_cropper) { _cropper.destroy(); _cropper = null; }
+        document.getElementById("nfc-crop-save").hidden = true;
+        document.getElementById("nfc-crop-cancel").hidden = true;
+        document.getElementById("nfc-crop-start").hidden = false;
+    });
+    document.getElementById("nfc-crop-save")?.addEventListener("click", async () => {
+        if (!_cropper) return;
+        const d = _cropper.getData(true);
+        const btn = document.getElementById("nfc-crop-save");
+        btn.disabled = true; btn.textContent = "Recadrage…";
+        try {
+            const r = await API.post(`/api/admin/nfc/locations/${loc.id}/image/crop`, { x: d.x, y: d.y, width: d.width, height: d.height });
+            if (r.data?.ok) { loc.image_url = r.data.image_url; openNfcLocDetail(loc); }
+            else { alert(r.data?.error || "Erreur"); }
+        } catch { alert("Erreur de recadrage."); }
+        btn.disabled = false; btn.textContent = "Valider le recadrage";
+    });
+
+    // NFC-V2.3-UI: toggle active
+    document.getElementById(`nfc-toggle-active-${loc.id}`)?.addEventListener("click", async () => {
+        await API.put(`/api/admin/nfc/locations/${loc.id}`, { is_active: !loc.is_active });
+        loc.is_active = !loc.is_active;
+        await loadNfcLocations(); openNfcLocDetail(loc);
+    });
+
+    // NFC-V2.3-UI: granular pause
+    document.getElementById(`nfc-pause-sugg-${loc.id}`)?.addEventListener("click", async () => {
+        const r = await API.put(`/api/admin/nfc/locations/${loc.id}/pause`, { pause_suggestions: !loc.pause_suggestions });
+        if (r.data?.ok) { loc.pause_suggestions = !loc.pause_suggestions; openNfcLocDetail(loc); loadNfcLocations(); }
+    });
+    document.getElementById(`nfc-pause-conf-${loc.id}`)?.addEventListener("click", async () => {
+        const r = await API.put(`/api/admin/nfc/locations/${loc.id}/pause`, { pause_confirmations: !loc.pause_confirmations });
+        if (r.data?.ok) { loc.pause_confirmations = !loc.pause_confirmations; openNfcLocDetail(loc); loadNfcLocations(); }
+    });
+
+    // NFC-V2.4: delete with proper feedback + force-delete option
+    document.getElementById(`nfc-delete-loc-${loc.id}`)?.addEventListener("click", async () => {
+        if (!confirm(`Supprimer le lieu « ${loc.name} » ?`)) return;
+        const r = await API.delete(`/api/admin/nfc/locations/${loc.id}`);
+        if (r.data?.deactivated) {
+            const force = confirm(
+                "Ce lieu a des signalements liés — il a été désactivé.\n\n" +
+                "Voulez-vous supprimer définitivement le lieu et détacher tous ses signalements ?"
+            );
+            if (force) {
+                const r2 = await API.delete(`/api/admin/nfc/locations/${loc.id}?force=1`);
+                if (r2.data?.deleted) {
+                    modal.hidden = true; modal.classList.remove("admin-nfc-modal--visible");
+                    await loadNfcLocations(); await loadNfcDashboard();
+                    return;
+                }
+            }
+            await loadNfcLocations();
+            openNfcLocDetail({ ...loc, is_active: false });
+            return;
+        }
+        if (r.data?.deleted) {
+            modal.hidden = true; modal.classList.remove("admin-nfc-modal--visible");
+            await loadNfcLocations(); await loadNfcDashboard();
+        }
+    });
+
+    // NFC-V2.3-UI: status actions on problems
+    probContainer?.addEventListener("click", async e => {
+        const btn = e.target.closest("[data-action]");
+        if (!btn) return;
+        const sid = parseInt(btn.dataset.sid, 10);
+        btn.disabled = true;
+        await API.put(`/api/admin/nfc/suggestions/${sid}/status`, { status: btn.dataset.action });
+        openNfcLocDetail(loc); _nfcRefreshAll();
+    });
+
+    // NFC-V2.3-UI: inline reply form
+    probContainer?.addEventListener("click", async e => {
+        const btn = e.target.closest(".admin-nfc-btn-reply");
+        if (!btn) return;
+        const sid = parseInt(btn.dataset.sid, 10);
+        const row = btn.closest(".admin-nfc-problem-row");
+        if (!row || row.querySelector(".admin-nfc-reply-form")) return;
+        const existing = suggestions.find(x => x.id === sid);
+        const form = document.createElement("div");
+        form.className = "admin-nfc-reply-form";
+        form.innerHTML = `
+            <textarea class="admin-nfc-reply-input" rows="2" maxlength="2000" placeholder="Réponse visible par les élèves…">${esc(existing?.admin_reply || "")}</textarea>
+            <div class="admin-nfc-reply-actions">
+                <button class="btn btn-sm btn-primary admin-nfc-reply-save">Enregistrer</button>
+                <button class="btn btn-sm admin-nfc-reply-cancel">Annuler</button>
+                ${existing?.admin_reply ? '<button class="btn btn-sm admin-nfc-reply-delete" style="color:#dc2626">Supprimer</button>' : ""}
+            </div>`;
+        row.appendChild(form);
+        const ta = form.querySelector("textarea");
+        ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+        form.querySelector(".admin-nfc-reply-cancel").addEventListener("click", () => form.remove());
+        form.querySelector(".admin-nfc-reply-save").addEventListener("click", async () => {
+            const reply = ta.value.trim();
+            await API.put(`/api/admin/nfc/suggestions/${sid}/reply`, { reply: reply || "" });
+            openNfcLocDetail(loc);
+        });
+        form.querySelector(".admin-nfc-reply-delete")?.addEventListener("click", async () => {
+            await API.put(`/api/admin/nfc/suggestions/${sid}/reply`, { reply: "" });
+            openNfcLocDetail(loc);
+        });
+    });
+}
+
+// ── NFC-V2.3-UI: History ──────────────────────────────────────────────────
+
+function wireNfcHistory() {
+    const btn = document.getElementById("nfc-history-load");
+    if (!btn || btn.dataset.wired === "1") return;
+    btn.dataset.wired = "1";
+    btn.addEventListener("click", () => loadNfcHistory(1));
+    loadNfcHistory(1);
+}
+
+async function loadNfcHistory(page) {
+    _nfcCurrentHistoryPage = page || 1;
+    const el = document.getElementById("admin-nfc-history-list");
+    const pagEl = document.getElementById("admin-nfc-history-pagination");
+    if (!el) return;
+    el.innerHTML = '<p class="admin-nfc-loading">Chargement…</p>';
+    const status = document.getElementById("nfc-history-status")?.value || "";
+    try {
+        const d = await API.get(`/api/admin/nfc/history?page=${page}&status=${status}`);
+        if (!d.items?.length) { el.innerHTML = '<p class="admin-nfc-empty">Aucun résultat.</p>'; if (pagEl) pagEl.innerHTML = ""; return; }
+
+        // NFC-V2.4: history entries with heat score, level, last activity, reopen badge
+        el.innerHTML = d.items.map(s => {
+            const statusMap = { open: "Ouvert", in_progress: "En cours", resolved: "Résolu", deleted: "Supprimé" };
+            const statusLabel = statusMap[s.status] || s.status;
+            const date = s.created_at ? new Date(s.created_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }) : "";
+            const reopenedBadge = s.reopened_at ? '<span class="nfc-badge nfc-badge--open">🔄 Réouverte</span>' : "";
+            return `
+            <div class="admin-nfc-history-entry admin-nfc-history-entry--${s.status}${s.reopened_at ? " admin-nfc-history-entry--reopened" : ""}" data-hsid="${s.id}" tabindex="0" role="button">
+                <div class="admin-nfc-history-info">
+                    <div class="admin-nfc-history-title">${esc(s.title)}</div>
+                    <div class="admin-nfc-history-meta">
+                        <span>📍 ${esc(s.location_name)}</span>
+                        <span>🔥 ${s.confirmation_count}</span>
+                        ${s.heat_score != null ? `<span><b>${s.heat_score}</b>pts</span>` : ""}
+                        ${_nfcTimeAgo(s.last_activity_minutes) ? `<span>${_nfcTimeAgo(s.last_activity_minutes)}</span>` : ""}
+                    </div>
+                    <div class="admin-nfc-history-badges">
+                        <span class="admin-nfc-badge-status admin-nfc-badge-status--${s.status}">${statusLabel}</span>
+                        ${_nfcLevelBadge(s.heat_level)}
+                        ${s.is_recurring ? '<span class="nfc-badge nfc-badge--recur">🔄 Récurrent</span>' : ""}
+                        ${s.admin_reply ? '<span class="nfc-badge nfc-badge--nfc">💬 Répondu</span>' : ""}
+                        ${reopenedBadge}
+                    </div>
+                </div>
+                <div class="admin-nfc-history-actions">
+                    ${s.status === "resolved" || s.status === "deleted" ? `<button class="admin-nfc-btn admin-nfc-btn-progress" onclick="event.stopPropagation();restoreNfcSuggestion(${s.id})">Rouvrir</button>` : ""}
+                    <span class="admin-nfc-history-date">${date}</span>
+                </div>
+            </div>`;
+        }).join("");
+
+        // NFC-V2.4: click on history entry → open drawer
+        el.querySelectorAll("[data-hsid]").forEach(entry => {
+            const handler = () => {
+                const sid = entry.dataset.hsid;
+                const s = d.items.find(i => String(i.id) === sid);
+                if (!s) return;
+                const statusMap = { open: "Ouvert", in_progress: "En cours", resolved: "Résolu", deleted: "Supprimé" };
+                const date = s.created_at ? new Date(s.created_at).toLocaleString("fr-FR") : "—";
+                const html = `
+                    <div style="margin-bottom:1rem">
+                        <h4 style="font-size:1.1rem;font-weight:700;margin:0 0 0.5rem">${esc(s.title)}</h4>
+                        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.5rem">
+                            <span class="admin-nfc-badge-status admin-nfc-badge-status--${s.status}">${statusMap[s.status] || s.status}</span>
+                            ${_nfcLevelBadge(s.heat_level)}
+                            ${s.reopened_at ? '<span class="nfc-badge nfc-badge--open">🔄 Réouverte</span>' : ""}
+                        </div>
+                        <div style="font-size:0.85rem;color:#475569;display:flex;flex-direction:column;gap:0.3rem">
+                            <span>📍 ${esc(s.location_name)}</span>
+                            <span>🔥 ${s.confirmation_count} confirmations${s.support_count ? ` · 👍 ${s.support_count} soutiens` : ""}</span>
+                            <span>${s.heat_score != null ? `Score: <b>${s.heat_score}</b>pts` : ""} ${_nfcTimeAgo(s.last_activity_minutes) ? `· ${_nfcTimeAgo(s.last_activity_minutes)}` : ""}</span>
+                            <span>📅 ${date}</span>
+                        </div>
+                        ${s.admin_reply ? '<div class="admin-nfc-modal-reply-preview" style="margin-top:0.75rem">💬 ' + esc(s.admin_reply) + '</div>' : ""}
+                    </div>
+                    <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
+                        ${s.status !== "resolved" ? `<button class="admin-nfc-btn admin-nfc-btn-resolve" onclick="(async()=>{await API.put('/api/admin/nfc/suggestions/${s.id}/status',{status:'resolved'});closeNfcDrawer();_nfcRefreshAll();})()">Résolu</button>` : ""}
+                        ${s.status === "open" ? `<button class="admin-nfc-btn admin-nfc-btn-progress" onclick="(async()=>{await API.put('/api/admin/nfc/suggestions/${s.id}/status',{status:'in_progress'});closeNfcDrawer();_nfcRefreshAll();})()">En cours</button>` : ""}
+                        ${s.status === "resolved" || s.status === "deleted" ? `<button class="admin-nfc-btn admin-nfc-btn-progress" onclick="(async()=>{await API.put('/api/admin/nfc/suggestions/${s.id}/status',{status:'open'});closeNfcDrawer();_nfcRefreshAll();})()">Rouvrir</button>` : ""}
+                    </div>`;
+                openNfcDrawer(s.title, html);
+            };
+            entry.addEventListener("click", handler);
+            entry.addEventListener("keydown", e => { if (e.key === "Enter") handler(); });
+        });
+
+        const totalPages = Math.ceil(d.total / d.per_page);
+        if (pagEl) {
+            pagEl.innerHTML = totalPages > 1
+                ? Array.from({length: totalPages}, (_, i) =>
+                    `<button class="btn btn-sm${i+1===page?" btn-primary":""}" onclick="loadNfcHistory(${i+1})">${i+1}</button>`
+                  ).join("")
+                : "";
+        }
+    } catch { el.innerHTML = '<p class="admin-nfc-empty">Erreur.</p>'; }
+}
+
+// NFC-V2.4: réouverture + highlight
+async function restoreNfcSuggestion(sid) {
+    await API.put(`/api/admin/nfc/suggestions/${sid}/status`, { status: "open" });
+    await _nfcRefreshAll();
+    setTimeout(() => {
+        const entry = document.querySelector(`[data-hsid="${sid}"]`);
+        if (entry) {
+            entry.classList.add("admin-nfc-history-entry--reopened");
+            entry.scrollIntoView({ behavior: "smooth", block: "center" });
+            setTimeout(() => entry.classList.remove("admin-nfc-history-entry--reopened"), 3000);
+        }
+    }, 300);
+}
+
+// ── NFC-V2.3-UI: Logs ─────────────────────────────────────────────────────
+
+function wireNfcLogs() {
+    const btn = document.getElementById("nfc-logs-load");
+    if (!btn || btn.dataset.wired === "1") return;
+    btn.dataset.wired = "1";
+    btn.addEventListener("click", loadNfcLogs);
+    document.getElementById("nfc-logs-export")?.addEventListener("click", () => {
+        const days = document.getElementById("nfc-logs-days")?.value || "7";
+        window.open(`/api/admin/nfc/logs/export?day=`, "_blank");
+    });
+}
+
+async function loadNfcLogs() {
+    const el = document.getElementById("admin-nfc-logs-content");
+    if (!el) return;
+    const days = document.getElementById("nfc-logs-days")?.value || "7";
+    el.innerHTML = '<p class="admin-nfc-loading">Chargement…</p>';
+    try {
+        const d = await API.get(`/api/admin/nfc/logs?days=${days}`);
+        if (!d.days || !Object.keys(d.days).length) { el.innerHTML = '<p class="admin-nfc-empty">Aucun log.</p>'; return; }
+        const sortedDays = Object.keys(d.days).sort().reverse();
+        // NFC-V2.3-UI: styled log days
+        el.innerHTML = sortedDays.map(day => {
+            const logs = d.days[day];
+            return `
+            <details class="admin-nfc-log-day">
+                <summary>${day} <small style="color:#94a3b8;font-weight:400">(${logs.length} événement${logs.length > 1 ? "s" : ""})</small>
+                    <a href="/api/admin/nfc/logs/export?day=${day}" class="btn btn-sm btn-secondary" style="font-size:0.7rem;padding:0.15rem 0.4rem" onclick="event.stopPropagation()">CSV</a>
+                </summary>
+                <div class="admin-nfc-log-entries">${logs.map(l => `
+                    <div class="admin-nfc-log-entry">
+                        <span class="admin-nfc-log-time">${l.created_at ? new Date(l.created_at).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}) : ""}</span>
+                        <span>${esc(l.message)}</span>
+                    </div>`).join("")}
+                </div>
+            </details>`;
+        }).join("");
+    } catch { el.innerHTML = '<p class="admin-nfc-empty">Erreur.</p>'; }
+}
+
+// ── NFC-V2.3-UI: Settings ─────────────────────────────────────────────────
+
+function wireNfcSettings() {
+    const btn = document.getElementById("nfc-settings-save");
+    if (!btn || btn.dataset.wired === "1") return;
+    btn.dataset.wired = "1";
+    loadNfcSettings();
+    btn.addEventListener("click", saveNfcSettings);
+}
+
+async function loadNfcSettings() {
+    const el = document.getElementById("admin-nfc-settings-form");
+    if (!el) return;
+    try {
+        const d = await API.get("/api/admin/nfc/settings");
+        const labels = {
+            nfc_confirm_per_sugg_window: ["Cooldown confirmation (s)", "Temps minimum (en secondes) entre deux confirmations d'un même problème par la même personne. Ex : 3600 = 1h."],
+            nfc_confirm_per_sugg_max: ["Max confirmations / cooldown", "Nombre maximum de confirmations qu'une personne peut faire sur le même problème durant le cooldown."],
+            nfc_create_per_loc_window: ["Cooldown création (s)", "Temps minimum (en secondes) entre deux signalements sur le même lieu par la même personne. Empêche le spam."],
+            nfc_create_per_loc_max: ["Max créations / cooldown", "Nombre maximum de signalements créés sur le même lieu durant le cooldown."],
+            nfc_confirm_global_window: ["Fenêtre confirmations globales (s)", "Fenêtre de temps globale pour limiter le nombre total de confirmations d'une personne sur tous les lieux."],
+            nfc_confirm_global_max: ["Max confirmations globales", "Nombre maximum de confirmations qu'une personne peut faire au total durant la fenêtre globale."],
+            nfc_create_global_window: ["Fenêtre créations globales (s)", "Fenêtre de temps globale pour limiter le nombre total de signalements créés."],
+            nfc_create_global_max: ["Max créations globales", "Nombre maximum de signalements créés au total durant la fenêtre globale."],
+            nfc_burst_window: ["Fenêtre burst (s)", "Fenêtre courte anti-spam : bloque les actions trop rapides (ex : 10 secondes)."],
+            nfc_burst_max: ["Max actions burst", "Nombre maximum d'actions autorisées dans la fenêtre burst."],
+            nfc_scan_token_ttl: ["Durée scan token (s)", "Durée de validité du jeton après un scan NFC/QR. Après ce délai, l'utilisateur devra rescanner. Ex : 1800 = 30 min."],
+            nfc_scan_max_actions: ["Max actions par scan", "Nombre d'actions (signaler, confirmer) autorisées avec un seul scan NFC."],
+            nfc_qr_token_ttl: ["Durée token QR (s)", "Durée de validité du code QR généré. Ex : 300 = 5 min."],
+            nfc_log_retention_days: ["Rétention des logs (jours)", "Nombre de jours pendant lesquels les logs NFC sont conservés avant suppression automatique."],
+            nfc_heat_urgent_threshold: ["Seuil heat « Urgent »", "Score de chaleur minimum pour qu'un problème soit marqué « Urgent ». La suggestion doit aussi atteindre le seuil de confirmations."],
+            nfc_heat_important_threshold: ["Seuil heat « Important »", "Score de chaleur minimum pour qu'un problème soit marqué « Important »."],
+            nfc_confirm_urgent_threshold: ["Confirmations min. « Urgent »", "Nombre minimum de confirmations pour qu'un problème soit marqué « Urgent » (combiné au seuil heat)."],
+            nfc_confirm_important_threshold: ["Confirmations min. « Important »", "Nombre minimum de confirmations pour qu'un problème soit marqué « Important » (combiné au seuil heat)."],
+        };
+        const groups = {
+            "Anti-spam / Rate-limits": ["nfc_confirm_per_sugg_window","nfc_confirm_per_sugg_max","nfc_create_per_loc_window","nfc_create_per_loc_max","nfc_confirm_global_window","nfc_confirm_global_max","nfc_create_global_window","nfc_create_global_max","nfc_burst_window","nfc_burst_max"],
+            "Tokens & Scan": ["nfc_scan_token_ttl","nfc_scan_max_actions","nfc_qr_token_ttl"],
+            "Seuils Urgent / Important": ["nfc_heat_urgent_threshold","nfc_heat_important_threshold","nfc_confirm_urgent_threshold","nfc_confirm_important_threshold"],
+            "Rétention": ["nfc_log_retention_days"],
+        };
+        let html = "";
+        for (const [groupName, keys] of Object.entries(groups)) {
+            const rows = keys.filter(k => k in d).map(k => {
+                const [label, hint] = labels[k] || [k, ""];
+                return `<div class="admin-nfc-setting-row">
+                    <label class="admin-nfc-form-label">${esc(label)}</label>
+                    ${hint ? `<p class="admin-nfc-setting-desc">${esc(hint)}</p>` : ""}
+                    <input type="number" data-setting-key="${k}" value="${esc(d[k])}" class="admin-nfc-form-input" style="width:100%;margin-top:0.25rem">
+                </div>`;
+            }).join("");
+            if (rows) html += `<fieldset class="admin-nfc-setting-group"><legend>${esc(groupName)}</legend>${rows}</fieldset>`;
+        }
+        el.innerHTML = html;
+    } catch { el.innerHTML = '<p class="admin-nfc-empty">Erreur chargement.</p>'; }
+}
+
+async function saveNfcSettings() {
+    const inputs = document.querySelectorAll("[data-setting-key]");
+    const payload = {};
+    inputs.forEach(inp => { payload[inp.dataset.settingKey] = inp.value; });
+    const r = await API.put("/api/admin/nfc/settings", payload);
+    if (r.data?.ok) { alert("Réglages enregistrés."); } else { alert(r.data?.error || "Erreur"); }
+}
 document.addEventListener("DOMContentLoaded", init);

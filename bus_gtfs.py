@@ -593,52 +593,6 @@ def compute_next_departures(
     return (deduped, False, dbg if pipeline_debug else None)
 
 
-def dedupe_cap(departures: list[dict], max_per_line: int, max_total: int) -> list[dict]:
-    seen: dict[tuple[str, str], int] = {}
-    out: list[dict] = []
-    for d in sorted(departures, key=lambda x: x.get("delay_minutes", 9999)):
-        key = (d.get("route_name") or "", d.get("direction") or "")
-        c = seen.get(key, 0)
-        if c >= max_per_line:
-            continue
-        seen[key] = c + 1
-        out.append(d)
-        if len(out) >= max_total:
-            break
-    return out
-
-
-def bus_is_relevant_now(
-    departures: list[dict],
-    now_dt: datetime,
-    schedule_slots: list[dict],
-    relevance_minutes: int = 30,
-    ignore_schedule: bool = False,
-) -> bool:
-    if not ignore_schedule and schedule_slots:
-        now_min = now_dt.hour * 60 + now_dt.minute
-        in_slot = False
-        for slot in schedule_slots:
-            try:
-                sh, sm = (slot.get("start") or "00:00").split(":")[:2]
-                eh, em = (slot.get("end") or "23:59").split(":")[:2]
-                a = int(sh) * 60 + int(sm)
-                b = int(eh) * 60 + int(em)
-                if a <= now_min <= b:
-                    in_slot = True
-                    break
-            except (ValueError, IndexError):
-                continue
-        if not in_slot:
-            return False
-
-    if not departures:
-        return False
-
-    soon = [d for d in departures if d.get("delay_minutes", 999) <= relevance_minutes]
-    return len(soon) > 0
-
-
 def load_gtfs(gtfs_url_or_path: str, cache_dir: str, max_age_days: int = 7) -> GtfsData | None:
     """
     Charge le GTFS depuis une URL (cache disque, max_age_days) ou un chemin local (zip ou répertoire).
@@ -692,10 +646,6 @@ def load_gtfs(gtfs_url_or_path: str, cache_dir: str, max_age_days: int = 7) -> G
             _gtfs_data = g
             log.info("GTFS chargé: %s arrêts, %s trips", len(g.stops), len(g.trips))
         return g
-
-
-def get_loaded_gtfs() -> GtfsData | None:
-    return _gtfs_data
 
 
 def reset_gtfs_data() -> None:

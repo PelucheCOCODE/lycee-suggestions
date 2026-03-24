@@ -29,11 +29,26 @@ class Suggestion(db.Model):
     calibrated_at = db.Column(db.DateTime, nullable=True)
     reject_reason = db.Column(db.Text, default="")  # motif refus (IA ou admin)
     importance_score = db.Column(db.Float, default=0.0)  # 0–100, agrégat des notes importance
+    # NFC-V2: champs pour suggestions issues du module NFC terrain
+    nfc_location_id = db.Column(db.Integer, db.ForeignKey("nfc_locations.id"), nullable=True)
+    source = db.Column(db.String(10), default="web")  # web | nfc
+    confirmation_count = db.Column(db.Integer, default=0)
+    last_confirmed_at = db.Column(db.DateTime, nullable=True)
+    resolved_by_admin = db.Column(db.Boolean, default=False)
+    # NFC-V2.2-ADMIN: réponse admin visible côté élève
+    admin_reply = db.Column(db.Text, nullable=True)
+    admin_reply_at = db.Column(db.DateTime, nullable=True)
+    # NFC-V2.4: support (soutien global, distinct de confirmation terrain)
+    support_count = db.Column(db.Integer, default=0)
+    hype_count = db.Column(db.Integer, default=0)
+    reopened_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
                            onupdate=lambda: datetime.now(timezone.utc))
 
     location = db.relationship("Location", backref="suggestions")
+    # NFC-V2: relation vers le lieu NFC
+    nfc_location = db.relationship("NfcLocation", backref=db.backref("suggestions", lazy="dynamic"))
     votes = db.relationship("Vote", backref="suggestion", cascade="all, delete-orphan")
     arguments = db.relationship("SuggestionArgument", backref="suggestion", cascade="all, delete-orphan",
                                  order_by="SuggestionArgument.created_at")
@@ -72,6 +87,18 @@ class Suggestion(db.Model):
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "reject_reason": getattr(self, "reject_reason", None) or "",
             "importance_score": float(getattr(self, "importance_score", 0) or 0),
+            # NFC-V2: champs NFC dans la sérialisation
+            "nfc_location_id": getattr(self, "nfc_location_id", None),
+            "source": getattr(self, "source", "web") or "web",
+            "confirmation_count": getattr(self, "confirmation_count", 0) or 0,
+            "support_count": getattr(self, "support_count", 0) or 0,
+            "hype_count": getattr(self, "hype_count", 0) or 0,
+            "last_confirmed_at": self.last_confirmed_at.isoformat() if getattr(self, "last_confirmed_at", None) else None,
+            # NFC-V2.4: infos terrain pour la boîte à idées
+            "nfc_location_name": self.nfc_location.name if getattr(self, "nfc_location", None) else None,
+            "nfc_location_slug": self.nfc_location.slug if getattr(self, "nfc_location", None) else None,
+            "nfc_building": self.nfc_location.building if getattr(self, "nfc_location", None) else None,
+            "nfc_floor": self.nfc_location.floor if getattr(self, "nfc_location", None) else None,
         }
         if self.status == "Terminée" and self.completed_at:
             ca = self.completed_at
@@ -336,6 +363,21 @@ class SiteSettings(db.Model):
         "feature_ringtone_banner_enabled": "false",
         "ringtone_selection_json": "",
         "music_poll_deezer_preview_fallback": "true",
+        # NFC-V2.2-ADMIN: paramètres NFC configurables
+        "nfc_confirm_per_sugg_window": "14400",
+        "nfc_confirm_per_sugg_max": "1",
+        "nfc_create_per_loc_window": "21600",
+        "nfc_create_per_loc_max": "1",
+        "nfc_confirm_global_window": "3600",
+        "nfc_confirm_global_max": "10",
+        "nfc_create_global_window": "86400",
+        "nfc_create_global_max": "5",
+        "nfc_burst_window": "10",
+        "nfc_burst_max": "4",
+        "nfc_scan_token_ttl": "120",
+        "nfc_scan_max_actions": "3",
+        "nfc_qr_token_ttl": "180",
+        "nfc_log_retention_days": "90",
     }
 
 
@@ -837,6 +879,8 @@ class CommunityMessage(db.Model):
     body = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(20), default="approved")  # approved | rejected
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    # FIX-BACKEND-1: idempotence client (retry swipe / mobile) — nullable, unique si présent
+    client_message_id = db.Column(db.String(128), nullable=True, unique=True)
 
 
 class DailyMood(db.Model):
@@ -949,3 +993,106 @@ class MusicVote(db.Model):
     __table_args__ = (
         db.UniqueConstraint("track_id", "session_id", name="uq_music_vote_track_session"),
     )
+
+
+# NFC-V2: Lieu NFC physique (tag placé dans le lycée)
+class NfcLocation(db.Model):
+    __tablename__ = "nfc_locations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    school_id = db.Column(db.String(50), default="default", index=True)
+    slug = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    nfc_uid = db.Column(db.String(100), nullable=True, unique=True)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, default="")
+    image_url = db.Column(db.String(500), nullable=True)
+    is_active = db.Column(db.Boolean, default=True)
+    category = db.Column(db.String(50), default="Général")
+    floor = db.Column(db.String(20), nullable=True)
+    building = db.Column(db.String(50), nullable=True)
+    # NFC-V2.2-ADMIN: suspension granulaire
+    pause_suggestions = db.Column(db.Boolean, default=False)
+    pause_confirmations = db.Column(db.Boolean, default=False)
+    # NFC-V2.4: lien vers le lieu existant (Communication & lieux)
+    base_location_id = db.Column(db.Integer, db.ForeignKey("locations.id"), nullable=True)
+    sub_location = db.Column(db.String(200), nullable=True)
+    custom_detail = db.Column(db.String(200), nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
+
+    base_location = db.relationship("Location", backref=db.backref("nfc_locations", lazy="dynamic"))
+
+    NFC_CATEGORIES = [
+        "Général", "Sanitaire", "Salle de cours", "Cantine",
+        "CDI", "Hall", "Couloir", "Extérieur", "Autre",
+    ]
+
+
+# NFC-V2: Confirmation anonyme (« c'est toujours le cas »)
+class NfcConfirmation(db.Model):
+    __tablename__ = "nfc_confirmations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    suggestion_id = db.Column(db.Integer, db.ForeignKey("suggestions.id"), nullable=False)
+    school_id = db.Column(db.String(50), default="default")
+    session_hash = db.Column(db.String(64), nullable=False)
+    confirmed_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    suggestion = db.relationship("Suggestion", backref=db.backref("nfc_confirmations", lazy="dynamic"))
+
+    __table_args__ = (
+        db.Index("ix_nfc_confirm_sugg_at", "suggestion_id", "confirmed_at"),
+        db.Index("ix_nfc_confirm_session", "session_hash", "suggestion_id"),
+    )
+
+
+# NFC-V2.2-ADMIN: suivi anonyme d'une suggestion
+class NfcFollowUp(db.Model):
+    __tablename__ = "nfc_followups"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String(100), nullable=False)
+    suggestion_id = db.Column(db.Integer, db.ForeignKey("suggestions.id"), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    suggestion = db.relationship("Suggestion", backref=db.backref("nfc_followups", lazy="dynamic"))
+
+    __table_args__ = (
+        db.UniqueConstraint("session_id", "suggestion_id", name="uq_nfc_follow_session_sugg"),
+        db.Index("ix_nfc_follow_session", "session_id"),
+    )
+
+
+# NFC-V2.2-ADMIN: notification vers une session anonyme
+class NfcNotification(db.Model):
+    __tablename__ = "nfc_notifications"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String(100), nullable=False, index=True)
+    suggestion_id = db.Column(db.Integer, db.ForeignKey("suggestions.id"), nullable=True)
+    notif_type = db.Column(db.String(30), nullable=False)  # status_change, admin_reply, threshold
+    message = db.Column(db.String(500), nullable=False)
+    is_read = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    suggestion = db.relationship("Suggestion")
+
+    __table_args__ = (
+        db.Index("ix_nfc_notif_session_read", "session_id", "is_read"),
+    )
+
+
+class NfcStatusHistory(db.Model):
+    """Full audit trail of status transitions for NFC suggestions."""
+    __tablename__ = "nfc_status_history"
+
+    id = db.Column(db.Integer, primary_key=True)
+    suggestion_id = db.Column(db.Integer, db.ForeignKey("suggestions.id"), nullable=False, index=True)
+    old_status = db.Column(db.String(50), nullable=False)
+    new_status = db.Column(db.String(50), nullable=False)
+    changed_by = db.Column(db.String(20), default="admin")
+    note = db.Column(db.Text, default="")
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    suggestion = db.relationship("Suggestion", backref=db.backref("status_history", lazy="dynamic"))

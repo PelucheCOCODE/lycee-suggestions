@@ -184,6 +184,14 @@ def migrate():
         cur.execute("ALTER TABLE suggestions ADD COLUMN importance_score REAL DEFAULT 0")
         print("+ suggestions.importance_score")
 
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='community_messages'")
+    if cur.fetchone():
+        cur.execute("PRAGMA table_info(community_messages)")
+        cols = [r[1] for r in cur.fetchall()]
+        if cols and "client_message_id" not in cols:
+            cur.execute("ALTER TABLE community_messages ADD COLUMN client_message_id VARCHAR(128)")
+            print("+ community_messages.client_message_id")
+
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dilemmas'")
     if not cur.fetchone():
         cur.execute("""
@@ -211,6 +219,165 @@ def migrate():
             )
         """)
         print("+ table dilemma_votes")
+
+    # NFC-V2: table nfc_locations
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='nfc_locations'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE nfc_locations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                school_id VARCHAR(50) DEFAULT 'default',
+                slug VARCHAR(100) NOT NULL UNIQUE,
+                nfc_uid VARCHAR(100) UNIQUE,
+                name VARCHAR(200) NOT NULL,
+                description TEXT DEFAULT '',
+                image_url VARCHAR(500),
+                is_active INTEGER DEFAULT 1,
+                category VARCHAR(50) DEFAULT 'Général',
+                floor VARCHAR(20),
+                building VARCHAR(50),
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_nfc_loc_slug ON nfc_locations(slug)")
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_nfc_loc_school ON nfc_locations(school_id)")
+        print("+ table nfc_locations")
+
+    # NFC-V2: colonnes NFC sur suggestions
+    cur.execute("PRAGMA table_info(suggestions)")
+    cols = [r[1] for r in cur.fetchall()]
+    if "nfc_location_id" not in cols:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN nfc_location_id INTEGER REFERENCES nfc_locations(id)")
+        print("+ suggestions.nfc_location_id")
+    if "source" not in cols:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN source VARCHAR(10) DEFAULT 'web'")
+        print("+ suggestions.source")
+    if "confirmation_count" not in cols:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN confirmation_count INTEGER DEFAULT 0")
+        print("+ suggestions.confirmation_count")
+    if "last_confirmed_at" not in cols:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN last_confirmed_at DATETIME")
+        print("+ suggestions.last_confirmed_at")
+    if "resolved_by_admin" not in cols:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN resolved_by_admin INTEGER DEFAULT 0")
+        print("+ suggestions.resolved_by_admin")
+
+    # NFC-V2: table nfc_confirmations
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='nfc_confirmations'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE nfc_confirmations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                suggestion_id INTEGER NOT NULL REFERENCES suggestions(id),
+                school_id VARCHAR(50) DEFAULT 'default',
+                session_hash VARCHAR(64) NOT NULL,
+                confirmed_at DATETIME
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_nfc_confirm_sugg_at ON nfc_confirmations(suggestion_id, confirmed_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_nfc_confirm_session ON nfc_confirmations(session_hash, suggestion_id)")
+        print("+ table nfc_confirmations")
+
+    # NFC-V2: index performance sur suggestions NFC
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_sugg_nfc_loc_status ON suggestions(nfc_location_id, status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_sugg_last_confirmed ON suggestions(last_confirmed_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_sugg_confirm_count ON suggestions(confirmation_count)")
+
+    # NFC-V2.2-ADMIN: colonnes suspension sur nfc_locations
+    cur.execute("PRAGMA table_info(nfc_locations)")
+    nfc_loc_cols = [r[1] for r in cur.fetchall()]
+    if "pause_suggestions" not in nfc_loc_cols:
+        cur.execute("ALTER TABLE nfc_locations ADD COLUMN pause_suggestions INTEGER DEFAULT 0")
+        print("+ nfc_locations.pause_suggestions")
+    if "pause_confirmations" not in nfc_loc_cols:
+        cur.execute("ALTER TABLE nfc_locations ADD COLUMN pause_confirmations INTEGER DEFAULT 0")
+        print("+ nfc_locations.pause_confirmations")
+
+    # NFC-V2.2-ADMIN: colonnes réponse admin sur suggestions
+    cur.execute("PRAGMA table_info(suggestions)")
+    sugg_cols = [r[1] for r in cur.fetchall()]
+    if "admin_reply" not in sugg_cols:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN admin_reply TEXT")
+        print("+ suggestions.admin_reply")
+    if "admin_reply_at" not in sugg_cols:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN admin_reply_at DATETIME")
+        print("+ suggestions.admin_reply_at")
+
+    # NFC-V2.2-ADMIN: table nfc_followups
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='nfc_followups'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE nfc_followups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id VARCHAR(100) NOT NULL,
+                suggestion_id INTEGER NOT NULL REFERENCES suggestions(id),
+                created_at DATETIME
+            )
+        """)
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_nfc_follow_session_sugg ON nfc_followups(session_id, suggestion_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_nfc_follow_session ON nfc_followups(session_id)")
+        print("+ table nfc_followups")
+
+    # NFC-V2.2-ADMIN: table nfc_notifications
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='nfc_notifications'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE nfc_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id VARCHAR(100) NOT NULL,
+                suggestion_id INTEGER REFERENCES suggestions(id),
+                notif_type VARCHAR(30) NOT NULL,
+                message VARCHAR(500) NOT NULL,
+                is_read INTEGER DEFAULT 0,
+                created_at DATETIME
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_nfc_notif_session_read ON nfc_notifications(session_id, is_read)")
+        print("+ table nfc_notifications")
+
+    # NFC status history (full audit trail)
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='nfc_status_history'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE nfc_status_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                suggestion_id INTEGER NOT NULL REFERENCES suggestions(id),
+                old_status VARCHAR(50) NOT NULL,
+                new_status VARCHAR(50) NOT NULL,
+                changed_by VARCHAR(20) DEFAULT 'admin',
+                note TEXT DEFAULT '',
+                created_at DATETIME
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_nfc_status_hist_sugg ON nfc_status_history(suggestion_id)")
+        print("+ table nfc_status_history")
+
+    # NFC-V2.4: nouvelles colonnes sur nfc_locations
+    cur.execute("PRAGMA table_info(nfc_locations)")
+    nfc_loc_cols2 = [r[1] for r in cur.fetchall()]
+    if "base_location_id" not in nfc_loc_cols2:
+        cur.execute("ALTER TABLE nfc_locations ADD COLUMN base_location_id INTEGER REFERENCES locations(id)")
+        print("+ nfc_locations.base_location_id")
+    if "sub_location" not in nfc_loc_cols2:
+        cur.execute("ALTER TABLE nfc_locations ADD COLUMN sub_location VARCHAR(200)")
+        print("+ nfc_locations.sub_location")
+    if "custom_detail" not in nfc_loc_cols2:
+        cur.execute("ALTER TABLE nfc_locations ADD COLUMN custom_detail VARCHAR(200)")
+        print("+ nfc_locations.custom_detail")
+
+    # NFC-V2.4: nouvelles colonnes sur suggestions
+    cur.execute("PRAGMA table_info(suggestions)")
+    sugg_cols2 = [r[1] for r in cur.fetchall()]
+    if "support_count" not in sugg_cols2:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN support_count INTEGER DEFAULT 0")
+        print("+ suggestions.support_count")
+    if "reopened_at" not in sugg_cols2:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN reopened_at DATETIME")
+        print("+ suggestions.reopened_at")
+    if "hype_count" not in sugg_cols2:
+        cur.execute("ALTER TABLE suggestions ADD COLUMN hype_count INTEGER DEFAULT 0")
+        print("+ suggestions.hype_count")
 
     conn.commit()
     conn.close()

@@ -162,6 +162,27 @@
         </section>
     </main>
 
+    <!-- NFC-V2.4: PC = FAB cloche en bas, Mobile = popup du haut -->
+    <div class="nfc-notif-fab" id="nfc-notif-fab" hidden>
+        🔔 <span class="nfc-notif-fab-count" id="nfc-notif-count"></span>
+    </div>
+    <div class="notif-popup" id="nfc-notif-popup" hidden>
+        <div class="notif-popup-inner">
+            <span class="notif-popup-icon">🔔</span>
+            <span class="notif-popup-text" id="nfc-notif-popup-text"></span>
+            <button class="notif-popup-close" id="nfc-notif-popup-close">&times;</button>
+        </div>
+    </div>
+    <div class="notif-panel-overlay" id="nfc-notif-overlay" hidden></div>
+    <div class="notif-panel-slide" id="nfc-notif-panel" hidden>
+        <div class="notif-panel-slide-header">
+            <strong>Notifications</strong>
+            <button id="nfc-notif-close" class="notif-panel-slide-close">&times;</button>
+        </div>
+        <div class="notif-panel-slide-list" id="nfc-notif-list"></div>
+        <button class="notif-panel-slide-mark" id="nfc-notif-mark-read" hidden>Tout marquer comme lu</button>
+    </div>
+
     <footer class="footer">
         <div class="container">
             <p>Boîte à Idées — Plateforme participative du lycée</p>
@@ -171,5 +192,110 @@
     <script src="{{ url_for('static', filename=asset('js/music-poll.js')) }}"></script>
     <script src="{{ url_for('static', filename=asset('js/student.js')) }}"></script>
     <script src="{{ url_for('static', filename='js/diagnostic_frontend.js') }}" defer></script>
+    <!-- NFC-V2.4: notifications — FAB on desktop, top-popup on mobile -->
+    <script>
+    (function() {
+        const fab = document.getElementById("nfc-notif-fab");
+        const countEl = document.getElementById("nfc-notif-count");
+        const popup = document.getElementById("nfc-notif-popup");
+        const popupText = document.getElementById("nfc-notif-popup-text");
+        const popupClose = document.getElementById("nfc-notif-popup-close");
+        const panel = document.getElementById("nfc-notif-panel");
+        const overlay = document.getElementById("nfc-notif-overlay");
+        const list = document.getElementById("nfc-notif-list");
+        const closeBtn = document.getElementById("nfc-notif-close");
+        const markBtn = document.getElementById("nfc-notif-mark-read");
+        if (!fab || !popup) return;
+
+        const isMobile = () => window.innerWidth <= 768;
+        let _lastUnread = 0;
+        let _hideTimer = null;
+        let _notifs = [];
+
+        function showPopup(text, count) {
+            popupText.textContent = count > 1 ? `${count} nouvelles notifications` : text;
+            popup.hidden = false;
+            popup.classList.remove("notif-popup--hide");
+            popup.classList.add("notif-popup--show");
+            clearTimeout(_hideTimer);
+            _hideTimer = setTimeout(hidePopup, 4500);
+        }
+        function hidePopup() {
+            popup.classList.remove("notif-popup--show");
+            popup.classList.add("notif-popup--hide");
+            setTimeout(() => { popup.hidden = true; popup.classList.remove("notif-popup--hide"); }, 350);
+        }
+
+        function openPanel() {
+            panel.hidden = false; overlay.hidden = false;
+            requestAnimationFrame(() => {
+                panel.classList.add("notif-panel-slide--open");
+                overlay.classList.add("notif-panel-overlay--visible");
+            });
+            hidePopup();
+        }
+        function closePanel() {
+            panel.classList.remove("notif-panel-slide--open");
+            overlay.classList.remove("notif-panel-overlay--visible");
+            setTimeout(() => { panel.hidden = true; overlay.hidden = true; }, 300);
+        }
+
+        function updateFab(unread, total) {
+            if (total === 0) { fab.hidden = true; return; }
+            fab.hidden = false;
+            countEl.textContent = unread > 0 ? (unread > 99 ? "99+" : String(unread)) : "";
+            if (unread > 0) fab.classList.add("nfc-notif-fab--unread");
+            else fab.classList.remove("nfc-notif-fab--unread");
+        }
+
+        async function loadNotifs() {
+            try {
+                const r = await fetch("/api/nfc/notifications", { credentials: "same-origin" });
+                const d = await r.json();
+                _notifs = d.notifications || [];
+                const unread = d.unread_count || 0;
+                updateFab(unread, _notifs.length);
+                markBtn.hidden = unread === 0;
+                if (unread > 0 && unread > _lastUnread && isMobile()) {
+                    const newest = _notifs.find(n => !n.is_read);
+                    showPopup(newest?.message || "Nouvelle notification", unread);
+                }
+                _lastUnread = unread;
+                renderList();
+            } catch { /* silent */ }
+        }
+
+        function renderList() {
+            list.innerHTML = _notifs.map(n => `
+                <div class="notif-panel-item${n.is_read ? "" : " notif-panel-item--unread"}">
+                    <span class="notif-panel-item-icon">${n.type === "admin_reply" ? "💬" : n.type === "status_change" ? "📋" : "🔔"}</span>
+                    <div class="notif-panel-item-body">
+                        <span>${n.message}</span>
+                        <small>${n.created_at ? new Date(n.created_at).toLocaleDateString("fr-FR") : ""}</small>
+                    </div>
+                </div>
+            `).join("");
+        }
+
+        fab.addEventListener("click", openPanel);
+        popup.addEventListener("click", (e) => {
+            if (e.target === popupClose || e.target.closest(".notif-popup-close")) { hidePopup(); return; }
+            openPanel();
+        });
+        closeBtn?.addEventListener("click", closePanel);
+        overlay?.addEventListener("click", closePanel);
+        markBtn?.addEventListener("click", async () => {
+            await fetch("/api/nfc/notifications/read", {
+                method: "POST", credentials: "same-origin",
+                headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+            });
+            _lastUnread = 0;
+            loadNotifs();
+        });
+
+        loadNotifs();
+        setInterval(loadNotifs, 60000);
+    })();
+    </script>
 </body>
 </html>

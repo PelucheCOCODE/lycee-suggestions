@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lieu NFC indisponible</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
+</head>
+<body>
+    <main class="container" style="padding: 32px 16px;">
+        <section class="submit-card">
+            <h1 style="margin-bottom: 8px;">Lieu NFC indisponible</h1>
+            <p class="context-hint">Le tag scanné (<code>{{ slug }}</code>) est inconnu ou temporairement désactivé.</p>
+            <p style="margin-top: 12px;">Demande à un membre du CVL ou de l'administration de vérifier la configuration du lieu.</p>
+            <a href="/" class="btn btn-primary" style="margin-top: 16px;">Retour à la Boîte à Idées</a>
+        </section>
+    </main>
+</body>
+</html>

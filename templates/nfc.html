@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>{% if location %}{{ location.name }} — Signalements{% else %}Lieu introuvable{% endif %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename=asset('css/style.css')) }}">
+    <meta name="theme-color" content="#1e293b">
+</head>
+<body class="nfc-body">
+
+{% if error == "not_found" %}
+<div class="nfc-error-page">
+    <div class="nfc-error-icon">📍</div>
+    <h1>Lieu introuvable</h1>
+    <p>Ce tag NFC ne correspond à aucun lieu enregistré.</p>
+    <a href="/" class="btn btn-primary nfc-error-home">Retour à l'accueil</a>
+</div>
+
+{% elif error == "disabled" %}
+<div class="nfc-error-page">
+    <div class="nfc-error-icon">🚧</div>
+    <h1>{{ location.name }}</h1>
+    <p>Ce lieu est temporairement désactivé.</p>
+    <a href="/" class="btn btn-primary nfc-error-home">Retour à l'accueil</a>
+</div>
+
+{% else %}
+<div class="nfc-page" id="nfc-app" data-slug="{{ location.slug }}">
+
+    <!-- NFC-V2: En-tête lieu -->
+    <header class="nfc-header">
+        {% if location.image_url %}
+        <div class="nfc-header-image" style="background-image:url('{{ location.image_url }}')"></div>
+        {% else %}
+        <div class="nfc-header-image nfc-header-image--placeholder">
+            <span class="nfc-header-image-icon">📍</span>
+        </div>
+        {% endif %}
+        <div class="nfc-header-info">
+            <div class="nfc-header-badges">
+                <span class="nfc-badge nfc-badge--cat">{{ location.category or 'Général' }}</span>
+                {% if location.building %}
+                <span class="nfc-badge nfc-badge--building">{{ location.building }}{% if location.floor %} · {{ location.floor }}{% endif %}</span>
+                {% endif %}
+            </div>
+            <h1 class="nfc-location-name">{{ location.name }}</h1>
+            {% if location.description %}
+            <p class="nfc-location-desc">{{ location.description }}</p>
+            {% endif %}
+        </div>
+    </header>
+
+    <!-- NFC-V2.2-AI: floating notification button + panel -->
+    <button class="nfc-notif-fab" id="nfc-notif-fab" hidden aria-label="Notifications">🔔<span class="nfc-notif-fab-count" id="nfc-notif-count" style="display:none">0</span></button>
+    <div class="nfc-notif-panel" id="nfc-notif-panel" hidden>
+        <div class="nfc-notif-panel-header">
+            <span>Notifications</span>
+        </div>
+        <div class="nfc-notif-panel-list" id="nfc-notif-list"></div>
+        <button class="nfc-notif-mark-all" id="nfc-notif-mark-all">✓ Tout marquer comme lu</button>
+    </div>
+
+    <!-- NFC-V2.2-ADMIN: bannière scan token -->
+    <div class="nfc-scan-banner" id="nfc-scan-banner" hidden></div>
+
+    <!-- NFC-V2: Barre de stats -->
+    <div class="nfc-stats-bar">
+        <span class="nfc-stats-count" id="nfc-problem-count">—</span>
+        <span class="nfc-stats-label">problème(s) signalé(s)</span>
+    </div>
+
+    <!-- NFC-V2: Liste des problèmes -->
+    <div class="nfc-problems" id="nfc-problems">
+        <div class="nfc-loading">Chargement…</div>
+    </div>
+
+    <!-- NFC-V2: Bouton sticky bas -->
+    <div class="nfc-bottom-bar">
+        <button type="button" class="nfc-btn-suggest" id="nfc-open-suggest">
+            ➕ Signaler un autre problème
+        </button>
+    </div>
+
+    <!-- NFC-V2: Bottom sheet nouveau problème -->
+    <div class="nfc-sheet-overlay" id="nfc-sheet-overlay" hidden>
+        <div class="nfc-sheet" id="nfc-sheet">
+            <div class="nfc-sheet-handle"></div>
+            <h2 class="nfc-sheet-title">Signaler un problème</h2>
+            <p class="nfc-sheet-subtitle">Décrivez le problème que vous constatez ici.</p>
+            <textarea class="nfc-sheet-textarea" id="nfc-suggest-text" maxlength="1000"
+                      placeholder="Ex : La lumière ne fonctionne pas…" rows="4"></textarea>
+            <div class="nfc-sheet-charcount"><span id="nfc-char-count">0</span>/1000</div>
+            <div class="nfc-sheet-actions">
+                <button type="button" class="nfc-btn nfc-btn--cancel" id="nfc-cancel-suggest">Annuler</button>
+                <button type="button" class="nfc-btn nfc-btn--submit" id="nfc-submit-suggest">Envoyer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- NFC-V2.4: lien retour page principale -->
+    <div class="nfc-back-bar">
+        <a href="/" class="nfc-btn-back">← Revenir à la page principale</a>
+    </div>
+
+    <!-- NFC-V2: Toast -->
+    <div class="nfc-toast" id="nfc-toast" hidden></div>
+</div>
+
+<script src="{{ url_for('static', filename=asset('js/nfc.js')) }}"></script>
+{% endif %}
+
+</body>
+</html>

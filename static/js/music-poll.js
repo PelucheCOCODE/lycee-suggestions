@@ -18,18 +18,10 @@ const MUSIC_PLACEHOLDER =
 /** Durée max d’écoute d’un extrait (Spotify ~30 s). */
 const MUSIC_PREVIEW_MAX_MS = 30000;
 
-/** true si extrait hébergé sur le CDN Deezer (préviews complétées par l’API publique). */
-function musicPollIsDeezerPreviewUrl(url) {
-    if (!url || typeof url !== "string") return false;
-    try {
-        return new URL(url.trim()).hostname.toLowerCase().endsWith(".dzcdn.net");
-    } catch (e) {
-        return false;
-    }
-}
-
 /**
- * URL de lecture : Spotify via proxy same-origin ; Deezer en direct (le proxy serveur échoue souvent en 502).
+ * NFC-V2.2-AI: URL de lecture — toujours via proxy same-origin pour Spotify ET Deezer.
+ * Les URLs externes (dzcdn.net, scdn.co) expirent et posent des problèmes CORS/referrer
+ * quand accédées directement depuis le navigateur.
  */
 function spotifyPreviewPlayUrl(url) {
     if (!url || typeof url !== "string") return "";
@@ -40,10 +32,7 @@ function spotifyPreviewPlayUrl(url) {
     if (!u.startsWith("https://")) return u;
     try {
         const h = new URL(u).hostname.toLowerCase();
-        if (h.endsWith(".dzcdn.net")) {
-            return u;
-        }
-        if (h === "p.scdn.co" || h.endsWith(".scdn.co") || h.endsWith(".spotifycdn.com")) {
+        if (h.endsWith(".dzcdn.net") || h === "p.scdn.co" || h.endsWith(".scdn.co") || h.endsWith(".spotifycdn.com")) {
             return `/api/music-poll/preview-audio?url=${encodeURIComponent(u)}`;
         }
     } catch (e) {
@@ -107,12 +96,9 @@ function playPreview(previewUrl, trackId) {
 
         setTrackPlayingUI(trackId, "loading");
 
+        // NFC-V2.2-AI: all external URLs are now proxied via spotifyPreviewPlayUrl,
+        // so no special referrerPolicy or Deezer-specific fallback needed.
         const audio = new Audio();
-        const originalHttps =
-            previewUrl.startsWith("https://") && musicPollIsDeezerPreviewUrl(previewUrl);
-        if (originalHttps) {
-            audio.referrerPolicy = "no-referrer";
-        }
         audio.src = previewUrl;
         audio.volume = 0.8;
         _currentAudio = audio;
@@ -127,19 +113,8 @@ function playPreview(previewUrl, trackId) {
             if (gen !== _playbackGeneration) return;
             stopPreview();
         });
-        let deezerProxyTried = false;
         audio.addEventListener("error", () => {
             if (gen !== _playbackGeneration) return;
-            if (originalHttps && !deezerProxyTried) {
-                deezerProxyTried = true;
-                audio.referrerPolicy = "";
-                audio.src = `/api/music-poll/preview-audio?url=${encodeURIComponent(previewUrl)}`;
-                audio.play().catch(() => {
-                    if (gen !== _playbackGeneration) return;
-                    stopPreview();
-                });
-                return;
-            }
             stopPreview();
         });
 

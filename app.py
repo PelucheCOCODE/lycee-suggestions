@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import zipfile
+import hashlib
 import hmac
 import secrets
 import time
@@ -25,7 +26,7 @@ from flask import (
     send_from_directory, send_file, Response, has_request_context, abort,
 )
 
-from sqlalchemy import func, event
+from sqlalchemy import func, event, case as sa_case
 
 from models import (
     db, Suggestion, Vote, SuggestionArgument, Location, Placement, CalibrationExample, CalibrationDebat, CalibrationDetails, CalibrationRapport, CalibrationVerification, Announcement,
@@ -34,6 +35,10 @@ from models import (
     SuggestionImportance, DailySessionActivity, DailyPresence, EngagementCardDone, EngagementGuess, CommunityMessage, DailyMood,
     Dilemma, DilemmaVote,
     MusicPoll, MusicTrack, MusicVote,
+    # NFC-V2: modèles NFC terrain
+    NfcLocation, NfcConfirmation,
+    # NFC-V2.2-ADMIN: follow-up + notifications
+    NfcFollowUp, NfcNotification, NfcStatusHistory,
 )
 import music_utils
 from ai_engine import AIEngine
@@ -690,98 +695,6 @@ def _apply_support_vote(
         _maybe_generate_subtitle(suggestion.id)
 
 
-def _submit_multipart_suggestions(parts: list[str], data: dict, session_id: str):
-    """
-    Plusieurs idées dans un même message : pour chaque partie, doublon → soutien + précisions
-    (texte du vote) si le rapport l’indique ; sinon nouvelle suggestion. Même logique que le formulaire simple.
-    """
-    from unidecode import unidecode
-
-    created_ids: list[int] = []
-    notes: list[str] = []
-    force_new = data.get("force_new") is True
-
-    seen = set()
-    unique: list[str] = []
-    for p in parts:
-        p = (p or "").strip()
-        if len(p) < 5:
-            continue
-        key = unidecode(p.lower())
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(p)
-
-    if not unique:
-        return jsonify({"error": "Message trop court."}), 400
-
-    for part in unique:
-        existing = _get_existing_suggestions()
-        match = _find_duplicate_match(part, existing, force_new)
-        if match:
-            sug = Suggestion.query.get(match["id"])
-            if not sug:
-                match = None
-            else:
-                existing_vote = Vote.query.filter_by(suggestion_id=sug.id, session_id=session_id).first()
-                if existing_vote:
-                    notes.append(f"« {sug.title[:50]} » : vous l’aviez déjà soutenue.")
-                    continue
-                proceed_with_match, adds_precision = _eval_rapport_precision_pair(sug.original_text or "", part)
-                if not proceed_with_match:
-                    match = None
-                else:
-                    _apply_support_vote(sug, session_id, part, regenerate_subtitle=adds_precision)
-                    if adds_precision:
-                        notes.append(f"Précisions enregistrées pour « {sug.title[:52]} ».")
-                    else:
-                        notes.append(f"Soutien ajouté à « {sug.title[:52]} ».")
-                    continue
-        if not match:
-            suggestion = Suggestion(
-                original_text=part,
-                title=part[:200],
-                status="En attente",
-                vote_count=1,
-            )
-            db.session.add(suggestion)
-            db.session.flush()
-            vote = Vote(suggestion_id=suggestion.id, session_id=session_id)
-            db.session.add(vote)
-            db.session.commit()
-            _sync_suggestion_archive(suggestion)
-            db.session.commit()
-            _log_activity("suggestion_submitted", f"Suggestion #{suggestion.id} en attente : « {part[:80]} »")
-            _process_suggestion_background(suggestion.id)
-            created_ids.append(suggestion.id)
-
-    if created_ids:
-        n = len(created_ids)
-        msg = f"{n} nouvelle(s) suggestion(s) envoyée(s) ! Elles seront examinées sous peu." if n > 1 else (
-            "Votre suggestion a été envoyée ! Elle sera examinée sous peu."
-        )
-        if notes:
-            msg = msg + " " + " ".join(notes)
-        return jsonify({
-            "status": "submitted",
-            "message": msg.strip(),
-            "suggestion_ids": created_ids,
-            "parts_created": n,
-        }), 201
-
-    if notes:
-        return jsonify({
-            "status": "duplicate_voted",
-            "message": " ".join(notes),
-        }), 200
-
-    return jsonify({
-        "status": "duplicate_skipped",
-        "message": "Aucune idée n’a pu être enregistrée.",
-    }), 200
-
-
 # --------------- Pages ---------------
 
 @app.route("/")
@@ -904,9 +817,36 @@ def list_suggestions():
         imp = float(d.get("importance_score") or 0)
         d["hot"] = imp >= _HOT_IMPORTANCE_THRESHOLD
         d["server_ts"] = int(s.updated_at.timestamp() * 1000) if s.updated_at else 0
+        # NFC-V2.4: enrichir les suggestions NFC avec heat_score + infos terrain
+        if d.get("source") == "nfc" and s.nfc_location_id:
+            now_utc = datetime.now(timezone.utc)
+            d["heat_score"] = _nfc_heat_score(s, now=now_utc)
+            d["heat_level"] = _nfc_heat_level(d["heat_score"], d["confirmation_count"])
+            d["last_activity_minutes"] = _nfc_last_activity_minutes(s, now=now_utc)
         result.append(d)
 
     return jsonify(result)
+
+
+def _peer_message_for_session(session_id: str, day: str) -> dict | None:
+    """Message d’un autre élève : stable toute la journée pour cette session (jamais le sien)."""
+    rows = (
+        CommunityMessage.query.filter(
+            CommunityMessage.session_id != session_id,
+            CommunityMessage.status == "approved",
+        )
+        .order_by(CommunityMessage.id.asc())
+        .all()
+    )
+    if not rows:
+        return None
+    h = int(hashlib.sha256(f"{session_id}|{day}|peer-msg-v2".encode()).hexdigest(), 16)
+    chosen = rows[h % len(rows)]
+    return {
+        "id": chosen.id,
+        "display_name": chosen.display_name,
+        "body": chosen.body,
+    }
 
 
 @app.route("/api/engagement/bootstrap", methods=["GET"])
@@ -935,6 +875,7 @@ def engagement_bootstrap():
         "guess_eligible_ids": guess_eligible_ids,
         "dilemma": _dilemma_payload_for_session(session_id, day),
         "music_polls": [mp] if mp else [],
+        "peer_message": _peer_message_for_session(session_id, day),
     })
 
 
@@ -987,6 +928,19 @@ def engagement_ttt_dismiss():
     day = _paris_today_str()
     if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="ttt").first():
         db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="ttt"))
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/engagement/peer-msg-dismiss", methods=["POST"])
+def engagement_peer_msg_dismiss():
+    """Carte « message d’un autre élève » vue / passée."""
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée"}), 403
+    session_id = get_session_id()
+    day = _paris_today_str()
+    if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="peer_msg").first():
+        db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="peer_msg"))
         db.session.commit()
     return jsonify({"ok": True})
 
@@ -1114,6 +1068,12 @@ def engagement_message():
     data = request.get_json() or {}
     display_name = (data.get("display_name") or "").strip()[:80]
     body = (data.get("message") or "").strip()[:500]
+    client_message_id = (data.get("client_message_id") or "").strip()[:128]
+    # FIX-FINAL-7: idempotence / pas de doublon si retry ou double envoi
+    if client_message_id:
+        ex = CommunityMessage.query.filter_by(client_message_id=client_message_id).first()
+        if ex:
+            return jsonify({"ok": True, "id": ex.id, "deduped": True})
     if len(display_name) < 1 or len(body) < 3:
         return jsonify({"error": "Pseudo et message requis (3 caractères min. pour le message)."}), 400
     from content_filter import filter_community_message_quick
@@ -1131,13 +1091,57 @@ def engagement_message():
     except Exception:
         pass
     session_id = get_session_id()
-    db.session.add(CommunityMessage(session_id=session_id, display_name=display_name, body=body, status="approved"))
+    cm = CommunityMessage(
+        session_id=session_id,
+        display_name=display_name,
+        body=body,
+        status="approved",
+        client_message_id=client_message_id or None,
+    )
+    db.session.add(cm)
     db.session.commit()
     day = _paris_today_str()
     if not EngagementCardDone.query.filter_by(session_id=session_id, day=day, card_type="message").first():
         db.session.add(EngagementCardDone(session_id=session_id, day=day, card_type="message"))
         db.session.commit()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "id": cm.id})
+
+
+@app.route("/api/admin/community-messages-today", methods=["GET"])
+@admin_required
+def admin_community_messages_today():
+    # FIX-BACKEND-3: messages « carte swipe » — journée calendaire Europe/Paris
+    if PARIS_TZ is not None:
+        now = datetime.now(PARIS_TZ)
+        start_local = datetime(now.year, now.month, now.day, tzinfo=PARIS_TZ)
+        end_local = start_local + timedelta(days=1)
+        start_utc = start_local.astimezone(timezone.utc)
+        end_utc = end_local.astimezone(timezone.utc)
+    else:
+        start_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_utc = start_utc + timedelta(days=1)
+    rows = (
+        CommunityMessage.query.filter(
+            CommunityMessage.created_at >= start_utc,
+            CommunityMessage.created_at < end_utc,
+        )
+        .order_by(CommunityMessage.created_at.desc())
+        .limit(250)
+        .all()
+    )
+    return jsonify(
+        [
+            {
+                "id": m.id,
+                "display_name": m.display_name,
+                "message": m.body,
+                "timestamp": m.created_at.replace(tzinfo=timezone.utc).isoformat() if m.created_at else "",
+                "session_id": m.session_id,
+                "client_message_id": m.client_message_id,
+            }
+            for m in rows
+        ]
+    )
 
 
 @app.route("/api/engagement/activity-card-dismiss", methods=["POST"])
@@ -1456,7 +1460,10 @@ def _process_single_suggestion(suggestion):
     """Doublon (LLM) + pipeline IA pour une suggestion. Thread background."""
     suggestion_id = suggestion.id
     existing = _get_existing_suggestions()
-    match = ai.check_duplicate(suggestion.original_text, [e for e in existing if e["id"] != suggestion_id])
+    # NFC-V2.2-AI: skip global duplicate merge for NFC suggestions (dedup is per-location at submit time).
+    is_nfc = (suggestion.source or "web") == "nfc"
+    match = None if is_nfc else ai.check_duplicate(
+        suggestion.original_text, [e for e in existing if e["id"] != suggestion_id])
     if match:
         target = Suggestion.query.get(match["id"])
         if target:
@@ -1471,12 +1478,56 @@ def _process_single_suggestion(suggestion):
         return
 
     locations = _get_locations_list()
-    result = ai.process(suggestion.original_text, locations)
+    # NFC-V2.2-AI: build NFC context so the LLM respects the physical location of the tag.
+    nfc_ctx = None
+    if is_nfc and suggestion.nfc_location_id:
+        nfc_loc = NfcLocation.query.get(suggestion.nfc_location_id)
+        if nfc_loc:
+            nfc_ctx = {
+                "loc_name": nfc_loc.name or "",
+                "loc_category": nfc_loc.category or "",
+                "loc_building": nfc_loc.building or "",
+                "loc_floor": nfc_loc.floor or "",
+                "loc_description": nfc_loc.description or "",
+            }
+    result = ai.process(suggestion.original_text, locations, nfc_context=nfc_ctx)
 
-    suggestion.title = result["title"]
+    # NFC-V2.4: forcer la cohérence lieu/catégorie pour les suggestions NFC
+    if is_nfc and nfc_ctx:
+        nfc_cat = nfc_ctx.get("loc_category", "")
+        ai_cat = result.get("category", "")
+        if nfc_cat and nfc_cat != "Général" and ai_cat != nfc_cat:
+            _nfc_incompatible = {
+                "Sanitaire": {"Cantine", "CDI", "Extérieur"},
+                "Cantine": {"Sanitaire", "CDI"},
+                "CDI": {"Cantine", "Sanitaire", "Extérieur"},
+            }
+            if ai_cat in _nfc_incompatible.get(nfc_cat, set()):
+                result["category"] = nfc_cat
+
+    title = result["title"]
+    # NFC-V2.4: append location context to NFC titles for clarity
+    if is_nfc and nfc_ctx:
+        ctx_parts = []
+        if nfc_ctx.get("loc_building"):
+            ctx_parts.append(nfc_ctx["loc_building"])
+        if nfc_ctx.get("loc_floor"):
+            ctx_parts.append(nfc_ctx["loc_floor"])
+        loc_n = nfc_ctx.get("loc_name", "")
+        if loc_n and loc_n.lower() not in title.lower():
+            ctx_parts.append(loc_n)
+        if ctx_parts:
+            suffix = ", ".join(ctx_parts)
+            if suffix.lower() not in title.lower():
+                title = f"{title} ({suffix})"
+    suggestion.title = title
     suggestion.keywords = ",".join(result["keywords"])
     suggestion.category = result["category"]
-    if result.get("location_id"):
+    if is_nfc and suggestion.nfc_location_id:
+        nfc_loc_obj = NfcLocation.query.get(suggestion.nfc_location_id)
+        if nfc_loc_obj and nfc_loc_obj.base_location_id:
+            suggestion.location_id = nfc_loc_obj.base_location_id
+    elif result.get("location_id"):
         suggestion.location_id = result["location_id"]
     suggestion.needs_debate = result.get("needs_debate", False)
     suggestion.ai_needs_debate = result.get("needs_debate", False)
@@ -1488,6 +1539,9 @@ def _process_single_suggestion(suggestion):
     _sync_suggestion_archive(suggestion)
     db.session.commit()
     _log_activity("suggestion_accepted", f"Suggestion #{suggestion_id} validée : « {suggestion.title[:50]} »")
+    # NFC-V2.2-AI: notify followers that AI processing completed.
+    if is_nfc:
+        _nfc_notify_followers(suggestion_id, "processed", f"Votre signalement « {(suggestion.title or '')[:80]} » a été traité.")
 
 
 def _subtitle_like_threshold() -> int:
@@ -1785,6 +1839,19 @@ def _pack_vote_json(suggestion: Suggestion, session_id: str, needs_debate: bool,
     return d
 
 
+@app.route("/api/suggestions/<int:sid>/hype", methods=["POST"])
+def hype_suggestion(sid):
+    """Hype button: spammable flame clicks for completed suggestions."""
+    suggestion = Suggestion.query.get_or_404(sid)
+    if suggestion.status != "Terminée":
+        return jsonify({"error": "Hype uniquement pour les suggestions terminées."}), 400
+    data = request.get_json() or {}
+    count = min(max(int(data.get("count", 1)), 1), 500)
+    suggestion.hype_count = (suggestion.hype_count or 0) + count
+    db.session.commit()
+    return jsonify({"ok": True, "hype_count": suggestion.hype_count})
+
+
 @app.route("/api/suggestions/<int:sid>/vote", methods=["POST"])
 def vote_suggestion(sid):
     ip = _client_ip()
@@ -1796,13 +1863,14 @@ def vote_suggestion(sid):
 
 def _vote_suggestion_locked(sid: int):
     suggestion = Suggestion.query.get_or_404(sid)
+    if suggestion.status == "Terminée":
+        return jsonify({"error": "Cette suggestion est terminée.", "terminated": True}), 403
     session_id = get_session_id()
     needs_debate = getattr(suggestion, "needs_debate", False)
-    if _vote_burst_exceeded(session_id, sid):
-        return _vote_burst_response(sid, session_id, needs_debate)
-
     data = request.get_json() or {}
     if not needs_debate:
+        if _vote_burst_exceeded(session_id, sid):
+            return _vote_burst_response(sid, session_id, needs_debate)
         return _vote_simple_suggestion_locked(sid, suggestion, session_id, data)
 
     vote_type = data.get("vote_type", "for")
@@ -1811,6 +1879,15 @@ def _vote_suggestion_locked(sid: int):
 
     if vote_type not in ("for", "against"):
         vote_type = "for"
+
+    # Valider le texte avant le compteur anti-rafale : sinon 400 répétés → 429 injuste
+    if argument_text:
+        ok, msg = filter_content_quick(argument_text)
+        if not ok:
+            return jsonify({"error": msg}), 400
+
+    if _vote_burst_exceeded(session_id, sid):
+        return _vote_burst_response(sid, session_id, needs_debate)
 
     existing_vote = Vote.query.filter_by(suggestion_id=sid, session_id=session_id).first()
 
@@ -1823,9 +1900,6 @@ def _vote_suggestion_locked(sid: int):
         if existing_vote.vote_type == vote_type and not argument_text:
             return jsonify(_pack_vote_json(suggestion, session_id, True, my_vote=vote_type, has_voted=True))
         if existing_vote.vote_type == vote_type and argument_text:
-            ok, msg = filter_content_quick(argument_text)
-            if not ok:
-                return jsonify({"error": msg}), 400
             pending_arg_ids = []
             for part in _split_argument_text(argument_text):
                 arg = SuggestionArgument(suggestion_id=sid, session_id=session_id, side=vote_type, original_text=part, status="pending")
@@ -1854,9 +1928,6 @@ def _vote_suggestion_locked(sid: int):
 
     pending_arg_ids = []
     if argument_text:
-        ok, msg = filter_content_quick(argument_text)
-        if not ok:
-            return jsonify({"error": msg}), 400
         for part in _split_argument_text(argument_text):
             arg = SuggestionArgument(
                 suggestion_id=sid, session_id=session_id,
@@ -3098,19 +3169,6 @@ Réponds UNIQUEMENT avec un JSON valide de ce format :
 
 
 # --------------- API Display ---------------
-
-def _recalc_suggestion_vote_count(s):
-    """Recalcule vote_count (ou vote_for/vote_against) depuis la table Vote."""
-    if getattr(s, "needs_debate", False):
-        s.vote_for = Vote.query.filter_by(suggestion_id=s.id, vote_type="for").count()
-        s.vote_against = Vote.query.filter_by(suggestion_id=s.id, vote_type="against").count()
-        s.vote_count = s.vote_for + s.vote_against
-    else:
-        total = Vote.query.filter_by(suggestion_id=s.id).count()
-        s.vote_count = total
-        s.vote_for = total
-        s.vote_against = 0
-
 
 @app.route("/api/display/suggestions", methods=["GET"])
 def display_suggestions():
@@ -4901,17 +4959,20 @@ def update_context():
 def get_all_prompts():
     """Retourne tous les prompts IA pour la page Contexte (copiables)."""
     import llm_engine
+    def _p(name: str) -> str:
+        # Defensive lookup: some deployments may not expose all prompt constants.
+        return getattr(llm_engine, name, "")
     prompts = {
-        "relevance": {"name": "Pertinence (accepter/refuser)", "prompt": llm_engine.RELEVANCE_PROMPT},
-        "reformulate": {"name": "Reformulation", "prompt": llm_engine.REFORMULATE_PROMPT},
-        "category": {"name": "Catégorisation", "prompt": llm_engine.CATEGORY_PROMPT},
-        "keywords": {"name": "Mots-clés", "prompt": llm_engine.KEYWORDS_PROMPT},
-        "duplicate": {"name": "Détection doublon", "prompt": llm_engine.DUPLICATE_CHECK_PROMPT},
-        "process": {"name": "Traitement complet (all-in-one)", "prompt": llm_engine.PROCESS_PROMPT},
-        "proportion": {"name": "Impact / Débat", "prompt": llm_engine.PROPORTION_PROMPT},
-        "argument": {"name": "Argument pour/contre", "prompt": llm_engine.ARGUMENT_PROMPT},
-        "subtitle": {"name": "Sous-titre (regroupement)", "prompt": llm_engine.SUBTITLE_PROMPT},
-        "verify": {"name": "Vérification (cohérence, syntaxe, français)", "prompt": llm_engine.VERIFY_PROMPT},
+        "relevance": {"name": "Pertinence (accepter/refuser)", "prompt": _p("RELEVANCE_PROMPT")},
+        "reformulate": {"name": "Reformulation", "prompt": _p("REFORMULATE_PROMPT")},
+        "category": {"name": "Catégorisation", "prompt": _p("CATEGORY_PROMPT")},
+        "keywords": {"name": "Mots-clés", "prompt": _p("KEYWORDS_PROMPT")},
+        "duplicate": {"name": "Détection doublon", "prompt": _p("DUPLICATE_CHECK_PROMPT")},
+        "process": {"name": "Traitement complet (all-in-one)", "prompt": _p("PROCESS_PROMPT")},
+        "proportion": {"name": "Impact / Débat", "prompt": _p("PROPORTION_PROMPT")},
+        "argument": {"name": "Argument pour/contre", "prompt": _p("ARGUMENT_PROMPT")},
+        "subtitle": {"name": "Sous-titre (regroupement)", "prompt": _p("SUBTITLE_PROMPT")},
+        "verify": {"name": "Vérification (cohérence, syntaxe, français)", "prompt": _p("VERIFY_PROMPT")},
     }
     return jsonify(prompts)
 
@@ -5689,25 +5750,6 @@ def _parse_bus_eta_tiers():
         "soon_max": max(0, int(get_setting("bus_eta_soon_max", "3") or "3")),
         "near_max": max(0, int(get_setting("bus_eta_near_max", "7") or "7")),
     }
-
-
-def _sort_bus_departures(departures, route_order):
-    """Tri : ordre de ligne (config), puis prochain passage, puis direction / arrêt."""
-
-    def rank(route_name: str) -> tuple:
-        r = (route_name or "").strip()
-        if r in route_order:
-            return (0, route_order.index(r))
-        return (1, r)
-
-    def key(d: dict) -> tuple:
-        rk = rank(d.get("route_name") or "")
-        dmin = int(d.get("delay_minutes") or 9999)
-        direction = (d.get("direction") or "").strip()
-        stop_k = (d.get("config_stop_id") or d.get("stop_name") or "").strip()
-        return (rk[0], rk[1], dmin, direction, stop_k)
-
-    return sorted(departures, key=key)
 
 
 def _route_sort_key_tuple(rn: str, route_order: list) -> tuple:
@@ -6531,366 +6573,6 @@ def _extract_bus_api_key(value: str) -> str:
     return value
 
 
-def _fetch_bus_stop(api_key: str, stop_id: str, include_alerts: bool = True) -> dict | None:
-    """Fetch real-time departures for a stop from Mecatran API."""
-    import urllib.request
-    import urllib.error
-    params = f"apiKey={api_key}&lookAheadSec=86400"  # 24h pour avoir tous les prochains départs
-    if include_alerts:
-        params += "&includeAlerts=true&preferredLang=fr"
-    url = f"https://app.mecatran.com/utw/ws/realtime/stop/stran-merge/{stop_id}?{params}"
-    try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError, OSError):
-        return None
-
-
-# Cache GTFS statique : données brutes par clé API (refresh 1h), départs recalculés à chaque requête
-_GTFS_RAW_CACHE: dict[str, tuple[dict, float]] = {}
-_GTFS_CACHE_TTL = 3600  # 1 heure
-
-
-def _parse_gtfs_time(s: str) -> tuple[int, int, int]:
-    """Parse HH:MM:SS or H:MM:SS, support 25:30:00 for next day. Returns (hours, minutes, seconds)."""
-    if not s or not isinstance(s, str):
-        return (0, 0, 0)
-    parts = s.strip().split(":")
-    h = int(parts[0]) if len(parts) > 0 else 0
-    m = int(parts[1]) if len(parts) > 1 else 0
-    sec = int(parts[2]) if len(parts) > 2 else 0
-    return (h, m, sec)
-
-
-def _gtfs_time_to_minutes(h: int, m: int, sec: int) -> int:
-    """Convert to minutes since midnight. 25:30 -> 24*60+90 = 1530 (next day offset)."""
-    return h * 60 + m + (sec // 60)
-
-
-def _fetch_gtfs_raw(api_key: str) -> dict | None:
-    """Télécharge le GTFS STRAN (zip) et retourne les tables brutes (routes, trips, stop_times, etc.)."""
-    import urllib.request
-    import urllib.error
-    url = f"https://app.mecatran.com/utw/ws/gtfsfeed/static/stran-merge?apiKey={api_key}"
-    try:
-        req = urllib.request.Request(url, headers={"Accept": "application/zip, application/octet-stream, */*"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
-        return None
-    if not data or len(data) < 100:
-        return None
-    try:
-        z = zipfile.ZipFile(io.BytesIO(data), "r")
-    except zipfile.BadZipFile:
-        return None
-    # Lire les fichiers GTFS
-    def read_csv(name: str) -> list[dict]:
-        try:
-            with z.open(name) as f:
-                reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
-                return list(reader)
-        except KeyError:
-            return []
-    routes_rows = read_csv("routes.txt")
-    trips_rows = read_csv("trips.txt")
-    stop_times_rows = read_csv("stop_times.txt")
-    calendar_rows = read_csv("calendar.txt")
-    calendar_dates_rows = read_csv("calendar_dates.txt")
-    stops_rows = read_csv("stops.txt")
-    if not stop_times_rows or not trips_rows:
-        return None
-    routes_map = {r.get("route_id", ""): r.get("route_short_name", r.get("route_id", "")) for r in routes_rows}
-    trips_map = {}
-    for t in trips_rows:
-        rid = t.get("route_id", "")
-        trips_map[t.get("trip_id", "")] = (
-            routes_map.get(rid, rid),
-            t.get("trip_headsign", ""),
-            t.get("service_id", ""),
-        )
-    our_stop_ids = {s["id"] for s in BUS_STOPS}
-    gtfs_to_our: dict[str, str] = {}
-    for s in stops_rows:
-        sid = (s.get("stop_id") or "").strip()
-        scode = (s.get("stop_code") or "").strip()
-        if scode and scode in our_stop_ids:
-            gtfs_to_our[sid] = scode
-        elif sid and sid in our_stop_ids:
-            gtfs_to_our[sid] = sid
-    return {
-        "routes_map": routes_map,
-        "trips_map": trips_map,
-        "gtfs_to_our": gtfs_to_our,
-        "stop_times_rows": stop_times_rows,
-        "calendar_rows": calendar_rows,
-        "calendar_dates_rows": calendar_dates_rows,
-        "trips_rows": trips_rows,
-    }
-
-
-def _compute_gtfs_departures(raw: dict) -> dict[str, list[tuple[str, str, int, str]]]:
-    """Calcule les prochains départs à partir des données GTFS brutes (heure actuelle)."""
-    stop_times_rows = raw["stop_times_rows"]
-    trips_map = raw["trips_map"]
-    gtfs_to_our = raw["gtfs_to_our"]
-    calendar_rows = raw["calendar_rows"]
-    calendar_dates_rows = raw["calendar_dates_rows"]
-    trips_rows = raw["trips_rows"]
-    try:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("Europe/Paris")
-    except ImportError:
-        tz = timezone.utc
-    now = datetime.now(tz)
-    today = now.date()
-    tomorrow = today + timedelta(days=1)
-    weekday_map = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    dow = weekday_map[today.weekday()]
-    dow_tomorrow = weekday_map[tomorrow.weekday()]
-    active_services = set()
-    for c in calendar_rows:
-        sid = c.get("service_id", "")
-        start_s = c.get("start_date", "")
-        end_s = c.get("end_date", "")
-        if not sid or not start_s or not end_s:
-            continue
-        try:
-            start_d = datetime.strptime(start_s, "%Y%m%d").date()
-            end_d = datetime.strptime(end_s, "%Y%m%d").date()
-        except ValueError:
-            continue
-        if today < start_d or today > end_d:
-            continue
-        if c.get(dow, "0") == "1":
-            active_services.add(sid)
-    for c in calendar_rows:
-        sid = c.get("service_id", "")
-        start_s = c.get("start_date", "")
-        end_s = c.get("end_date", "")
-        if not sid or not start_s or not end_s:
-            continue
-        try:
-            start_d = datetime.strptime(start_s, "%Y%m%d").date()
-            end_d = datetime.strptime(end_s, "%Y%m%d").date()
-        except ValueError:
-            continue
-        if tomorrow < start_d or tomorrow > end_d:
-            continue
-        if c.get(dow_tomorrow, "0") == "1":
-            active_services.add(f"{sid}_tomorrow")
-    for cd in calendar_dates_rows:
-        sid = cd.get("service_id", "")
-        dt_s = cd.get("date", "")
-        ex = cd.get("exception_type", "1")
-        if not sid or not dt_s:
-            continue
-        try:
-            d = datetime.strptime(dt_s, "%Y%m%d").date()
-        except ValueError:
-            continue
-        if ex == "1":
-            if d == today:
-                active_services.add(sid)
-            elif d == tomorrow:
-                active_services.add(f"{sid}_tomorrow")
-        elif ex == "2":
-            if d == today:
-                active_services.discard(sid)
-            if d == tomorrow:
-                active_services.discard(f"{sid}_tomorrow")
-    if not active_services:
-        for t in trips_rows:
-            sid = t.get("service_id", "")
-            if sid:
-                active_services.add(sid)
-                active_services.add(f"{sid}_tomorrow")
-    now_min = now.hour * 60 + now.minute
-    look_ahead_min = 24 * 60  # 24h pour afficher toutes les lignes avec leur prochain passage
-    result_by_stop: dict[str, list[tuple[str, str, int, str]]] = {}
-    # D'abord collecter toutes les lignes (route, headsign) par arrêt (services actifs uniquement)
-    lines_per_stop: dict[str, set[tuple[str, str]]] = {}
-    for st in stop_times_rows:
-        trip_id = st.get("trip_id", "")
-        stop_id = (st.get("stop_id") or "").strip()
-        trip_info = trips_map.get(trip_id)
-        if not trip_info:
-            continue
-        route_short, headsign, service_id = trip_info
-        if service_id not in active_services and f"{service_id}_tomorrow" not in active_services:
-            continue
-        our_id = gtfs_to_our.get(stop_id)
-        if our_id:
-            if our_id not in lines_per_stop:
-                lines_per_stop[our_id] = set()
-            lines_per_stop[our_id].add((route_short, headsign))
-    for st in stop_times_rows:
-        trip_id = st.get("trip_id", "")
-        stop_id = (st.get("stop_id") or "").strip()
-        dep_s = (st.get("departure_time") or st.get("arrival_time") or "").strip()
-        if not trip_id or not stop_id or not dep_s:
-            continue
-        trip_info = trips_map.get(trip_id)
-        if not trip_info:
-            continue
-        route_short, headsign, service_id = trip_info
-        h, m, sec = _parse_gtfs_time(dep_s)
-        dep_min_raw = _gtfs_time_to_minutes(h, m, sec)
-        dep_time_str = f"{h % 24:02d}:{m:02d}" if h < 24 else f"{(h - 24) % 24:02d}:{m:02d}"
-        if dep_min_raw >= 24 * 60:
-            dep_date = tomorrow
-            dep_min_today = dep_min_raw - 24 * 60
-            service_ok = f"{service_id}_tomorrow" in active_services
-            diff_min = (24 * 60 - now_min) + dep_min_today
-        else:
-            dep_date = today
-            dep_min_today = dep_min_raw
-            service_ok = service_id in active_services
-            diff_min = dep_min_today - now_min
-        if not service_ok:
-            continue
-        if diff_min < -60:
-            continue
-        if diff_min > look_ahead_min:
-            continue
-        our_id = gtfs_to_our.get(stop_id)
-        if not our_id:
-            continue
-        if our_id not in result_by_stop:
-            result_by_stop[our_id] = []
-        result_by_stop[our_id].append((route_short, headsign, max(0, diff_min), dep_time_str))
-    # Par arrêt : grouper par (route, headsign), garder uniquement les 2 prochains départs par ligne
-    final_by_stop: dict[str, list[tuple[str, str, int, str]]] = {}
-    for stop in BUS_STOPS:
-        stop_id = stop["id"]
-        all_lines = lines_per_stop.get(stop_id, set())
-        deps = result_by_stop.get(stop_id, [])
-        deps.sort(key=lambda x: x[2])
-        by_line: dict[tuple[str, str], list[tuple[int, str]]] = {}
-        for route_short, headsign, mins, time_str in deps:
-            key = (route_short, headsign)
-            if key not in by_line:
-                by_line[key] = []
-            if len(by_line[key]) < 2:
-                by_line[key].append((mins, time_str))
-        # Toutes les lignes qui passent à l'arrêt (les 2 sens avec leurs destinations)
-        result_list = []
-        for (route_short, headsign) in sorted(all_lines):
-            items = by_line.get((route_short, headsign), [])
-            if items:
-                for mins, time_str in items:
-                    result_list.append((route_short, headsign, mins, time_str))
-            else:
-                result_list.append((route_short, headsign, -1, "—"))  # Ligne sans départ dans la fenêtre
-        final_by_stop[stop_id] = result_list
-    return final_by_stop
-
-
-def _get_gtfs_static_departures(api_key: str) -> dict | None:
-    """Retourne les départs GTFS statiques. Cache les données brutes 1h par clé API, recalcule les départs à chaque appel."""
-    global _GTFS_RAW_CACHE
-    now_ts = time.time()
-    cached = _GTFS_RAW_CACHE.get(api_key)
-    if cached is not None and (now_ts - cached[1]) < _GTFS_CACHE_TTL:
-        raw = cached[0]
-    else:
-        raw = _fetch_gtfs_raw(api_key)
-        if raw is not None:
-            _GTFS_RAW_CACHE[api_key] = (raw, now_ts)
-    if raw is None:
-        return None
-    return _compute_gtfs_departures(raw)
-
-
-def _format_departure_for_display(dep: dict, routes: list, now_dt) -> dict | None:
-    """Format a departure: route, headsign, status (min/imminent/parti), temps."""
-    route_id = dep.get("routeId", "")
-    route_info = next((r for r in routes if r.get("id") == route_id), {})
-    route_short = route_info.get("shortName", route_id)
-    headsign = dep.get("headsign", "")
-    dep_time_str = dep.get("departureTime") or dep.get("arrivalTime") or ""
-    if not dep_time_str:
-        return None
-    try:
-        dep_dt = datetime.fromisoformat(dep_time_str.replace("Z", "+00:00"))
-        if dep_dt.tzinfo is None:
-            dep_dt = dep_dt.replace(tzinfo=timezone.utc)
-        diff_sec = (dep_dt - now_dt).total_seconds()
-        if diff_sec < -60:
-            return None  # parti, on ne l'affiche pas
-        mins = max(0, int(diff_sec / 60))
-        if diff_sec < 0:
-            status = "parti"
-        elif diff_sec < 120:
-            status = "imminent"
-        else:
-            status = "temps_estime"
-        return {
-            "route": route_short,
-            "headsign": headsign,
-            "minutes": mins,
-            "time": dep_dt.strftime("%H:%M"),
-            "status": status,
-        }
-    except (ValueError, TypeError):
-        return None
-
-
-def _condense_alert(text: str) -> str:
-    """Condense alert text via IA si disponible, sinon tronquer."""
-    try:
-        import llm_engine
-        if llm_engine.is_available():
-            fn = getattr(llm_engine, "_call_ollama", None)
-            if fn:
-                prompt = f"Résume cette perturbation transport en une phrase courte (max 80 car.):\n{text[:400]}"
-                result = fn(prompt, temperature=0.1, num_predict=80, timeout=12)
-                if result and 10 < len(result.strip()) < 120:
-                    return result.strip()[:100]
-    except Exception:
-        pass
-    return (text[:100] + "…") if len(text) > 100 else text
-
-
-def _fake_bus_data(test_perturbations: bool = False) -> dict:
-    """Données de test pour le mode bus. Toutes les lignes, 2 prochains départs max."""
-    import random
-    # Lignes avec les 2 sens (destination A et B)
-    line_destinations = [
-        ("H1", "Gavy", "Saint-Nazaire Gare"),
-        ("H2", "Trignac", "Pornichet"),
-        ("U2", "La Baule", "Saint-Nazaire"),
-        ("U4", "Pornichet", "La Baule"),
-        ("S1", "Saint-Nazaire", "Trignac"),
-        ("L1", "Gavy", "Pornichet"),
-    ]
-    result = []
-    for stop in BUS_STOPS:
-        lines = []
-        for route, dest_a, dest_b in line_destinations:
-            for headsign in (dest_a, dest_b):
-                items = []
-                for _ in range(2):
-                    rnd = random.random()
-                    if rnd < 0.2:
-                        items.append({"status": "imminent", "label": "Imminent"})
-                    else:
-                        m = random.choice([3, 8, 12, 18, 45, 90, 180, 360])
-                        label = f"{m // 60}h" if m >= 60 else f"{m} min"
-                        items.append({"status": "temps_estime", "label": label})
-                items = items[:2]
-                lines.append({"route": route, "headsign": headsign, "stop_name": stop["name"], "items": items})
-        result.append({"stop_id": stop["id"], "name": stop["name"], "lines": lines, "error": False})
-    alerts = []
-    if test_perturbations:
-        alerts = [{
-            "text": "Perturbation ligne H1",
-            "detail": "Retard d'environ 10 minutes sur la ligne H1 en direction de Gavy. Circulation ralentie suite à un incident. Prévoir un délai supplémentaire."
-        }]
-    return {"stops": result, "alerts": alerts}
-
-
 @app.route("/api/debug/bus", methods=["GET"])
 @admin_required
 def debug_bus_pipeline():
@@ -6940,122 +6622,6 @@ def display_bus():
     if dbg:
         return jsonify(_build_bus_display_payload(include_diagnostics=True))
     return jsonify(_get_bus_display_payload_cached())
-
-
-def _format_bus_time_label(mins: int) -> str:
-    """Format: Imminent si < 2 min, X min si < 60 min, Xh sinon (ex: 6h)."""
-    if mins < 0:
-        return "—"
-    if mins < 2:
-        return "Imminent"
-    if mins < 60:
-        return f"{mins} min"
-    return f"{mins // 60}h"
-
-
-def _display_bus_from_gtfs_static(api_key: str):
-    """Affiche les horaires à partir du GTFS statique. Toutes les lignes, 2 prochains départs max."""
-    dep_by_stop = _get_gtfs_static_departures(api_key)
-    if dep_by_stop is None:
-        return jsonify({"stops": [], "alerts": [], "error": "Impossible de charger le GTFS statique"})
-    result = []
-    for stop in BUS_STOPS:
-        deps = dep_by_stop.get(stop["id"], [])
-        by_line = {}
-        for route_short, headsign, mins, time_str in deps:
-            key = (route_short, headsign)
-            if key not in by_line:
-                by_line[key] = {"route": route_short, "headsign": headsign, "items": []}
-            label = _format_bus_time_label(mins)
-            status = "imminent" if 0 <= mins < 2 else ("temps_estime" if mins >= 0 else "—")
-            by_line[key]["items"].append({"minutes": mins, "status": status, "label": label})
-        lines = []
-        for v in by_line.values():
-            items = [{"status": i["status"], "label": i["label"]} for i in v["items"][:2]]
-            lines.append({
-                "route": v["route"],
-                "headsign": v["headsign"],
-                "stop_name": stop["name"],
-                "items": items,
-            })
-        result.append({
-            "stop_id": stop["id"],
-            "name": stop["name"],
-            "lines": lines,
-            "error": False,
-        })
-    return jsonify({"stops": result, "alerts": []})
-
-
-def _display_bus_from_realtime(api_key: str):
-    """Affiche les horaires à partir de l'API temps réel Mecatran. 2 prochains départs max par ligne."""
-    now_dt = datetime.now(timezone.utc)
-    result = []
-    all_alerts = []
-    our_route_ids = set()
-
-    for stop in BUS_STOPS:
-        data = _fetch_bus_stop(api_key, stop["id"])
-        if not data:
-            result.append({"stop_id": stop["id"], "name": stop["name"], "lines": [], "error": True})
-            continue
-        routes = data.get("routes", [])
-        deps = data.get("departures", [])
-        # Grouper par (route, headsign), garder uniquement les 2 prochains départs par ligne
-        by_line = {}
-        for d in deps:
-            fd = _format_departure_for_display(d, routes, now_dt)
-            if not fd:
-                continue
-            key = (fd["route"], fd["headsign"])
-            if key not in by_line:
-                by_line[key] = {"route": fd["route"], "headsign": fd["headsign"], "items": []}
-            if len(by_line[key]["items"]) < 2:
-                by_line[key]["items"].append({"minutes": fd["minutes"], "status": fd["status"]})
-            our_route_ids.add(fd["route"])
-        lines = []
-        for v in by_line.values():
-            sorted_items = sorted(v["items"], key=lambda x: (0 if x["status"] == "imminent" else 1 if x["status"] == "temps_estime" else 2, x.get("minutes", 999)))[:2]
-            items = []
-            for item in sorted_items:
-                m = item.get("minutes", 0)
-                label = "Parti" if item["status"] == "parti" else _format_bus_time_label(m)
-                items.append({"status": item["status"], "label": label})
-            lines.append({
-                "route": v["route"],
-                "headsign": v["headsign"],
-                "stop_name": stop["name"],
-                "items": items,
-            })
-        result.append({
-            "stop_id": stop["id"],
-            "name": stop["name"],
-            "lines": lines,
-            "error": False,
-        })
-        # Alerts (perturbations) — afficher si concerne nos lignes ou pas de filtre
-        for a in data.get("alerts", []):
-            desc = a.get("description") or a.get("descriptionText") or a.get("title") or a.get("headerText") or ""
-            if not desc:
-                continue
-            route_ids = set()
-            for k in ("routeIds", "routes", "routeId"):
-                v = a.get(k)
-                if v: route_ids.update([v] if isinstance(v, str) else v)
-            if not route_ids or (route_ids & our_route_ids):
-                all_alerts.append({"text": desc})
-
-    # Dédupliquer : résumé court + détail complet à droite
-    seen = set()
-    alerts_final = []
-    for a in all_alerts:
-        t = a["text"].strip()
-        if t and t not in seen:
-            seen.add(t)
-            condensed = _condense_alert(t)
-            alerts_final.append({"text": condensed, "detail": t[:300] if len(t) > 80 else None})
-
-    return jsonify({"stops": result, "alerts": alerts_final[:3]})
 
 
 # --------------- Backup & Historique ---------------
@@ -8243,6 +7809,1617 @@ with app.app_context():
     _max = int(get_setting("llm_max_credits", "100"))
     _period = int(get_setting("llm_credits_period_hours", "24"))
     _llm_init.configure_credits(_max, _period)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NFC-V2: Module NFC terrain — signalements, confirmations, admin maintenance
+# NFC-V2.1: fiabilisation backend (cache, anti-abus IP, GC, alertes, statuts)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+NFC_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, "nfc")
+os.makedirs(NFC_UPLOAD_FOLDER, exist_ok=True)
+_NFC_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # NFC-V2.1: limite 5 Mo upload image
+
+_NFC_OPEN_STATUSES = ["En attente", "En étude", "Acceptée", "En cours de mise en place"]
+
+_NFC_STATUS_MAP = {
+    "En attente": "open", "En étude": "open", "Acceptée": "open",
+    "En cours de mise en place": "in_progress",
+    "Terminée": "resolved", "Refusée": "deleted",
+}
+_NFC_STATUS_REVERSE = {
+    "open": "En attente", "in_progress": "En cours de mise en place",
+    "resolved": "Terminée", "deleted": "Refusée",
+}
+# NFC-V2.1: transitions de statut autorisées (NFC → NFC)
+_NFC_VALID_TRANSITIONS = {
+    "open": ["in_progress", "resolved", "deleted"],
+    "in_progress": ["open", "resolved", "deleted"],
+    "resolved": ["open"],
+    "deleted": ["open"],
+}
+
+# NFC-V2.4: seuils alertes admin (AND logic, pas OR)
+_NFC_ALERT_HOT_THRESHOLD = 80
+_NFC_ALERT_CONFIRM_THRESHOLD = 3
+_NFC_IMPORTANT_HEAT_THRESHOLD = 50
+_NFC_IMPORTANT_CONFIRM_THRESHOLD = 2
+
+# ── Rate limiting ────────────────────────────────────────────────────────────
+
+_nfc_rate_buckets: dict[str, list[float]] = {}
+_nfc_rate_gc_last = 0.0
+
+# NFC-V2.2-ADMIN: limites par défaut (écrasables via admin settings)
+_NFC_CONFIRM_PER_SUGGESTION_WINDOW = 4 * 3600
+_NFC_CONFIRM_PER_SUGGESTION_MAX = 1
+_NFC_CREATE_PER_LOCATION_WINDOW = 6 * 3600
+_NFC_CREATE_PER_LOCATION_MAX = 1
+_NFC_CONFIRM_GLOBAL_WINDOW = 3600
+_NFC_CONFIRM_GLOBAL_MAX = 10
+_NFC_CREATE_GLOBAL_WINDOW = 86400
+_NFC_CREATE_GLOBAL_MAX = 5
+_NFC_BURST_WINDOW = 10
+_NFC_BURST_MAX = 4
+_NFC_IP_CONFIRM_PER_HOUR = 30
+_NFC_IP_CREATE_PER_HOUR = 8
+_NFC_SCAN_TOKEN_TTL = 120       # 2 min — short-lived proof of physical scan
+_NFC_SCAN_MAX_ACTIONS = 3       # max actions (confirm/suggest) per scan token
+_NFC_QR_TOKEN_TTL = 180         # 3 min validity for dynamic QR tokens
+_NFC_LOG_RETENTION_DAYS = 90    # auto-purge activity logs older than this
+
+
+def _nfc_setting(key: str, default: int) -> int:
+    """NFC-V2.2-ADMIN: lit un paramètre NFC depuis SiteSettings (int), fallback sur défaut."""
+    try:
+        return int(get_setting(f"nfc_{key}", str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _nfc_truncated_ip() -> str:
+    """NFC-V2.1: IP tronquée RGPD-safe (dernier octet masqué pour IPv4, /48 pour IPv6)."""
+    ip = _client_ip()
+    if ":" in ip:
+        parts = ip.split(":")
+        return ":".join(parts[:3]) + "::*"
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return ".".join(parts[:3]) + ".0"
+    return ip
+
+
+def _nfc_session_hash() -> str:
+    """NFC-V2: empreinte anonyme RGPD-safe (non réversible, anti-abus)."""
+    sid = get_session_id()
+    ua = request.headers.get("User-Agent", "")[:200]
+    lang = request.headers.get("Accept-Language", "")[:100]
+    tz = (request.args.get("tz") or request.headers.get("X-Timezone") or "")[:60]
+    raw = f"{sid}|{ua}|{lang}|{tz}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+# ── Scan token — cryptographic proof of recent physical presence ──────────────
+
+def _nfc_stamp_scan(slug: str):
+    """Create a fresh scan token with nonce, IP binding, and action counter."""
+    session[f"nfc_scan:{slug}"] = {
+        "nonce": secrets.token_urlsafe(24),
+        "ts": time.time(),
+        "ip": (request.remote_addr or "")[:45],
+        "actions": 0,
+    }
+    session.modified = True
+
+
+def _nfc_scan_is_valid(slug: str) -> bool:
+    """Token must exist, not expired, not over action limit."""
+    data = session.get(f"nfc_scan:{slug}")
+    if not data or not isinstance(data, dict):
+        return False
+    ttl = _nfc_setting("scan_token_ttl", _NFC_SCAN_TOKEN_TTL)
+    if (time.time() - data.get("ts", 0)) >= ttl:
+        return False
+    max_actions = _nfc_setting("scan_max_actions", _NFC_SCAN_MAX_ACTIONS)
+    if data.get("actions", 0) >= max_actions:
+        return False
+    return True
+
+
+def _nfc_scan_remaining(slug: str) -> int:
+    """Seconds remaining before token expires, 0 if expired or exhausted."""
+    data = session.get(f"nfc_scan:{slug}")
+    if not data or not isinstance(data, dict):
+        return 0
+    ttl = _nfc_setting("scan_token_ttl", _NFC_SCAN_TOKEN_TTL)
+    remaining = ttl - (time.time() - data.get("ts", 0))
+    if remaining <= 0:
+        return 0
+    max_actions = _nfc_setting("scan_max_actions", _NFC_SCAN_MAX_ACTIONS)
+    if data.get("actions", 0) >= max_actions:
+        return 0
+    return int(remaining)
+
+
+def _nfc_consume_action(slug: str):
+    """Increment the action counter on the current scan token."""
+    data = session.get(f"nfc_scan:{slug}")
+    if data and isinstance(data, dict):
+        data["actions"] = data.get("actions", 0) + 1
+        session[f"nfc_scan:{slug}"] = data
+        session.modified = True
+
+
+# ── QR dynamic token (HMAC-signed, short-lived) ─────────────────────────────
+
+def _nfc_generate_qr_url(slug: str) -> dict:
+    """Generate a signed QR URL valid for NFC_QR_TOKEN_TTL seconds."""
+    ts = int(time.time())
+    payload = f"{slug}:{ts}"
+    sig = hmac.new(app.secret_key.encode() if isinstance(app.secret_key, str) else app.secret_key,
+                   payload.encode(), hashlib.sha256).hexdigest()[:32]
+    ttl = _nfc_setting("qr_token_ttl", _NFC_QR_TOKEN_TTL)
+    url = f"/nfc/{slug}?t={sig}&ts={ts}"
+    return {"url": url, "expires_in": ttl, "generated_at": ts}
+
+
+def _nfc_verify_qr_token(slug: str) -> bool:
+    """Validate an HMAC-signed QR token from query params."""
+    sig = request.args.get("t", "")
+    ts_str = request.args.get("ts", "")
+    if not sig or not ts_str:
+        return False
+    try:
+        ts = int(ts_str)
+    except ValueError:
+        return False
+    ttl = _nfc_setting("qr_token_ttl", _NFC_QR_TOKEN_TTL)
+    if abs(time.time() - ts) > ttl:
+        return False
+    payload = f"{slug}:{ts}"
+    expected = hmac.new(app.secret_key.encode() if isinstance(app.secret_key, str) else app.secret_key,
+                        payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(sig, expected)
+
+
+# NFC-V2.2-ADMIN: notification helper
+def _nfc_notify_followers(suggestion_id: int, notif_type: str, message: str):
+    """Crée une notification pour chaque session qui suit cette suggestion."""
+    followers = NfcFollowUp.query.filter_by(suggestion_id=suggestion_id).all()
+    for f in followers:
+        existing = NfcNotification.query.filter_by(
+            session_id=f.session_id, suggestion_id=suggestion_id, notif_type=notif_type,
+        ).filter(NfcNotification.created_at >= datetime.now(timezone.utc) - timedelta(hours=1)).first()
+        if not existing:
+            db.session.add(NfcNotification(
+                session_id=f.session_id, suggestion_id=suggestion_id,
+                notif_type=notif_type, message=message[:500],
+            ))
+    db.session.commit()
+
+
+# NFC-V2.2-AI: auto-purge old notifications (>30 days), called lazily.
+_nfc_notif_purge_last = 0.0
+
+
+def _nfc_purge_old_notifications():
+    global _nfc_notif_purge_last
+    now = time.time()
+    if now - _nfc_notif_purge_last < 3600:
+        return
+    _nfc_notif_purge_last = now
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    try:
+        NfcNotification.query.filter(NfcNotification.created_at < cutoff).delete(synchronize_session=False)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
+def _nfc_rate_check(key: str, action: str, max_n: int, window_sec: float) -> tuple[bool, int]:
+    """NFC-V2: vérifie le rate limit. Retourne (bloqué, secondes_restantes)."""
+    bucket_key = f"nfc:{key}\t{action}"
+    now = time.time()
+    arr = _nfc_rate_buckets.setdefault(bucket_key, [])
+    arr[:] = [t for t in arr if now - t < window_sec]
+    if len(arr) >= max_n:
+        wait = int(window_sec - (now - min(arr))) + 1
+        return True, max(wait, 1)
+    arr.append(now)
+    return False, 0
+
+
+def _nfc_rate_gc():
+    """NFC-V2.1: garbage collection des buckets rate limit expirés (toutes les 5 min)."""
+    global _nfc_rate_gc_last
+    now = time.time()
+    if now - _nfc_rate_gc_last < 300:
+        return
+    _nfc_rate_gc_last = now
+    # NFC-V2.2-ADMIN: utilise les valeurs dynamiques pour le calcul de fenêtre max
+    max_window = max(
+        _nfc_setting("confirm_per_sugg_window", _NFC_CONFIRM_PER_SUGGESTION_WINDOW),
+        _nfc_setting("create_per_loc_window", _NFC_CREATE_PER_LOCATION_WINDOW),
+        _nfc_setting("confirm_global_window", _NFC_CONFIRM_GLOBAL_WINDOW),
+        _nfc_setting("create_global_window", _NFC_CREATE_GLOBAL_WINDOW), 86400,
+    )
+    dead = [k for k, arr in _nfc_rate_buckets.items() if not arr or now - max(arr) > max_window]
+    for k in dead:
+        del _nfc_rate_buckets[k]
+
+
+def _nfc_rate_response(wait: int):
+    """NFC-V2: réponse 429 avec temps restant (UX friendly)."""
+    if wait >= 3600:
+        label = f"{wait // 3600}h{(wait % 3600) // 60:02d}"
+    elif wait >= 60:
+        label = f"{wait // 60} min"
+    else:
+        label = f"{wait} s"
+    return jsonify({
+        "error": f"Merci de patienter encore {label} avant de refaire cette action.",
+        "retry_after": wait,
+    }), 429
+
+
+# ── Cache mémoire court ──────────────────────────────────────────────────────
+# NFC-V2.1: cache TTL 10 s sur GET /api/nfc/<slug> — évite DB à chaque polling
+
+_nfc_location_cache: dict[str, tuple[float, dict]] = {}  # slug → (ts, json_payload)
+_NFC_CACHE_TTL = 10
+
+
+def _nfc_cache_get(slug: str) -> dict | None:
+    entry = _nfc_location_cache.get(slug)
+    if entry and time.time() - entry[0] < _NFC_CACHE_TTL:
+        return entry[1]
+    return None
+
+
+def _nfc_cache_set(slug: str, payload: dict):
+    _nfc_location_cache[slug] = (time.time(), payload)
+
+
+def _nfc_cache_invalidate(slug: str):
+    _nfc_location_cache.pop(slug, None)
+
+
+# ── Heat score + intelligence produit ────────────────────────────────────────
+
+def _nfc_heat_score(s, now=None) -> float:
+    """NFC-V2: score de « chaleur » d'un problème NFC (0–200).
+    The creator's initial auto-confirmation is excluded (cc - 1)."""
+    cc = max(0, (getattr(s, "confirmation_count", 0) or 0) - 1)
+    if now is None:
+        now = datetime.now(timezone.utc)
+    hours_since_confirm = 999
+    if s.last_confirmed_at:
+        lc = s.last_confirmed_at
+        if lc.tzinfo is None:
+            lc = lc.replace(tzinfo=timezone.utc)
+        hours_since_confirm = max(0, (now - lc).total_seconds() / 3600)
+    hours_since_creation = 0
+    if s.created_at:
+        ca = s.created_at
+        if ca.tzinfo is None:
+            ca = ca.replace(tzinfo=timezone.utc)
+        hours_since_creation = max(0, (now - ca).total_seconds() / 3600)
+    score = (
+        cc * 12
+        + max(0, 100 - hours_since_confirm * 4)
+        + max(0, 40 - hours_since_creation * 1.5)
+    )
+    return round(min(score, 200), 1)
+
+
+# NFC-V2.4: calcul unifié du niveau de gravité (AND, pas OR) — seuils configurables
+# cc passed here is raw confirmation_count; we subtract 1 (creator's auto-confirm)
+def _nfc_heat_level(heat: float, cc: int) -> str:
+    cc = max(0, cc - 1)
+    ht_urgent = int(get_setting("nfc_heat_urgent_threshold") or _NFC_ALERT_HOT_THRESHOLD)
+    cc_urgent = int(get_setting("nfc_confirm_urgent_threshold") or _NFC_ALERT_CONFIRM_THRESHOLD)
+    ht_important = int(get_setting("nfc_heat_important_threshold") or _NFC_IMPORTANT_HEAT_THRESHOLD)
+    cc_important = int(get_setting("nfc_confirm_important_threshold") or _NFC_IMPORTANT_CONFIRM_THRESHOLD)
+    if heat >= ht_urgent and cc >= cc_urgent:
+        return "urgent"
+    if heat >= ht_important and cc >= cc_important:
+        return "important"
+    return "normal"
+
+
+def _nfc_is_urgent(heat: float, cc: int) -> bool:
+    cc = max(0, cc - 1)
+    ht_urgent = int(get_setting("nfc_heat_urgent_threshold") or _NFC_ALERT_HOT_THRESHOLD)
+    cc_urgent = int(get_setting("nfc_confirm_urgent_threshold") or _NFC_ALERT_CONFIRM_THRESHOLD)
+    return heat >= ht_urgent and cc >= cc_urgent
+
+
+def _nfc_last_activity_minutes(s, now=None) -> int | None:
+    if now is None:
+        now = datetime.now(timezone.utc)
+    best = None
+    for dt in (s.last_confirmed_at, s.updated_at, s.created_at):
+        if dt:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if best is None or dt > best:
+                best = dt
+    if best is None:
+        return None
+    return max(0, int((now - best).total_seconds() / 60))
+
+
+def _nfc_batch_recurring(suggestions: list, location_id: int) -> dict[int, bool]:
+    """NFC-V2.1: détection récurrence en batch (1 seule requête pour les résolues récentes)."""
+    from ai_engine import _tokenize
+    recent_resolved = Suggestion.query.filter(
+        Suggestion.nfc_location_id == location_id,
+        Suggestion.status == "Terminée",
+        Suggestion.completed_at >= datetime.now(timezone.utc) - timedelta(days=30),
+    ).all()
+    resolved_tokens = []
+    for rs in recent_resolved:
+        t = set(_tokenize(rs.title or ""))
+        if t:
+            resolved_tokens.append((rs.id, t))
+    result = {}
+    for s in suggestions:
+        if not s.title or s.id in [r[0] for r in resolved_tokens]:
+            result[s.id] = False
+            continue
+        tokens = set(_tokenize(s.title))
+        if len(tokens) < 2:
+            result[s.id] = False
+            continue
+        found = False
+        for rid, rt in resolved_tokens:
+            if rid == s.id:
+                continue
+            overlap = len(tokens & rt) / max(len(tokens | rt), 1)
+            if overlap >= 0.35:
+                found = True
+                break
+        result[s.id] = found
+    return result
+
+
+def _nfc_find_duplicate(text: str, location_id: int):
+    """NFC-V2: détection légère de doublon (même lieu, problème ouvert, Jaccard)."""
+    from ai_engine import _tokenize
+    tokens = set(_tokenize(text))
+    if len(tokens) < 2:
+        return None
+    existing = Suggestion.query.filter(
+        Suggestion.nfc_location_id == location_id,
+        Suggestion.status.in_(_NFC_OPEN_STATUSES),
+    ).all()
+    best_score, best_match = 0, None
+    for s in existing:
+        s_text = f"{s.title or ''} {s.original_text or ''}"
+        s_tokens = set(_tokenize(s_text))
+        if not s_tokens:
+            continue
+        jaccard = len(tokens & s_tokens) / len(tokens | s_tokens)
+        if jaccard > best_score:
+            best_score = jaccard
+            best_match = s
+    if best_score >= 0.30:
+        return best_match
+    return None
+
+
+def _nfc_suggestion_to_dict(s, session_hash: str, *, now=None, confirmed_ids: set | None = None, recurring_map: dict | None = None) -> dict:
+    """NFC-V2.1: sérialisation optimisée (confirmations et récurrence pré-calculées en batch)."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    ca = s.created_at
+    if ca and ca.tzinfo is None:
+        ca = ca.replace(tzinfo=timezone.utc)
+    elapsed = (now - ca).total_seconds() if ca else 0
+
+    recently_confirmed = s.id in confirmed_ids if confirmed_ids is not None else False
+    heat = _nfc_heat_score(s, now=now)
+    recurring = recurring_map.get(s.id, False) if recurring_map is not None else False
+
+    cc = s.confirmation_count or 0
+    level = _nfc_heat_level(heat, cc)
+    last_act = _nfc_last_activity_minutes(s, now=now)
+
+    # NFC-V2.4: vote_count + has_voted (même système que page principale)
+    session_id = get_session_id()
+    vc = s.vote_count or 0
+    my_vote = Vote.query.filter_by(suggestion_id=s.id, session_id=session_id).first()
+
+    return {
+        "id": s.id,
+        "title": s.title,
+        "original_text": s.original_text,
+        "category": s.category,
+        "status": _NFC_STATUS_MAP.get(s.status, "open"),
+        "nfc_location_id": s.nfc_location_id,
+        "nfc_location_name": s.nfc_location.name if s.nfc_location else None,
+        "nfc_building": s.nfc_location.building if s.nfc_location else None,
+        "nfc_floor": s.nfc_location.floor if s.nfc_location else None,
+        "confirmation_count": cc,
+        "vote_count": vc,
+        "has_voted": my_vote is not None,
+        "support_count": getattr(s, "support_count", 0) or 0,
+        "last_confirmed_at": s.last_confirmed_at.isoformat() if s.last_confirmed_at else None,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "elapsed_seconds": int(elapsed),
+        "heat_score": heat,
+        "heat_level": level,
+        "last_activity_minutes": last_act,
+        "is_recurring": recurring,
+        "already_confirmed": recently_confirmed,
+        "is_urgent": _nfc_is_urgent(heat, cc),
+        "reopened_at": s.reopened_at.isoformat() if getattr(s, "reopened_at", None) else None,
+        "admin_reply": s.admin_reply or None,
+        "admin_reply_at": s.admin_reply_at.isoformat() if s.admin_reply_at else None,
+        "processing": s.status == "En attente",
+    }
+
+
+def _nfc_build_location_payload(loc, session_hash: str) -> dict:
+    """NFC-V2.1: construit le payload complet d'un lieu (utilisé par API + cache)."""
+    suggestions = Suggestion.query.filter(
+        Suggestion.nfc_location_id == loc.id,
+        Suggestion.status.in_(_NFC_OPEN_STATUSES),
+    ).all()
+    now = datetime.now(timezone.utc)
+
+    # NFC-V2.1: batch les confirmations récentes pour cette session (1 seule requête)
+    confirmed_ids = set()
+    if session_hash:
+        rows = NfcConfirmation.query.filter(
+            NfcConfirmation.session_hash == session_hash,
+            NfcConfirmation.confirmed_at >= now - timedelta(hours=4),
+            NfcConfirmation.suggestion_id.in_([s.id for s in suggestions]) if suggestions else False,
+        ).all()
+        confirmed_ids = {r.suggestion_id for r in rows}
+
+    recurring_map = _nfc_batch_recurring(suggestions, loc.id)
+
+    items = [_nfc_suggestion_to_dict(s, session_hash, now=now, confirmed_ids=confirmed_ids, recurring_map=recurring_map) for s in suggestions]
+    items.sort(key=lambda x: (-x["heat_score"], -x["confirmation_count"], -x["elapsed_seconds"]))
+
+    return {
+        "location": {
+            "id": loc.id, "slug": loc.slug, "name": loc.name,
+            "description": loc.description or "",
+            "image_url": loc.image_url,
+            "category": loc.category,
+            "floor": loc.floor, "building": loc.building,
+            "pause_suggestions": bool(loc.pause_suggestions),
+            "pause_confirmations": bool(loc.pause_confirmations),
+        },
+        "suggestions": items[:50],
+        "total_open": len(items),
+    }
+
+
+# ── Page HTML NFC (standalone mobile-first) ──────────────────────────────────
+
+@app.route("/nfc/<slug>")
+def nfc_page(slug):
+    """NFC page — stamps scan token on valid NFC tap (?s=1) or QR scan (?t=&ts=)."""
+    loc = NfcLocation.query.filter_by(slug=slug).first()
+    if not loc:
+        return render_template("nfc.html", error="not_found", location=None), 404
+    if not loc.is_active:
+        return render_template("nfc.html", error="disabled", location={"name": loc.name}), 403
+
+    scan_source = None
+    if request.args.get("t") and _nfc_verify_qr_token(slug):
+        _nfc_stamp_scan(slug)
+        scan_source = "qr"
+        _log_activity("nfc_scan_qr", f"QR scan au lieu « {loc.name} »")
+    elif request.args.get("s") == "1":
+        _nfc_stamp_scan(slug)
+        scan_source = "nfc"
+        _log_activity("nfc_scan_nfc", f"NFC scan au lieu « {loc.name} »")
+
+    return render_template("nfc.html", error=None, location={
+        "slug": loc.slug,
+        "name": loc.name,
+        "description": loc.description or "",
+        "image_url": loc.image_url,
+        "category": loc.category,
+        "floor": loc.floor,
+        "building": loc.building,
+        "scan_source": scan_source,
+    })
+
+
+# ── API publiques NFC ────────────────────────────────────────────────────────
+
+@app.route("/api/nfc/<slug>", methods=["GET"])
+def nfc_location_data(slug):
+    """NFC-V2.1: données du lieu + cache TTL 10 s."""
+    _nfc_rate_gc()  # NFC-V2.1: GC opportuniste des buckets
+
+    loc = NfcLocation.query.filter_by(slug=slug).first()
+    if not loc:
+        return jsonify({"error": "Lieu introuvable."}), 404
+    if not loc.is_active:
+        return jsonify({"error": "Ce lieu est temporairement désactivé."}), 403
+
+    cached = _nfc_cache_get(slug)
+    if cached:
+        payload = dict(cached)
+    else:
+        sh = _nfc_session_hash()
+        payload = _nfc_build_location_payload(loc, sh)
+        _nfc_cache_set(slug, payload)
+    # NFC-V2.2-ADMIN: scan token est session-dépendant → calculé hors cache
+    payload["scan_valid"] = _nfc_scan_is_valid(slug)
+    payload["scan_remaining"] = _nfc_scan_remaining(slug)
+    return jsonify(payload)
+
+
+@app.route("/api/nfc/<slug>/confirm", methods=["POST"])
+def nfc_confirm(slug):
+    """NFC-V2.2-ADMIN: confirmer un problème — scan token + suspension checks."""
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée."}), 403
+
+    loc = NfcLocation.query.filter_by(slug=slug, is_active=True).first()
+    if not loc:
+        return jsonify({"error": "Lieu introuvable."}), 404
+    # NFC-V2.2-ADMIN: vérifier scan token
+    if not _nfc_scan_is_valid(slug):
+        return jsonify({"error": "Scannez le tag NFC pour pouvoir agir.", "scan_required": True}), 403
+    # NFC-V2.2-ADMIN: vérifier suspension confirmations
+    if loc.pause_confirmations:
+        return jsonify({"error": "Les confirmations sont temporairement suspendues pour ce lieu."}), 403
+
+    sh = _nfc_session_hash()
+
+    # NFC-V2.2-ADMIN: rate limits entièrement dynamiques via SiteSettings
+    blocked, wait = _nfc_rate_check(sh, "burst", _nfc_setting("burst_max", _NFC_BURST_MAX), _nfc_setting("burst_window", _NFC_BURST_WINDOW))
+    if blocked:
+        return _nfc_rate_response(wait)
+    tip = _nfc_truncated_ip()
+    blocked, wait = _nfc_rate_check(tip, "ip_confirm", _NFC_IP_CONFIRM_PER_HOUR, 3600)
+    if blocked:
+        return _nfc_rate_response(wait)
+    blocked, wait = _nfc_rate_check(sh, "confirm_global", _nfc_setting("confirm_global_max", _NFC_CONFIRM_GLOBAL_MAX), _nfc_setting("confirm_global_window", _NFC_CONFIRM_GLOBAL_WINDOW))
+    if blocked:
+        return _nfc_rate_response(wait)
+
+    data = request.get_json() or {}
+    sid = data.get("suggestion_id")
+    if not sid:
+        return jsonify({"error": "suggestion_id requis."}), 400
+
+    suggestion = Suggestion.query.get(sid)
+    if not suggestion or suggestion.nfc_location_id != loc.id:
+        return jsonify({"error": "Ce problème n'appartient pas à ce lieu."}), 400
+    if suggestion.status not in _NFC_OPEN_STATUSES:
+        return jsonify({"error": "Ce problème est déjà résolu ou fermé."}), 400
+
+    confirm_key = f"{sh}:confirm:{sid}"
+    blocked, wait = _nfc_rate_check(confirm_key, "per_sugg", _nfc_setting("confirm_per_sugg_max", _NFC_CONFIRM_PER_SUGGESTION_MAX), _nfc_setting("confirm_per_sugg_window", _NFC_CONFIRM_PER_SUGGESTION_WINDOW))
+    if blocked:
+        return _nfc_rate_response(wait)
+
+    now = datetime.now(timezone.utc)
+    db.session.add(NfcConfirmation(
+        suggestion_id=suggestion.id,
+        school_id=loc.school_id,
+        session_hash=sh,
+        confirmed_at=now,
+    ))
+    suggestion.confirmation_count = (suggestion.confirmation_count or 0) + 1
+    suggestion.last_confirmed_at = now
+    # NFC-V2.2-AI: auto-follow on confirm so the user gets status/reply notifications.
+    session_id = get_session_id()
+    if not NfcFollowUp.query.filter_by(session_id=session_id, suggestion_id=suggestion.id).first():
+        db.session.add(NfcFollowUp(session_id=session_id, suggestion_id=suggestion.id))
+    db.session.commit()
+
+    _nfc_consume_action(slug)
+    _nfc_cache_invalidate(slug)
+    _log_activity("nfc_confirm", f"Confirmation NFC #{suggestion.id} au lieu « {loc.name} »")
+    count = suggestion.confirmation_count or 0
+    if count in (5, 10, 25, 50):
+        _nfc_notify_followers(suggestion.id, "threshold",
+            f"Le problème « {(suggestion.title or '')[:60]} » a atteint {count} confirmations !")
+
+    return jsonify({
+        "ok": True,
+        "confirmation_count": suggestion.confirmation_count,
+        "last_confirmed_at": now.isoformat(),
+    })
+
+
+# NFC-V2.4: soutenir un problème NFC (pas besoin de scan — action faible)
+@app.route("/api/nfc/<slug>/support", methods=["POST"])
+def nfc_support(slug):
+    """Soutenir un signalement NFC depuis la liste (pas de scan requis). Poids faible."""
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée."}), 403
+    loc = NfcLocation.query.filter_by(slug=slug, is_active=True).first()
+    if not loc:
+        return jsonify({"error": "Lieu introuvable."}), 404
+
+    sh = _nfc_session_hash()
+    blocked, wait = _nfc_rate_check(sh, "support_global", 20, 3600)
+    if blocked:
+        return _nfc_rate_response(wait)
+
+    data = request.get_json() or {}
+    sid = data.get("suggestion_id")
+    if not sid:
+        return jsonify({"error": "suggestion_id requis."}), 400
+
+    suggestion = Suggestion.query.get(sid)
+    if not suggestion or suggestion.nfc_location_id != loc.id:
+        return jsonify({"error": "Ce problème n'appartient pas à ce lieu."}), 400
+    if suggestion.status not in _NFC_OPEN_STATUSES:
+        return jsonify({"error": "Ce problème est déjà résolu ou fermé."}), 400
+
+    support_key = f"{sh}:support:{sid}"
+    blocked, wait = _nfc_rate_check(support_key, "per_sugg_support", 1, 86400)
+    if blocked:
+        return jsonify({"error": "Vous avez déjà soutenu ce signalement.", "already_supported": True}), 429
+
+    suggestion.support_count = (getattr(suggestion, "support_count", 0) or 0) + 1
+    db.session.commit()
+    _nfc_cache_invalidate(slug)
+
+    return jsonify({
+        "ok": True,
+        "support_count": suggestion.support_count,
+    })
+
+
+@app.route("/api/nfc/<slug>/suggest", methods=["POST"])
+def nfc_suggest(slug):
+    """NFC-V2.2-ADMIN: nouveau signalement — scan token + suspension checks."""
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée."}), 403
+
+    loc = NfcLocation.query.filter_by(slug=slug, is_active=True).first()
+    if not loc:
+        return jsonify({"error": "Lieu introuvable."}), 404
+    # NFC-V2.2-ADMIN: vérifier scan token
+    if not _nfc_scan_is_valid(slug):
+        return jsonify({"error": "Scannez le tag NFC pour pouvoir agir.", "scan_required": True}), 403
+    # NFC-V2.2-ADMIN: vérifier suspension suggestions
+    if loc.pause_suggestions:
+        return jsonify({"error": "Les nouveaux signalements sont temporairement suspendus pour ce lieu."}), 403
+
+    sh = _nfc_session_hash()
+
+    # NFC-V2.2-ADMIN: rate limits entièrement dynamiques via SiteSettings
+    blocked, wait = _nfc_rate_check(sh, "burst", _nfc_setting("burst_max", _NFC_BURST_MAX), _nfc_setting("burst_window", _NFC_BURST_WINDOW))
+    if blocked:
+        return _nfc_rate_response(wait)
+    tip = _nfc_truncated_ip()
+    blocked, wait = _nfc_rate_check(tip, "ip_create", _NFC_IP_CREATE_PER_HOUR, 3600)
+    if blocked:
+        return _nfc_rate_response(wait)
+    blocked, wait = _nfc_rate_check(sh, "create_global", _nfc_setting("create_global_max", _NFC_CREATE_GLOBAL_MAX), _nfc_setting("create_global_window", _NFC_CREATE_GLOBAL_WINDOW))
+    if blocked:
+        return _nfc_rate_response(wait)
+    create_key = f"{sh}:create:{loc.id}"
+    blocked, wait = _nfc_rate_check(create_key, "per_loc", _nfc_setting("create_per_loc_max", _NFC_CREATE_PER_LOCATION_MAX), _nfc_setting("create_per_loc_window", _NFC_CREATE_PER_LOCATION_WINDOW))
+    if blocked:
+        return _nfc_rate_response(wait)
+
+    data = request.get_json() or {}
+    text = (data.get("text") or "").strip()
+    if len(text) < 5:
+        return jsonify({"error": "Décrivez le problème (5 caractères minimum)."}), 400
+    if len(text) > 1000:
+        return jsonify({"error": "Texte trop long (1000 caractères max)."}), 400
+
+    ok, msg = filter_content_quick(text)
+    if not ok:
+        return jsonify({"error": msg}), 400
+
+    dup = _nfc_find_duplicate(text, loc.id)
+    if dup:
+        return jsonify({
+            "confirm_instead": True,
+            "existing": _nfc_suggestion_to_dict(dup, sh, confirmed_ids=set(), recurring_map={}),
+            "message": "Un problème très similaire existe déjà. Vous pouvez le confirmer plutôt que d'en créer un nouveau.",
+        })
+
+    session_id = get_session_id()
+    now = datetime.now(timezone.utc)
+    suggestion = Suggestion(
+        original_text=text,
+        title=text[:200],
+        category=loc.category if loc.category != "Général" else "Infrastructure",
+        nfc_location_id=loc.id,
+        source="nfc",
+        status="En attente",
+        confirmation_count=1,
+        last_confirmed_at=now,
+        vote_count=1,
+    )
+    db.session.add(suggestion)
+    db.session.flush()
+
+    vote = Vote(suggestion_id=suggestion.id, session_id=session_id, vote_type="for")
+    db.session.add(vote)
+    db.session.add(NfcConfirmation(
+        suggestion_id=suggestion.id,
+        school_id=loc.school_id,
+        session_hash=sh,
+        confirmed_at=now,
+    ))
+    # NFC-V2.2-AI: auto-follow the creator so they receive status/reply notifications.
+    if not NfcFollowUp.query.filter_by(session_id=session_id, suggestion_id=suggestion.id).first():
+        db.session.add(NfcFollowUp(session_id=session_id, suggestion_id=suggestion.id))
+    db.session.commit()
+
+    _nfc_consume_action(slug)
+    _nfc_cache_invalidate(slug)
+    _log_activity("nfc_suggest", f"Nouveau signalement NFC #{suggestion.id} au lieu « {loc.name} »")
+
+    _process_suggestion_background(suggestion.id)
+
+    return jsonify({
+        "ok": True,
+        "suggestion": _nfc_suggestion_to_dict(suggestion, sh, confirmed_ids={suggestion.id}, recurring_map={}),
+    })
+
+
+# ── API admin NFC ────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/nfc/locations", methods=["GET"])
+@admin_required
+def admin_nfc_locations():
+    """NFC-V2.1: liste des lieux NFC avec compteurs en 1 requête agrégée."""
+    locs = NfcLocation.query.order_by(NfcLocation.name).all()
+    # NFC-V2.1: compter open + total en une seule passe agrégée
+    counts = (
+        db.session.query(
+            Suggestion.nfc_location_id,
+            func.count(Suggestion.id).label("total"),
+            func.sum(sa_case((Suggestion.status.in_(_NFC_OPEN_STATUSES), 1), else_=0)).label("open_count"),
+        )
+        .filter(Suggestion.nfc_location_id.isnot(None))
+        .group_by(Suggestion.nfc_location_id)
+        .all()
+    )
+    count_map = {row[0]: {"total": row[1], "open": row[2] or 0} for row in counts}
+
+    result = []
+    for loc in locs:
+        c = count_map.get(loc.id, {"total": 0, "open": 0})
+        result.append({
+            "id": loc.id, "slug": loc.slug, "nfc_uid": loc.nfc_uid,
+            "name": loc.name, "description": loc.description or "",
+            "image_url": loc.image_url, "is_active": loc.is_active,
+            "category": loc.category, "floor": loc.floor, "building": loc.building,
+            "school_id": loc.school_id,
+            "open_count": c["open"], "total_suggestions": c["total"],
+            "pause_suggestions": bool(loc.pause_suggestions),
+            "pause_confirmations": bool(loc.pause_confirmations),
+            "created_at": loc.created_at.isoformat() if loc.created_at else None,
+            # NFC-V2.4: lien vers le lieu existant
+            "base_location_id": getattr(loc, "base_location_id", None),
+            "base_location_name": loc.base_location.name if getattr(loc, "base_location", None) else None,
+            "sub_location": getattr(loc, "sub_location", None),
+            "custom_detail": getattr(loc, "custom_detail", None),
+        })
+    return jsonify(result)
+
+
+# NFC-V2.4: lieux existants disponibles pour lier un lieu NFC
+@app.route("/api/admin/nfc/base-locations", methods=["GET"])
+@admin_required
+def admin_nfc_base_locations():
+    """Retourne les lieux existants (Communication & lieux) avec leurs emplacements."""
+    locs = Location.query.order_by(Location.name).all()
+    result = []
+    for loc in locs:
+        placements = [{"id": p.id, "name": p.name} for p in loc.placements]
+        result.append({"id": loc.id, "name": loc.name, "placements": placements})
+    return jsonify(result)
+
+
+@app.route("/api/admin/nfc/locations", methods=["POST"])
+@admin_required
+def admin_nfc_create_location():
+    """NFC-V2: créer un lieu NFC."""
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if len(name) < 2:
+        return jsonify({"error": "Nom requis (2 caractères min)."}), 400
+
+    slug = data.get("slug", "").strip()
+    if not slug:
+        import re as _re
+        from unidecode import unidecode as _ud
+        slug = _re.sub(r"[^a-z0-9]+", "-", _ud(name).lower()).strip("-")[:80]
+
+    if NfcLocation.query.filter_by(slug=slug).first():
+        return jsonify({"error": f"Le slug « {slug} » est déjà utilisé."}), 409
+
+    # NFC-V2.4: lien vers un lieu existant (Communication & lieux)
+    base_location_id = data.get("base_location_id")
+    if base_location_id:
+        base_location_id = int(base_location_id)
+        if not Location.query.get(base_location_id):
+            base_location_id = None
+
+    loc = NfcLocation(
+        name=name, slug=slug,
+        description=(data.get("description") or "").strip()[:1000],
+        category=data.get("category", "Général"),
+        floor=(data.get("floor") or "").strip()[:20],
+        building=(data.get("building") or "").strip()[:50],
+        nfc_uid=(data.get("nfc_uid") or "").strip()[:100] or None,
+        school_id=data.get("school_id", "default"),
+        is_active=data.get("is_active", True),
+        base_location_id=base_location_id,
+        sub_location=(data.get("sub_location") or "").strip()[:200] or None,
+        custom_detail=(data.get("custom_detail") or "").strip()[:200] or None,
+    )
+    db.session.add(loc)
+    db.session.commit()
+    _log_activity("nfc_location_created", f"Lieu NFC « {loc.name} » créé (slug: {loc.slug})")
+    return jsonify({"ok": True, "id": loc.id, "slug": loc.slug})
+
+
+@app.route("/api/admin/nfc/locations/<int:loc_id>", methods=["PUT"])
+@admin_required
+def admin_nfc_update_location(loc_id):
+    """NFC-V2: modifier un lieu NFC."""
+    loc = NfcLocation.query.get_or_404(loc_id)
+    data = request.get_json() or {}
+    if "name" in data:
+        loc.name = (data["name"] or "").strip()[:200] or loc.name
+    if "description" in data:
+        loc.description = (data["description"] or "").strip()[:1000]
+    if "category" in data:
+        loc.category = data["category"]
+    if "floor" in data:
+        loc.floor = (data["floor"] or "").strip()[:20] or None
+    if "building" in data:
+        loc.building = (data["building"] or "").strip()[:50] or None
+    if "nfc_uid" in data:
+        loc.nfc_uid = (data["nfc_uid"] or "").strip()[:100] or None
+    if "is_active" in data:
+        loc.is_active = bool(data["is_active"])
+    if "pause_suggestions" in data:
+        loc.pause_suggestions = bool(data["pause_suggestions"])
+    if "pause_confirmations" in data:
+        loc.pause_confirmations = bool(data["pause_confirmations"])
+    if "slug" in data:
+        new_slug = (data["slug"] or "").strip()[:100]
+        if new_slug and new_slug != loc.slug:
+            if NfcLocation.query.filter(NfcLocation.slug == new_slug, NfcLocation.id != loc.id).first():
+                return jsonify({"error": f"Le slug « {new_slug} » est déjà utilisé."}), 409
+            _nfc_cache_invalidate(loc.slug)
+            loc.slug = new_slug
+    # NFC-V2.4: lien lieu existant
+    if "base_location_id" in data:
+        blid = data["base_location_id"]
+        loc.base_location_id = int(blid) if blid else None
+    if "sub_location" in data:
+        loc.sub_location = (data["sub_location"] or "").strip()[:200] or None
+    if "custom_detail" in data:
+        loc.custom_detail = (data["custom_detail"] or "").strip()[:200] or None
+    _nfc_cache_invalidate(loc.slug)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/nfc/locations/<int:loc_id>", methods=["DELETE"])
+@admin_required
+def admin_nfc_delete_location(loc_id):
+    """NFC-V2.4: supprimer un lieu NFC (force=1 pour détacher les signalements)."""
+    loc = NfcLocation.query.get_or_404(loc_id)
+    _nfc_cache_invalidate(loc.slug)
+    force = request.args.get("force") == "1"
+    has_suggestions = Suggestion.query.filter(Suggestion.nfc_location_id == loc.id).count()
+    if has_suggestions and not force:
+        loc.is_active = False
+        db.session.commit()
+        return jsonify({"ok": True, "deactivated": True, "message": "Lieu désactivé (suggestions liées existantes)."})
+    if has_suggestions:
+        Suggestion.query.filter(Suggestion.nfc_location_id == loc.id).update({"nfc_location_id": None})
+    loc_name = loc.name
+    db.session.delete(loc)
+    db.session.commit()
+    _log_activity("nfc_location_deleted", f"Lieu NFC « {loc_name} » supprimé" + (" (forcé)" if force else ""))
+    return jsonify({"ok": True, "deleted": True})
+
+
+@app.route("/api/admin/nfc/locations/<int:loc_id>/image", methods=["POST"])
+@admin_required
+def admin_nfc_upload_image(loc_id):
+    """NFC-V2.1: uploader une image pour un lieu NFC (max 5 Mo)."""
+    loc = NfcLocation.query.get_or_404(loc_id)
+    if "file" not in request.files:
+        return jsonify({"error": "Aucun fichier envoyé."}), 400
+    f = request.files["file"]
+    if not f.filename or not _allowed_file(f.filename):
+        return jsonify({"error": "Format non supporté."}), 400
+    # NFC-V2.1: vérification taille avant écriture disque
+    f.seek(0, 2)
+    size = f.tell()
+    f.seek(0)
+    if size > _NFC_MAX_IMAGE_BYTES:
+        return jsonify({"error": "Image trop volumineuse (5 Mo max)."}), 400
+    ext = f.filename.rsplit(".", 1)[1].lower()
+    unique = f"nfc_{loc.id}_{int(time.time())}.{ext}"
+    path = os.path.join(NFC_UPLOAD_FOLDER, unique)
+    f.save(path)
+    loc.image_url = f"/static/uploads/nfc/{unique}"
+    db.session.commit()
+    _nfc_cache_invalidate(loc.slug)
+    return jsonify({"ok": True, "image_url": loc.image_url})
+
+
+# NFC-V2.2-ADMIN: recadrage image côté serveur
+@app.route("/api/admin/nfc/locations/<int:loc_id>/image/crop", methods=["POST"])
+@admin_required
+def admin_nfc_crop_image(loc_id):
+    """NFC-V2.2-ADMIN: recadrer l'image existante d'un lieu."""
+    loc = NfcLocation.query.get_or_404(loc_id)
+    if not loc.image_url:
+        return jsonify({"error": "Aucune image à recadrer."}), 400
+    data = request.get_json() or {}
+    x = data.get("x", 0)
+    y = data.get("y", 0)
+    w = data.get("width")
+    h = data.get("height")
+    if not w or not h:
+        return jsonify({"error": "Dimensions de recadrage requises (width, height)."}), 400
+    try:
+        from PIL import Image
+        img_path = os.path.join(app.static_folder, loc.image_url.lstrip("/static/"))
+        img = Image.open(img_path)
+        cropped = img.crop((int(x), int(y), int(x) + int(w), int(y) + int(h)))
+        ext = img_path.rsplit(".", 1)[1].lower()
+        unique = f"nfc_{loc.id}_{int(time.time())}_crop.{ext}"
+        out_path = os.path.join(NFC_UPLOAD_FOLDER, unique)
+        cropped.save(out_path, quality=90)
+        loc.image_url = f"/static/uploads/nfc/{unique}"
+        db.session.commit()
+        _nfc_cache_invalidate(loc.slug)
+        return jsonify({"ok": True, "image_url": loc.image_url})
+    except ImportError:
+        return jsonify({"error": "Pillow non installé — recadrage impossible."}), 500
+    except Exception as exc:
+        return jsonify({"error": f"Erreur de recadrage : {str(exc)[:200]}"}), 500
+
+
+@app.route("/api/admin/nfc/locations/<int:loc_id>/suggestions", methods=["GET"])
+@admin_required
+def admin_nfc_location_suggestions(loc_id):
+    """NFC-V2: problèmes d'un lieu (tous statuts)."""
+    loc = NfcLocation.query.get_or_404(loc_id)
+    status_filter = request.args.get("status")
+    q = Suggestion.query.filter(Suggestion.nfc_location_id == loc.id)
+    if status_filter and status_filter in _NFC_STATUS_REVERSE:
+        q = q.filter(Suggestion.status == _NFC_STATUS_REVERSE[status_filter])
+    suggestions = q.order_by(Suggestion.created_at.desc()).limit(200).all()
+    now = datetime.now(timezone.utc)
+    recurring_map = _nfc_batch_recurring(suggestions, loc.id)
+    return jsonify([_nfc_suggestion_to_dict(s, "", now=now, confirmed_ids=set(), recurring_map=recurring_map) for s in suggestions])
+
+
+@app.route("/api/admin/nfc/suggestions/<int:sid>/status", methods=["PUT"])
+@admin_required
+def admin_nfc_update_status(sid):
+    """NFC-V2.1: changer le statut d'un signalement NFC avec validation des transitions."""
+    s = Suggestion.query.get_or_404(sid)
+    data = request.get_json() or {}
+    new_status = data.get("status", "")
+    if new_status not in _NFC_STATUS_REVERSE:
+        return jsonify({"error": f"Statut invalide. Valeurs: {list(_NFC_STATUS_REVERSE.keys())}"}), 400
+
+    # NFC-V2.1: vérifier que la transition est autorisée
+    current_nfc = _NFC_STATUS_MAP.get(s.status, "open")
+    allowed = _NFC_VALID_TRANSITIONS.get(current_nfc, [])
+    if new_status not in allowed:
+        return jsonify({"error": f"Transition {current_nfc} → {new_status} non autorisée. Transitions possibles : {allowed}"}), 400
+
+    old_internal = s.status
+    internal_status = _NFC_STATUS_REVERSE[new_status]
+    s.status = internal_status
+    if new_status == "resolved":
+        s.completed_at = datetime.now(timezone.utc)
+        s.resolved_by_admin = True
+    elif new_status == "open":
+        # NFC-V2.4: tracker la réouverture
+        if s.completed_at or current_nfc in ("resolved", "deleted"):
+            s.reopened_at = datetime.now(timezone.utc)
+        s.completed_at = None
+        s.resolved_by_admin = False
+
+    db.session.add(NfcStatusHistory(
+        suggestion_id=s.id,
+        old_status=old_internal,
+        new_status=internal_status,
+        changed_by="admin",
+        note=data.get("note", "")[:500],
+    ))
+    db.session.commit()
+
+    if s.nfc_location:
+        _nfc_cache_invalidate(s.nfc_location.slug)
+    _log_activity("nfc_status_change", f"NFC #{s.id} : {old_internal} → {internal_status} (lieu NFC #{s.nfc_location_id})")
+    _nfc_notify_followers(s.id, "status_change", f"Votre signalement « {(s.title or '')[:80]} » est passé à : {new_status}")
+    return jsonify({"ok": True, "status": new_status})
+
+
+@app.route("/api/admin/nfc/dashboard", methods=["GET"])
+@admin_required
+def admin_nfc_dashboard():
+    """NFC-V2.1: dashboard NFC avec alertes urgentes."""
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(hours=24)
+    week_ago = now - timedelta(days=7)
+
+    total_locations = NfcLocation.query.count()
+    active_locations = NfcLocation.query.filter_by(is_active=True).count()
+    total_open = Suggestion.query.filter(
+        Suggestion.source == "nfc",
+        Suggestion.status.in_(_NFC_OPEN_STATUSES),
+    ).count()
+    total_resolved = Suggestion.query.filter(
+        Suggestion.source == "nfc", Suggestion.status == "Terminée",
+    ).count()
+    confirms_24h = NfcConfirmation.query.filter(NfcConfirmation.confirmed_at >= day_ago).count()
+    new_24h = Suggestion.query.filter(Suggestion.source == "nfc", Suggestion.created_at >= day_ago).count()
+    confirms_7d = NfcConfirmation.query.filter(NfcConfirmation.confirmed_at >= week_ago).count()
+    new_7d = Suggestion.query.filter(Suggestion.source == "nfc", Suggestion.created_at >= week_ago).count()
+
+    # NFC-V2.1: avg résolution avec aggregate SQL au lieu de .all()
+    avg_row = db.session.query(
+        func.avg(func.julianday(Suggestion.completed_at) - func.julianday(Suggestion.created_at)),
+    ).filter(
+        Suggestion.source == "nfc",
+        Suggestion.status == "Terminée",
+        Suggestion.completed_at.isnot(None),
+    ).scalar()
+    avg_resolution_hours = round(avg_row * 24, 1) if avg_row else None
+
+    # NFC-V2.1: top lieux problématiques en 1 requête agrégée
+    top_rows = (
+        db.session.query(
+            NfcLocation.id, NfcLocation.name, NfcLocation.slug,
+            func.count(Suggestion.id).label("oc"),
+        )
+        .join(Suggestion, Suggestion.nfc_location_id == NfcLocation.id)
+        .filter(NfcLocation.is_active.is_(True), Suggestion.status.in_(_NFC_OPEN_STATUSES))
+        .group_by(NfcLocation.id)
+        .order_by(func.count(Suggestion.id).desc())
+        .limit(10)
+        .all()
+    )
+    top_problematic = [{"id": r[0], "name": r[1], "slug": r[2], "open_count": r[3]} for r in top_rows]
+
+    # NFC-V2.4: compteur urgent sur TOUTES les suggestions ouvertes (pas limité au top 10)
+    all_open_nfc = Suggestion.query.filter(
+        Suggestion.source == "nfc",
+        Suggestion.status.in_(_NFC_OPEN_STATUSES),
+    ).all()
+    urgent_count = 0
+    for s in all_open_nfc:
+        heat = _nfc_heat_score(s, now=now)
+        if _nfc_is_urgent(heat, s.confirmation_count or 0):
+            urgent_count += 1
+
+    # NFC-V2.4: top confirmés avec heat + niveau de gravité
+    hot_suggestions = sorted(all_open_nfc, key=lambda x: x.confirmation_count or 0, reverse=True)[:10]
+    top_confirmed = []
+    for s in hot_suggestions:
+        heat = _nfc_heat_score(s, now=now)
+        cc = s.confirmation_count or 0
+        top_confirmed.append({
+            "id": s.id, "title": s.title,
+            "confirmation_count": cc,
+            "support_count": getattr(s, "support_count", 0) or 0,
+            "heat_score": heat,
+            "heat_level": _nfc_heat_level(heat, cc),
+            "is_urgent": _nfc_is_urgent(heat, cc),
+            "last_activity_minutes": _nfc_last_activity_minutes(s, now=now),
+            "location_name": s.nfc_location.name if s.nfc_location else "?",
+        })
+
+    return jsonify({
+        "total_locations": total_locations,
+        "active_locations": active_locations,
+        "total_open": total_open,
+        "total_resolved": total_resolved,
+        "confirms_24h": confirms_24h,
+        "new_24h": new_24h,
+        "confirms_7d": confirms_7d,
+        "new_7d": new_7d,
+        "avg_resolution_hours": avg_resolution_hours,
+        "top_problematic": top_problematic,
+        "top_confirmed": top_confirmed,
+        "urgent_count": urgent_count,
+    })
+
+
+@app.route("/api/admin/nfc/activity", methods=["GET"])
+@admin_required
+def admin_nfc_activity():
+    """NFC-V2: activité récente (confirmations + nouvelles suggestions NFC)."""
+    limit = min(int(request.args.get("limit", 50)), 200)
+    now = datetime.now(timezone.utc)
+
+    recent_confirms = (
+        db.session.query(NfcConfirmation, Suggestion)
+        .join(Suggestion, NfcConfirmation.suggestion_id == Suggestion.id)
+        .filter(NfcConfirmation.confirmed_at >= now - timedelta(days=7))
+        .order_by(NfcConfirmation.confirmed_at.desc())
+        .limit(limit)
+        .all()
+    )
+    recent_new = Suggestion.query.filter(
+        Suggestion.source == "nfc",
+        Suggestion.created_at >= now - timedelta(days=7),
+    ).order_by(Suggestion.created_at.desc()).limit(limit).all()
+
+    # NFC-V2.1: résolutions récentes dans le feed
+    recent_resolved = Suggestion.query.filter(
+        Suggestion.source == "nfc",
+        Suggestion.status == "Terminée",
+        Suggestion.completed_at >= now - timedelta(days=7),
+    ).order_by(Suggestion.completed_at.desc()).limit(limit).all()
+
+    feed = []
+    for conf, sugg in recent_confirms:
+        feed.append({
+            "type": "confirmation",
+            "suggestion_id": sugg.id, "title": sugg.title,
+            "location_name": sugg.nfc_location.name if sugg.nfc_location else "?",
+            "at": conf.confirmed_at.isoformat() if conf.confirmed_at else "",
+            "ts": conf.confirmed_at.timestamp() if conf.confirmed_at else 0,
+        })
+    for s in recent_new:
+        feed.append({
+            "type": "new_suggestion",
+            "suggestion_id": s.id, "title": s.title,
+            "location_name": s.nfc_location.name if s.nfc_location else "?",
+            "at": s.created_at.isoformat() if s.created_at else "",
+            "ts": s.created_at.timestamp() if s.created_at else 0,
+        })
+    for s in recent_resolved:
+        feed.append({
+            "type": "resolved",
+            "suggestion_id": s.id, "title": s.title,
+            "location_name": s.nfc_location.name if s.nfc_location else "?",
+            "at": s.completed_at.isoformat() if s.completed_at else "",
+            "ts": s.completed_at.timestamp() if s.completed_at else 0,
+        })
+
+    feed.sort(key=lambda x: -x["ts"])
+    for f in feed:
+        del f["ts"]
+    return jsonify(feed[:limit])
+
+
+# ── NFC-V2.2-ADMIN: réponse admin sur suggestion ────────────────────────────
+
+@app.route("/api/admin/nfc/suggestions/<int:sid>/reply", methods=["PUT"])
+@admin_required
+def admin_nfc_reply(sid):
+    """NFC-V2.2-ADMIN: ajouter/modifier une réponse admin visible côté élève."""
+    s = Suggestion.query.get_or_404(sid)
+    data = request.get_json() or {}
+    reply_text = (data.get("reply") or "").strip()
+    if not reply_text:
+        s.admin_reply = None
+        s.admin_reply_at = None
+    else:
+        s.admin_reply = reply_text[:2000]
+        s.admin_reply_at = datetime.now(timezone.utc)
+    db.session.commit()
+    if s.nfc_location:
+        _nfc_cache_invalidate(s.nfc_location.slug)
+    if reply_text:
+        _nfc_notify_followers(s.id, "admin_reply", f"Réponse de l'administration : « {reply_text[:100]} »")
+        _log_activity("nfc_admin_reply", f"Réponse admin sur NFC #{s.id}")
+    return jsonify({"ok": True})
+
+
+# ── NFC-V2.2-ADMIN: historique complet ───────────────────────────────────────
+
+@app.route("/api/admin/nfc/history", methods=["GET"])
+@admin_required
+def admin_nfc_history():
+    """NFC-V2.2-ADMIN: historique de toutes les suggestions NFC (tous statuts)."""
+    page = max(1, int(request.args.get("page", 1)))
+    per_page = min(100, int(request.args.get("per_page", 50)))
+    status_filter = request.args.get("status")
+    loc_filter = request.args.get("location_id")
+
+    q = Suggestion.query.filter(Suggestion.source == "nfc")
+    if status_filter and status_filter in _NFC_STATUS_REVERSE:
+        q = q.filter(Suggestion.status == _NFC_STATUS_REVERSE[status_filter])
+    if loc_filter:
+        q = q.filter(Suggestion.nfc_location_id == int(loc_filter))
+    total = q.count()
+    items = q.order_by(Suggestion.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
+
+    now = datetime.now(timezone.utc)
+    result = []
+    for s in items:
+        result.append({
+            "id": s.id, "title": s.title, "original_text": s.original_text,
+            "status": _NFC_STATUS_MAP.get(s.status, "open"),
+            "internal_status": s.status,
+            "confirmation_count": s.confirmation_count or 0,
+            "heat_score": (hs := _nfc_heat_score(s, now=now)),
+            "heat_level": _nfc_heat_level(hs, s.confirmation_count or 0),
+            "is_urgent": _nfc_is_urgent(hs, s.confirmation_count or 0),
+            "last_activity_minutes": _nfc_last_activity_minutes(s, now=now),
+            "support_count": getattr(s, "support_count", 0) or 0,
+            "location_name": s.nfc_location.name if s.nfc_location else "?",
+            "location_id": s.nfc_location_id,
+            "admin_reply": s.admin_reply,
+            "admin_reply_at": s.admin_reply_at.isoformat() if s.admin_reply_at else None,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+            "reopened_at": s.reopened_at.isoformat() if getattr(s, "reopened_at", None) else None,
+            "is_recurring": False,
+        })
+    return jsonify({"items": result, "total": total, "page": page, "per_page": per_page})
+
+
+# ── NFC-V2.2-ADMIN: logs journaliers + export ───────────────────────────────
+
+@app.route("/api/admin/nfc/logs", methods=["GET"])
+@admin_required
+def admin_nfc_logs():
+    """NFC-V2.2-ADMIN: logs NFC groupés par jour."""
+    _nfc_purge_old_logs()
+    days_back = min(90, int(request.args.get("days", 7)))
+    since = datetime.now(timezone.utc) - timedelta(days=days_back)
+    logs = ActivityLog.query.filter(
+        ActivityLog.event_type.like("nfc_%"),
+        ActivityLog.created_at >= since,
+    ).order_by(ActivityLog.created_at.desc()).limit(2000).all()
+
+    by_day: dict[str, list] = {}
+    for log in logs:
+        day = log.created_at.strftime("%Y-%m-%d") if log.created_at else "?"
+        by_day.setdefault(day, []).append(log.to_dict())
+    return jsonify({"days": by_day, "total": len(logs)})
+
+
+@app.route("/api/admin/nfc/logs/export", methods=["GET"])
+@admin_required
+def admin_nfc_logs_export():
+    """NFC-V2.2-ADMIN: export CSV des logs NFC."""
+    day = request.args.get("day")
+    q = ActivityLog.query.filter(ActivityLog.event_type.like("nfc_%"))
+    if day:
+        q = q.filter(func.date(ActivityLog.created_at) == day)
+    else:
+        q = q.filter(ActivityLog.created_at >= datetime.now(timezone.utc) - timedelta(days=7))
+    logs = q.order_by(ActivityLog.created_at.desc()).limit(5000).all()
+
+    import io, csv
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "event_type", "message", "created_at"])
+    for log in logs:
+        writer.writerow([log.id, log.event_type, log.message, log.created_at.isoformat() if log.created_at else ""])
+    resp = app.make_response(output.getvalue())
+    resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+    resp.headers["Content-Disposition"] = f"attachment; filename=nfc_logs_{day or 'recent'}.csv"
+    return resp
+
+
+# ── NFC-V2.2-ADMIN: paramètres NFC configurables ────────────────────────────
+
+_NFC_SETTINGS_KEYS = [
+    "nfc_confirm_per_sugg_window", "nfc_confirm_per_sugg_max",
+    "nfc_create_per_loc_window", "nfc_create_per_loc_max",
+    "nfc_confirm_global_window", "nfc_confirm_global_max",
+    "nfc_create_global_window", "nfc_create_global_max",
+    "nfc_burst_window", "nfc_burst_max",
+    "nfc_scan_token_ttl", "nfc_scan_max_actions", "nfc_qr_token_ttl",
+    "nfc_log_retention_days",
+    "nfc_heat_urgent_threshold", "nfc_heat_important_threshold",
+    "nfc_confirm_urgent_threshold", "nfc_confirm_important_threshold",
+]
+
+_NFC_SETTINGS_BOUNDS = {
+    "nfc_confirm_per_sugg_window": (60, 7 * 86400),
+    "nfc_confirm_per_sugg_max": (1, 50),
+    "nfc_create_per_loc_window": (60, 7 * 86400),
+    "nfc_create_per_loc_max": (1, 50),
+    "nfc_confirm_global_window": (60, 7 * 86400),
+    "nfc_confirm_global_max": (1, 500),
+    "nfc_create_global_window": (60, 30 * 86400),
+    "nfc_create_global_max": (1, 500),
+    "nfc_burst_window": (1, 300),
+    "nfc_burst_max": (1, 50),
+    "nfc_scan_token_ttl": (30, 600),
+    "nfc_scan_max_actions": (1, 20),
+    "nfc_qr_token_ttl": (30, 900),
+    "nfc_log_retention_days": (1, 3650),
+    "nfc_heat_urgent_threshold": (10, 500),
+    "nfc_heat_important_threshold": (5, 500),
+    "nfc_confirm_urgent_threshold": (1, 100),
+    "nfc_confirm_important_threshold": (1, 100),
+}
+
+
+@app.route("/api/admin/nfc/settings", methods=["GET"])
+@admin_required
+def admin_nfc_settings_get():
+    """NFC-V2.2-ADMIN: lire les paramètres NFC."""
+    result = {}
+    for k in _NFC_SETTINGS_KEYS:
+        result[k] = get_setting(k)
+    return jsonify(result)
+
+
+@app.route("/api/admin/nfc/settings", methods=["PUT"])
+@admin_required
+def admin_nfc_settings_put():
+    """NFC-V2.2-ADMIN: modifier les paramètres NFC."""
+    data = request.get_json() or {}
+    changed = []
+    for k in _NFC_SETTINGS_KEYS:
+        if k in data:
+            val = str(data[k]).strip()
+            try:
+                n = int(val)
+            except ValueError:
+                return jsonify({"error": f"Valeur invalide pour {k} (entier attendu)."}), 400
+            lo, hi = _NFC_SETTINGS_BOUNDS.get(k, (-10**9, 10**9))
+            if n < lo or n > hi:
+                return jsonify({"error": f"Valeur hors limites pour {k} (attendu: {lo}..{hi})."}), 400
+            set_setting(k, str(n))
+            changed.append(k)
+    _log_activity("nfc_settings_changed", f"Paramètres NFC modifiés : {', '.join(changed)}")
+    return jsonify({"ok": True, "changed": changed})
+
+
+# ── NFC-V2.2-ADMIN: suspension granulaire lieu ──────────────────────────────
+
+@app.route("/api/admin/nfc/locations/<int:loc_id>/pause", methods=["PUT"])
+@admin_required
+def admin_nfc_pause_location(loc_id):
+    """NFC-V2.2-ADMIN: suspendre suggestions et/ou confirmations sur un lieu."""
+    loc = NfcLocation.query.get_or_404(loc_id)
+    data = request.get_json() or {}
+    if "pause_suggestions" in data:
+        loc.pause_suggestions = bool(data["pause_suggestions"])
+    if "pause_confirmations" in data:
+        loc.pause_confirmations = bool(data["pause_confirmations"])
+    db.session.commit()
+    _nfc_cache_invalidate(loc.slug)
+    _log_activity("nfc_pause_changed", f"Lieu « {loc.name} » : sugg={loc.pause_suggestions}, confirm={loc.pause_confirmations}")
+    return jsonify({"ok": True, "pause_suggestions": loc.pause_suggestions, "pause_confirmations": loc.pause_confirmations})
+
+
+# ── NFC-V2.2-ADMIN: follow-up anonyme + notifications ───────────────────────
+
+@app.route("/api/nfc/<slug>/follow", methods=["POST"])
+def nfc_follow(slug):
+    """NFC-V2.2-ADMIN: suivre une suggestion (notifications anonymes)."""
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée."}), 403
+    loc = NfcLocation.query.filter_by(slug=slug, is_active=True).first()
+    if not loc:
+        return jsonify({"error": "Lieu introuvable."}), 404
+    data = request.get_json() or {}
+    sid = data.get("suggestion_id")
+    if not sid:
+        return jsonify({"error": "suggestion_id requis."}), 400
+    suggestion = Suggestion.query.get(sid)
+    if not suggestion or suggestion.nfc_location_id != loc.id:
+        return jsonify({"error": "Suggestion invalide."}), 400
+
+    session_id = get_session_id()
+    existing = NfcFollowUp.query.filter_by(session_id=session_id, suggestion_id=sid).first()
+    if existing:
+        return jsonify({"ok": True, "already_following": True})
+    db.session.add(NfcFollowUp(session_id=session_id, suggestion_id=sid))
+    db.session.commit()
+    return jsonify({"ok": True, "following": True})
+
+
+@app.route("/api/nfc/notifications", methods=["GET"])
+def nfc_notifications():
+    """NFC-V2.2-ADMIN: notifications pour la session courante."""
+    _nfc_purge_old_notifications()
+    session_id = get_session_id()
+    notifs = NfcNotification.query.filter_by(session_id=session_id).order_by(
+        NfcNotification.created_at.desc()
+    ).limit(50).all()
+    unread = sum(1 for n in notifs if not n.is_read)
+    return jsonify({
+        "notifications": [{
+            "id": n.id, "type": n.notif_type, "message": n.message,
+            "suggestion_id": n.suggestion_id, "is_read": n.is_read,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        } for n in notifs],
+        "unread_count": unread,
+    })
+
+
+@app.route("/api/nfc/notifications/read", methods=["POST"])
+def nfc_notifications_read():
+    """NFC-V2.2-ADMIN: marquer des notifications comme lues."""
+    if not _check_csrf_safe():
+        return jsonify({"error": "Requête non autorisée."}), 403
+    session_id = get_session_id()
+    data = request.get_json() or {}
+    ids = data.get("ids", [])
+    if ids:
+        NfcNotification.query.filter(
+            NfcNotification.session_id == session_id,
+            NfcNotification.id.in_(ids),
+        ).update({"is_read": True}, synchronize_session=False)
+    else:
+        NfcNotification.query.filter_by(session_id=session_id, is_read=False).update(
+            {"is_read": True}, synchronize_session=False
+        )
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+# ── QR dynamic token generation (admin) ──────────────────────────────────────
+
+@app.route("/api/admin/nfc/locations/<int:loc_id>/qr-token", methods=["GET"])
+@admin_required
+def admin_nfc_qr_token(loc_id):
+    """Generate a signed, short-lived QR URL for an NFC location."""
+    loc = NfcLocation.query.get_or_404(loc_id)
+    if not loc.is_active:
+        return jsonify({"error": "Ce lieu est désactivé."}), 400
+    result = _nfc_generate_qr_url(loc.slug)
+    result["location_name"] = loc.name
+    result["full_url"] = request.host_url.rstrip("/") + result["url"]
+    _log_activity("nfc_qr_generated", f"QR token généré pour « {loc.name} »")
+    return jsonify(result)
+
+
+# ── NFC archive (resolved + deleted) ────────────────────────────────────────
+
+@app.route("/api/admin/nfc/archive", methods=["GET"])
+@admin_required
+def admin_nfc_archive():
+    """List resolved and deleted NFC suggestions with full location data."""
+    page = max(1, int(request.args.get("page", 1)))
+    per_page = min(100, int(request.args.get("per_page", 50)))
+    loc_id = request.args.get("location_id", type=int)
+    status_filter = request.args.get("status")
+
+    q = Suggestion.query.filter(
+        Suggestion.source == "nfc",
+        Suggestion.status.in_(["Terminée", "Refusée"]),
+    )
+    if loc_id:
+        q = q.filter(Suggestion.nfc_location_id == loc_id)
+    if status_filter == "resolved":
+        q = q.filter(Suggestion.status == "Terminée")
+    elif status_filter == "deleted":
+        q = q.filter(Suggestion.status == "Refusée")
+
+    total = q.count()
+    suggestions = q.order_by(Suggestion.completed_at.desc().nullslast(), Suggestion.created_at.desc()) \
+                   .offset((page - 1) * per_page).limit(per_page).all()
+
+    now = datetime.now(timezone.utc)
+    items = []
+    for s in suggestions:
+        d = _nfc_suggestion_to_dict(s, "", now=now, confirmed_ids=set(), recurring_map={})
+        d["completed_at"] = s.completed_at.isoformat() if s.completed_at else None
+        d["resolved_by_admin"] = bool(s.resolved_by_admin)
+        items.append(d)
+
+    return jsonify({"items": items, "total": total, "page": page, "per_page": per_page})
+
+
+@app.route("/api/admin/nfc/suggestions/<int:sid>/restore", methods=["POST"])
+@admin_required
+def admin_nfc_restore(sid):
+    """Restore a resolved/deleted NFC suggestion back to open status."""
+    s = Suggestion.query.get_or_404(sid)
+    if s.source != "nfc":
+        return jsonify({"error": "Ce n'est pas un signalement NFC."}), 400
+    current = _NFC_STATUS_MAP.get(s.status, "open")
+    if current not in ("resolved", "deleted"):
+        return jsonify({"error": "Ce signalement n'est pas archivé."}), 400
+
+    old_status = s.status
+    s.status = "En attente"
+    s.completed_at = None
+    s.resolved_by_admin = False
+    db.session.add(NfcStatusHistory(
+        suggestion_id=s.id,
+        old_status=old_status,
+        new_status="En attente",
+        changed_by="admin",
+        note="Restored from archive",
+    ))
+    db.session.commit()
+    if s.nfc_location:
+        _nfc_cache_invalidate(s.nfc_location.slug)
+    _log_activity("nfc_restore", f"NFC #{s.id} restauré depuis {old_status}")
+    _nfc_notify_followers(s.id, "status_change", f"Votre signalement « {(s.title or '')[:80]} » a été rouvert.")
+    return jsonify({"ok": True, "status": "open"})
+
+
+# ── NFC status history ───────────────────────────────────────────────────────
+
+@app.route("/api/admin/nfc/suggestions/<int:sid>/history", methods=["GET"])
+@admin_required
+def admin_nfc_suggestion_history(sid):
+    """Full status change history for an NFC suggestion."""
+    s = Suggestion.query.get_or_404(sid)
+    entries = NfcStatusHistory.query.filter_by(suggestion_id=sid) \
+        .order_by(NfcStatusHistory.created_at.desc()).limit(200).all()
+    return jsonify({
+        "suggestion_id": sid,
+        "current_status": s.status,
+        "history": [{
+            "id": h.id,
+            "old_status": h.old_status,
+            "new_status": h.new_status,
+            "changed_by": h.changed_by,
+            "note": h.note or "",
+            "created_at": h.created_at.isoformat() if h.created_at else None,
+        } for h in entries],
+    })
+
+
+# ── NFC log JSON export + retention ──────────────────────────────────────────
+
+@app.route("/api/admin/nfc/logs/export-json", methods=["GET"])
+@admin_required
+def admin_nfc_logs_export_json():
+    """Export NFC activity logs as JSON."""
+    day = request.args.get("day")
+    q = ActivityLog.query.filter(ActivityLog.event_type.like("nfc_%"))
+    if day:
+        q = q.filter(func.date(ActivityLog.created_at) == day)
+    else:
+        q = q.filter(ActivityLog.created_at >= datetime.now(timezone.utc) - timedelta(days=7))
+    logs = q.order_by(ActivityLog.created_at.desc()).limit(5000).all()
+
+    data = [log.to_dict() for log in logs]
+    resp = app.make_response(json.dumps(data, ensure_ascii=False, indent=2))
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["Content-Disposition"] = f"attachment; filename=nfc_logs_{day or 'recent'}.json"
+    return resp
+
+
+_nfc_log_retention_last = 0.0
+
+
+def _nfc_purge_old_logs():
+    """Auto-purge activity logs older than the configured retention period."""
+    global _nfc_log_retention_last
+    now = time.time()
+    if now - _nfc_log_retention_last < 86400:
+        return
+    _nfc_log_retention_last = now
+    days = _nfc_setting("log_retention_days", _NFC_LOG_RETENTION_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    try:
+        deleted = ActivityLog.query.filter(
+            ActivityLog.event_type.like("nfc_%"),
+            ActivityLog.created_at < cutoff,
+        ).delete(synchronize_session=False)
+        db.session.commit()
+        if deleted:
+            _log_activity("nfc_log_retention", f"Purged {deleted} NFC log entries older than {days} days")
+    except Exception:
+        db.session.rollback()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 if __name__ == "__main__":
